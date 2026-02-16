@@ -29,7 +29,7 @@ public actor GatewayLoopbackTransport: GatewayRPCTransport {
         nowMs: Int64) async throws -> GatewayResponseFrame
     {
         let localResponse = self.core.dispatch(request, nowMs: nowMs)
-        guard localResponse.error?.code == GatewayCoreErrorCode.unsupportedOnHost.rawValue,
+        guard Self.shouldForwardToUpstream(localResponse),
               let upstream = self.upstream
         else {
             return localResponse
@@ -43,6 +43,14 @@ public actor GatewayLoopbackTransport: GatewayRPCTransport {
                 code: .internalError,
                 message: "upstream forwarding failed: \(error.localizedDescription)")
         }
+    }
+
+    private static func shouldForwardToUpstream(_ response: GatewayResponseFrame) -> Bool {
+        guard let code = response.error?.code else {
+            return false
+        }
+        return code == GatewayCoreErrorCode.unsupportedOnHost.rawValue
+            || code == GatewayCoreErrorCode.methodNotFound.rawValue
     }
 
     public func sendJSON(

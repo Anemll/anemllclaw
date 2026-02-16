@@ -234,6 +234,43 @@ final class GatewayCoreTests: XCTestCase {
         XCTAssertEqual(forwarded, ["req-chat-send"])
     }
 
+    func testLoopbackTransportDelegatesMethodNotFoundToUpstream() async throws {
+        let upstream = TestUpstreamForwarder(
+            response: .success(
+                id: "req-custom-method",
+                payload: .object([
+                    "status": .string("proxied"),
+                    "method": .string("custom.experimental"),
+                ])))
+        let transport = GatewayLoopbackTransport(
+            core: GatewayCore(startedAtMs: 1_700_000_000_000),
+            upstream: upstream)
+
+        let response = try await transport.send(
+            GatewayRequestFrame(id: "req-custom-method", method: "custom.experimental"),
+            nowMs: 1_700_000_000_100)
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.id, "req-custom-method")
+        XCTAssertEqual(response.payload?.objectValue?["status"]?.stringValue, "proxied")
+        XCTAssertEqual(response.payload?.objectValue?["method"]?.stringValue, "custom.experimental")
+        let forwarded = await upstream.forwardedRequestIDs()
+        XCTAssertEqual(forwarded, ["req-custom-method"])
+    }
+
+    func testLoopbackTransportKeepsMethodNotFoundWithoutUpstream() async throws {
+        let transport = GatewayLoopbackTransport(
+            core: GatewayCore(startedAtMs: 1_700_000_000_000))
+
+        let response = try await transport.send(
+            GatewayRequestFrame(id: "req-custom-method-local", method: "custom.experimental"),
+            nowMs: 1_700_000_000_100)
+
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.error?.code, GatewayCoreErrorCode.methodNotFound.rawValue)
+        XCTAssertEqual(response.error?.message, "unknown method: custom.experimental")
+    }
+
     func testLoopbackTransportReturnsInternalErrorWhenUpstreamFails() async throws {
         let upstream = TestUpstreamForwarder(errorMessage: "upstream offline")
         let transport = GatewayLoopbackTransport(
