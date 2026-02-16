@@ -146,17 +146,13 @@ targets:
     platform: tvOS
     sources:
       - path: Sources
-        excludes:
-          - Info.plist
+        includes:
+          - OpenClawApp.swift
+          - Assets.xcassets
+          - Gateway/TVOSLocalGatewayRuntime.swift
+          - TVOS
     dependencies:
-      - package: OpenClawKit
-      - package: OpenClawKit
-        product: OpenClawChatUI
-      - package: OpenClawKit
-        product: OpenClawProtocol
       - package: OpenClawGatewayCore
-      - package: Swabble
-        product: SwabbleKit
     preBuildScripts:
       - name: SwiftFormat (lint)
         basedOnDependencyAnalysis: false
