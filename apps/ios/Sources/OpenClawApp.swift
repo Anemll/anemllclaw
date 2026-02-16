@@ -32,6 +32,7 @@ struct OpenClawApp: App {
                 .task {
                     await self.tvOSGatewayRuntime.start()
                     await self.tvOSGatewayRuntime.probeHealth()
+                    await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
                 }
                 .onChange(of: self.scenePhase) { _, newValue in
                     self.updateTVOSGatewayScenePhase(newValue)
@@ -76,9 +77,11 @@ extension OpenClawApp {
             case .active, .inactive:
                 await self.tvOSGatewayRuntime.start()
                 await self.tvOSGatewayRuntime.probeHealth()
+                await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
             @unknown default:
                 await self.tvOSGatewayRuntime.start()
                 await self.tvOSGatewayRuntime.probeHealth()
+                await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
             }
         }
     }

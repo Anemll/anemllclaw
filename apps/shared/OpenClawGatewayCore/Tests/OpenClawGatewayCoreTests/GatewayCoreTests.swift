@@ -37,6 +37,21 @@ final class GatewayCoreTests: XCTestCase {
         XCTAssertEqual(error.message, "unknown method: __gateway_core_contract_unknown_method__")
     }
 
+    func testNodeOnlyMethodReturnsUnsupportedOnHost() {
+        let core = GatewayCore(startedAtMs: 1_700_000_000_000)
+        let result = core.handle(
+            GatewayInvocationRequest(method: "chat.send"),
+            nowMs: 1_700_000_000_100)
+
+        guard case let .failure(error) = result else {
+            XCTFail("Expected unsupported-on-host failure")
+            return
+        }
+
+        XCTAssertEqual(error.code, .unsupportedOnHost)
+        XCTAssertEqual(error.message, "unsupported on tvOS host: chat.send")
+    }
+
     func testStatusHandlerReturnsStablePayload() {
         let core = GatewayCore(startedAtMs: 1_700_000_000_000)
         let result = core.handle(
@@ -104,7 +119,12 @@ final class GatewayCoreTests: XCTestCase {
         XCTAssertEqual(hello?.protocolVersion, GatewayCore.defaultProtocolVersion)
         XCTAssertTrue(hello?.features.methods.contains("connect") == true)
         XCTAssertTrue(hello?.features.methods.contains("health") == true)
-        XCTAssertEqual(hello?.snapshot.ts, 1_700_000_000_500)
+        XCTAssertTrue(hello?.features.events.contains("tick") == true)
+        XCTAssertEqual(hello?.snapshot.stateVersion.health, 1)
+        XCTAssertEqual(hello?.snapshot.stateVersion.presence, 1)
+        XCTAssertEqual(hello?.snapshot.uptimeMs, 500)
+        XCTAssertEqual(hello?.snapshot.presence.count, 0)
+        XCTAssertEqual(hello?.policy.tickIntervalMs, GatewayCore.defaultTickIntervalMs)
     }
 
     func testConnectHandshakeRejectsProtocolMismatch() {
@@ -194,8 +214,8 @@ final class GatewayCoreTests: XCTestCase {
 
     private func makeConnectRequest(
         id: String,
-        minProtocol: Int = 1,
-        maxProtocol: Int = 1,
+        minProtocol: Int = GatewayCore.defaultProtocolVersion,
+        maxProtocol: Int = GatewayCore.defaultProtocolVersion,
         auth: GatewayConnectAuth? = nil) -> GatewayRequestFrame
     {
         var object: [String: GatewayJSONValue] = [

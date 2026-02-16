@@ -116,13 +116,44 @@ public struct GatewayHelloFeatures: Codable, Sendable, Equatable {
     }
 }
 
-public struct GatewayHelloSnapshot: Codable, Sendable, Equatable {
-    public let ts: Int64
-    public let stateVersion: Int64
+public struct GatewayHelloStateVersion: Codable, Sendable, Equatable {
+    public let presence: Int
+    public let health: Int
 
-    public init(ts: Int64, stateVersion: Int64) {
-        self.ts = ts
+    public init(presence: Int, health: Int) {
+        self.presence = presence
+        self.health = health
+    }
+}
+
+public struct GatewayHelloSnapshot: Codable, Sendable, Equatable {
+    public let presence: [GatewayJSONValue]
+    public let health: GatewayJSONValue
+    public let stateVersion: GatewayHelloStateVersion
+    public let uptimeMs: Int
+    public let configPath: String?
+    public let stateDir: String?
+    public let sessionDefaults: [String: GatewayJSONValue]?
+    public let authMode: GatewayJSONValue?
+
+    public init(
+        presence: [GatewayJSONValue],
+        health: GatewayJSONValue,
+        stateVersion: GatewayHelloStateVersion,
+        uptimeMs: Int,
+        configPath: String? = nil,
+        stateDir: String? = nil,
+        sessionDefaults: [String: GatewayJSONValue]? = nil,
+        authMode: GatewayJSONValue? = nil)
+    {
+        self.presence = presence
+        self.health = health
         self.stateVersion = stateVersion
+        self.uptimeMs = uptimeMs
+        self.configPath = configPath
+        self.stateDir = stateDir
+        self.sessionDefaults = sessionDefaults
+        self.authMode = authMode
     }
 }
 
@@ -144,6 +175,8 @@ public struct GatewayHelloPayload: Codable, Sendable, Equatable {
     public let server: GatewayHelloServer
     public let features: GatewayHelloFeatures
     public let snapshot: GatewayHelloSnapshot
+    public let canvasHostURL: String?
+    public let auth: [String: GatewayJSONValue]?
     public let policy: GatewayHelloPolicy
 
     public init(
@@ -152,6 +185,8 @@ public struct GatewayHelloPayload: Codable, Sendable, Equatable {
         server: GatewayHelloServer,
         features: GatewayHelloFeatures,
         snapshot: GatewayHelloSnapshot,
+        canvasHostURL: String? = nil,
+        auth: [String: GatewayJSONValue]? = nil,
         policy: GatewayHelloPolicy)
     {
         self.type = type
@@ -159,6 +194,8 @@ public struct GatewayHelloPayload: Codable, Sendable, Equatable {
         self.server = server
         self.features = features
         self.snapshot = snapshot
+        self.canvasHostURL = canvasHostURL
+        self.auth = auth
         self.policy = policy
     }
 
@@ -168,6 +205,8 @@ public struct GatewayHelloPayload: Codable, Sendable, Equatable {
         case server
         case features
         case snapshot
+        case canvasHostURL = "canvasHostUrl"
+        case auth
         case policy
     }
 }
@@ -228,8 +267,23 @@ public enum GatewayInvocationResult: Sendable, Equatable {
 }
 
 public struct GatewayCore: Sendable {
-    public static let defaultProtocolVersion = 1
+    public static let defaultProtocolVersion = 3
+    public static let defaultTickIntervalMs = 30_000
+
     private static let defaultMethods = ["connect", "health", "status"]
+    private static let defaultEvents = ["connect.challenge", "tick"]
+
+    private static let unsupportedMethodPrefixes = [
+        "chat.",
+        "sessions.",
+        "agents.",
+        "config.",
+        "voicewake.",
+        "talk.",
+        "node.invoke",
+        "channel.",
+        "hooks.",
+    ]
 
     private let startedAtMs: Int64
     private let protocolVersion: Int
@@ -273,6 +327,12 @@ public struct GatewayCore: Sendable {
                         heartbeatDefaultAgentId: "main",
                         sessionCount: 0)))
         default:
+            if Self.isUnsupportedOnHostMethod(request.method) {
+                return .failure(
+                    GatewayFailurePayload(
+                        code: .unsupportedOnHost,
+                        message: "unsupported on tvOS host: \(request.method)"))
+            }
             return .failure(
                 GatewayFailurePayload(
                     code: .methodNotFound,
@@ -310,23 +370,40 @@ public struct GatewayCore: Sendable {
         if let authError = self.validateConnectAuth(params.auth) {
             return .failure(authError)
         }
+
+        let uptimeMs = max(0, nowMs - self.startedAtMs)
+        let healthSnapshot: GatewayJSONValue = .object([
+            "ok": .bool(true),
+            "ts": .integer(nowMs),
+            "uptimeMs": .integer(uptimeMs),
+            "durationMs": .integer(0),
+        ])
+
         return .success(
             .hello(
                 GatewayHelloPayload(
                     protocolVersion: self.protocolVersion,
                     server: GatewayHelloServer(
                         version: self.serverVersion,
-                        connId: "loopback-\(request.id)"),
+                        connId: "loopback-\(request.id)",
+                        host: "tvos-local"),
                     features: GatewayHelloFeatures(
                         methods: GatewayCore.defaultMethods,
-                        events: []),
+                        events: GatewayCore.defaultEvents),
                     snapshot: GatewayHelloSnapshot(
-                        ts: nowMs,
-                        stateVersion: 1),
+                        presence: [],
+                        health: healthSnapshot,
+                        stateVersion: GatewayHelloStateVersion(presence: 1, health: 1),
+                        uptimeMs: Self.clampedInt(uptimeMs),
+                        sessionDefaults: [
+                            "model": .string("tvos-local"),
+                            "contextTokens": .integer(0),
+                        ],
+                        authMode: .string(self.authConfig.mode.rawValue)),
                     policy: GatewayHelloPolicy(
                         maxPayload: 1_048_576,
                         maxBufferedBytes: 4_194_304,
-                        tickIntervalMs: 2_000))))
+                        tickIntervalMs: GatewayCore.defaultTickIntervalMs))))
     }
 
     private func decodeConnectParams(_ params: GatewayJSONValue?) -> GatewayConnectParams? {
@@ -407,5 +484,19 @@ public struct GatewayCore: Sendable {
         } catch {
             return nil
         }
+    }
+
+    private static func isUnsupportedOnHostMethod(_ method: String) -> Bool {
+        self.unsupportedMethodPrefixes.contains { method.hasPrefix($0) }
+    }
+
+    private static func clampedInt(_ value: Int64) -> Int {
+        if value <= Int64(Int.min) {
+            return Int.min
+        }
+        if value >= Int64(Int.max) {
+            return Int.max
+        }
+        return Int(value)
     }
 }

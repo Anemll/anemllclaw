@@ -81,3 +81,33 @@ public struct GatewayResponseFrame: Codable, Sendable, Equatable {
             error: GatewayErrorShape(code: code.rawValue, message: message))
     }
 }
+
+public struct GatewayEventFrame: Codable, Sendable, Equatable {
+    public let type: String
+    public let event: String
+    public let payload: GatewayJSONValue?
+    public let seq: Int?
+    public let stateVersion: GatewayJSONValue?
+
+    public init(
+        event: String,
+        payload: GatewayJSONValue? = nil,
+        seq: Int? = nil,
+        stateVersion: GatewayJSONValue? = nil,
+        type: String = "event")
+    {
+        self.type = type
+        self.event = event
+        self.payload = payload
+        self.seq = seq
+        self.stateVersion = stateVersion
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case event
+        case payload
+        case seq
+        case stateVersion
+    }
+}

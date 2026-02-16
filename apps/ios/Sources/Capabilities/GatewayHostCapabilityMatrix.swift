@@ -29,6 +29,11 @@ enum GatewayHostCapabilityMatrix {
     static let activeHostLabel = "tvOS"
     static let activeCapabilities: [GatewayHostCapability] = [
         GatewayHostCapability(
+            id: "gateway.transport.ws",
+            title: "Gateway WebSocket v3 transport",
+            support: .supported,
+            details: "Served locally on tvOS by the Swift gateway host."),
+        GatewayHostCapability(
             id: "gateway.health",
             title: "Gateway health/status RPC",
             support: .supported,
@@ -36,8 +41,8 @@ enum GatewayHostCapabilityMatrix {
         GatewayHostCapability(
             id: "gateway.session.pairing",
             title: "Pairing + session control",
-            support: .supported,
-            details: "Handled in-process for local tvOS clients."),
+            support: .remoteOnly,
+            details: "Session and pairing workflows still require a remote full gateway host."),
         GatewayHostCapability(
             id: "gateway.channel.integrations",
             title: "Messaging channel integrations",

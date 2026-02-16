@@ -12,22 +12,43 @@ struct TVOSGatewayHostView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Runtime: \(self.runtime.state.rawValue)")
                     .font(.headline)
-                Text("TCP listener: \(self.listenerLabel)")
+
+                Text("WebSocket listener: \(self.webSocketListenerLabel)")
                     .font(.headline)
                 Text("Listener auth: \(self.listenerAuthLabel)")
                     .font(.headline)
                 if let port = self.runtime.listenerPort {
-                    Text("Listener port: \(port)")
+                    Text("WebSocket port: \(port)")
                         .font(.headline)
                 }
                 if let error = self.runtime.listenerErrorText, !error.isEmpty {
-                    Text("Listener error: \(error)")
+                    Text("WebSocket error: \(error)")
                         .font(.subheadline)
                         .foregroundStyle(.orange)
                 }
-                Text("Health probe: \(self.probeLabel)")
+
+                Text("In-process health probe: \(self.probeLabel)")
                     .font(.headline)
-                Text("TCP health probe: \(self.tcpProbeLabel)")
+                Text("WebSocket probe: \(self.webSocketProbeLabel)")
+                    .font(.headline)
+                if let error = self.runtime.lastWebSocketProbeErrorText, !error.isEmpty {
+                    Text("WebSocket probe error: \(error)")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
+
+                Text("TCP debug listener: \(self.tcpListenerLabel)")
+                    .font(.headline)
+                if let port = self.runtime.tcpListenerPort {
+                    Text("TCP debug port: \(port)")
+                        .font(.headline)
+                }
+                if let error = self.runtime.tcpListenerErrorText, !error.isEmpty {
+                    Text("TCP listener error: \(error)")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
+                Text("TCP debug probe: \(self.tcpProbeLabel)")
                     .font(.headline)
                 if let error = self.runtime.lastTCPProbeErrorText, !error.isEmpty {
                     Text("TCP probe error: \(error)")
@@ -43,24 +64,40 @@ struct TVOSGatewayHostView: View {
                 Button("Stop Runtime") {
                     Task { await self.runtime.stop() }
                 }
-                Button("Probe Health") {
+                Button("Probe In-Process") {
                     Task { await self.runtime.probeHealth() }
                 }
-                Button("Probe via TCP") {
-                    Task { await self.runtime.probeHealthOverTCP() }
+                Button("Probe WebSocket") {
+                    Task { await self.runtime.probeHealthOverWebSocket() }
                 }
             }
             .buttonStyle(.borderedProminent)
 
             HStack(spacing: 12) {
-                Button("Start Listener") {
+                Button("Start WebSocket") {
+                    Task { await self.runtime.startWebSocketListenerIfNeeded() }
+                }
+                Button("Restart WebSocket") {
+                    Task { await self.runtime.restartWebSocketListener() }
+                }
+                Button("Stop WebSocket") {
+                    Task { await self.runtime.stopWebSocketListener() }
+                }
+            }
+            .buttonStyle(.bordered)
+
+            HStack(spacing: 12) {
+                Button("Start TCP Debug") {
                     Task { await self.runtime.startTCPListenerIfNeeded() }
                 }
-                Button("Restart Listener") {
+                Button("Restart TCP Debug") {
                     Task { await self.runtime.restartTCPListener() }
                 }
-                Button("Stop Listener") {
+                Button("Stop TCP Debug") {
                     Task { await self.runtime.stopTCPListener() }
+                }
+                Button("Probe TCP Debug") {
+                    Task { await self.runtime.probeHealthOverTCP() }
                 }
             }
             .buttonStyle(.bordered)
@@ -87,8 +124,12 @@ struct TVOSGatewayHostView: View {
         }
     }
 
-    private var listenerLabel: String {
+    private var webSocketListenerLabel: String {
         self.runtime.listenerState.rawValue
+    }
+
+    private var tcpListenerLabel: String {
+        self.runtime.tcpListenerState.rawValue
     }
 
     private var listenerAuthLabel: String {
@@ -96,6 +137,17 @@ struct TVOSGatewayHostView: View {
             return hint
         }
         return self.runtime.listenerAuthMode.rawValue
+    }
+
+    private var webSocketProbeLabel: String {
+        switch self.runtime.lastWebSocketProbeSucceeded {
+        case .none:
+            return "not yet run"
+        case .some(true):
+            return "ok"
+        case .some(false):
+            return "failed"
+        }
     }
 
     private var tcpProbeLabel: String {
