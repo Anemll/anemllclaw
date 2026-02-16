@@ -442,7 +442,11 @@ final class TVOSLocalGatewayRuntime {
     }
 
     private static func loadUpstreamConfig(defaults: UserDefaults = .standard) -> GatewayUpstreamWebSocketConfig? {
-        guard let rawURL = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.url")),
+        let env = ProcessInfo.processInfo.environment
+        let rawURLValue = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_URL"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.url"))
+
+        guard let rawURL = rawURLValue,
               let url = URL(string: rawURL)
         else {
             return nil
@@ -453,11 +457,17 @@ final class TVOSLocalGatewayRuntime {
             return nil
         }
 
-        let token = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.token"))
-        let password = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.password"))
-        let role = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.role")) ?? "node"
+        let token = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_TOKEN"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.token"))
+        let password = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_PASSWORD"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.password"))
+        let role = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_ROLE"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.role"))
+            ?? "node"
 
-        let scopes: [String]? = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))?
+        let scopesRaw = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_SCOPES"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))
+        let scopes: [String]? = scopesRaw?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
