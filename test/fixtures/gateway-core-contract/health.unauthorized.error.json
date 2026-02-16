@@ -1,0 +1,14 @@
+{
+  "name": "health.unauthorized.error",
+  "request": {
+    "method": "health",
+    "auth": "invalid"
+  },
+  "outcome": {
+    "ok": false,
+    "error": {
+      "message": "gateway closed (1008): unauthorized: device token mismatch (rotate/reissue device token)\nGateway target: ws://127.0.0.1:28889\nSource: cli --url\nConfig: <HOME>/.openclaw/openclaw.json"
+    }
+  },
+  "capturedAt": "<timestamp>"
+}

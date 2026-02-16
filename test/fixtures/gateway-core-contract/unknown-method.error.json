@@ -1,0 +1,14 @@
+{
+  "name": "unknown-method.error",
+  "request": {
+    "method": "__gateway_core_contract_unknown_method__",
+    "auth": "provided"
+  },
+  "outcome": {
+    "ok": false,
+    "error": {
+      "message": "unknown method: __gateway_core_contract_unknown_method__"
+    }
+  },
+  "capturedAt": "<timestamp>"
+}

@@ -6,6 +6,7 @@ let package = Package(
     name: "OpenClawKit",
     platforms: [
         .iOS(.v18),
+        .tvOS(.v18),
         .macOS(.v15),
     ],
     products: [
@@ -44,7 +45,7 @@ let package = Package(
                 .product(
                     name: "Textual",
                     package: "textual",
-                    condition: .when(platforms: [.macOS, .iOS])),
+                    condition: .when(platforms: [.macOS, .iOS, .tvOS])),
             ],
             path: "Sources/OpenClawChatUI",
             swiftSettings: [

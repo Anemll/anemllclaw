@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: ai.openclaw
   deploymentTarget:
     iOS: "18.0"
+    tvOS: "18.0"
   xcodeVersion: "16.0"
 
 settings:
@@ -24,6 +25,11 @@ schemes:
     test:
       targets:
         - OpenClawTests
+  OpenClawTV:
+    shared: true
+    build:
+      targets:
+        OpenClawTV: all
 
 targets:
   OpenClaw:
@@ -132,3 +138,70 @@ targets:
         CFBundleDisplayName: OpenClawTests
         CFBundleShortVersionString: "2026.2.16"
         CFBundleVersion: "20260216"
+
+  OpenClawTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: OpenClawKit
+      - package: OpenClawKit
+        product: OpenClawChatUI
+      - package: OpenClawKit
+        product: OpenClawProtocol
+      - package: Swabble
+        product: SwabbleKit
+    preBuildScripts:
+      - name: SwiftFormat (lint)
+        basedOnDependencyAnalysis: false
+        inputFileLists:
+          - $(SRCROOT)/SwiftSources.input.xcfilelist
+        script: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if ! command -v swiftformat >/dev/null 2>&1; then
+            echo "error: swiftformat not found (brew install swiftformat)" >&2
+            exit 1
+          fi
+          swiftformat --lint --config "$SRCROOT/../../.swiftformat" \
+            --filelist "$SRCROOT/SwiftSources.input.xcfilelist"
+      - name: SwiftLint
+        basedOnDependencyAnalysis: false
+        inputFileLists:
+          - $(SRCROOT)/SwiftSources.input.xcfilelist
+        script: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if ! command -v swiftlint >/dev/null 2>&1; then
+            echo "error: swiftlint not found (brew install swiftlint)" >&2
+            exit 1
+          fi
+          swiftlint lint --config "$SRCROOT/.swiftlint.yml" --use-script-input-file-lists
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: Y5PE65HELJ
+        PRODUCT_BUNDLE_IDENTIFIER: ai.openclaw.tvos
+        PROVISIONING_PROFILE_SPECIFIER: "ai.openclaw.tvos Development"
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_APPINTENTS_METADATA: NO
+    info:
+      path: Sources/Info-tvOS.plist
+      properties:
+        CFBundleDisplayName: OpenClaw
+        CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "2026.2.16"
+        CFBundleVersion: "20260216"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSLocalNetworkUsageDescription: OpenClaw discovers and connects to your OpenClaw gateway on the local network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoadsInWebContent: true
+        NSBonjourServices:
+          - _openclaw-gw._tcp
+        NSMicrophoneUsageDescription: OpenClaw needs microphone access for voice wake.
+        NSSpeechRecognitionUsageDescription: OpenClaw uses on-device speech recognition for voice wake.

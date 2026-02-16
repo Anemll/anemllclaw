@@ -1,0 +1,45 @@
+{
+  "name": "status.success",
+  "request": {
+    "method": "status",
+    "auth": "provided"
+  },
+  "outcome": {
+    "ok": true,
+    "payload": {
+      "heartbeat": {
+        "defaultAgentId": "main",
+        "agents": [
+          {
+            "agentId": "main",
+            "enabled": true,
+            "every": "30m",
+            "everyMs": 1800000
+          }
+        ]
+      },
+      "channelSummary": [],
+      "queuedSystemEvents": [],
+      "sessions": {
+        "paths": [
+          "<HOME>/.openclaw/agents/main/sessions/sessions.json"
+        ],
+        "count": 0,
+        "defaults": {
+          "model": "claude-opus-4-6",
+          "contextTokens": 200000
+        },
+        "recent": [],
+        "byAgent": [
+          {
+            "agentId": "main",
+            "path": "<HOME>/.openclaw/agents/main/sessions/sessions.json",
+            "count": 0,
+            "recent": []
+          }
+        ]
+      }
+    }
+  },
+  "capturedAt": "<timestamp>"
+}

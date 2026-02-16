@@ -204,6 +204,7 @@ struct SettingsTab: View {
                             }
 
                             Toggle("Debug Canvas Status", isOn: self.$canvasDebugStatusEnabled)
+                            self.tvOSGatewayCapabilityMatrixSection()
 
                             TextField("Gateway Auth Token", text: self.$gatewayToken)
                                 .textInputAutocapitalization(.never)
@@ -578,7 +579,49 @@ struct SettingsTab: View {
         if let last = self.gatewayController.discoveryDebugLog.last?.message {
             lines.append("discovery log: \(last)")
         }
+        #if os(tvOS)
+        lines.append("gateway capability matrix (\(GatewayHostCapabilityMatrix.activeHostLabel)):")
+        lines.append(contentsOf: GatewayHostCapabilityMatrix.summaryLines())
+        #endif
         return lines.joined(separator: "\n")
+    }
+
+    @ViewBuilder
+    private func tvOSGatewayCapabilityMatrixSection() -> some View {
+        #if os(tvOS)
+        DisclosureGroup("Gateway Runtime Capabilities (tvOS)") {
+            ForEach(GatewayHostCapabilityMatrix.activeCapabilities) { capability in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(capability.title)
+                        Spacer()
+                        Text(capability.support.label)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(self.capabilitySupportColor(capability.support))
+                    }
+                    Text(capability.details)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+
+            Text("supported = local tvOS runtime, remote-only = delegated to remote gateway, unsupported = intentionally excluded from tvOS scope.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        #endif
+    }
+
+    private func capabilitySupportColor(_ support: GatewayHostCapabilitySupport) -> Color {
+        switch support {
+        case .supported:
+            return .green
+        case .remoteOnly:
+            return .orange
+        case .unsupported:
+            return .red
+        }
     }
 
     @ViewBuilder

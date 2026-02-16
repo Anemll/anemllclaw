@@ -1,0 +1,45 @@
+{
+  "name": "health.success",
+  "request": {
+    "method": "health",
+    "auth": "provided"
+  },
+  "outcome": {
+    "ok": true,
+    "payload": {
+      "ok": true,
+      "ts": 0,
+      "durationMs": 0,
+      "channels": {},
+      "channelOrder": [],
+      "channelLabels": {},
+      "heartbeatSeconds": 1800,
+      "defaultAgentId": "main",
+      "agents": [
+        {
+          "agentId": "main",
+          "isDefault": true,
+          "heartbeat": {
+            "enabled": true,
+            "every": "30m",
+            "everyMs": 1800000,
+            "prompt": "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
+            "target": "last",
+            "ackMaxChars": 300
+          },
+          "sessions": {
+            "path": "<HOME>/.openclaw/agents/main/sessions/sessions.json",
+            "count": 0,
+            "recent": []
+          }
+        }
+      ],
+      "sessions": {
+        "path": "<HOME>/.openclaw/agents/main/sessions/sessions.json",
+        "count": 0,
+        "recent": []
+      }
+    }
+  },
+  "capturedAt": "<timestamp>"
+}

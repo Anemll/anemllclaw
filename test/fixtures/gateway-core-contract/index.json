@@ -1,0 +1,26 @@
+{
+  "generatedAt": "<timestamp>",
+  "gateway": {
+    "url": "ws://127.0.0.1:28889",
+    "hasToken": true,
+    "hasPassword": false
+  },
+  "fixtures": [
+    {
+      "name": "health.success",
+      "path": "test/fixtures/gateway-core-contract/health.success.json"
+    },
+    {
+      "name": "status.success",
+      "path": "test/fixtures/gateway-core-contract/status.success.json"
+    },
+    {
+      "name": "unknown-method.error",
+      "path": "test/fixtures/gateway-core-contract/unknown-method.error.json"
+    },
+    {
+      "name": "health.unauthorized.error",
+      "path": "test/fixtures/gateway-core-contract/health.unauthorized.error.json"
+    }
+  ]
+}
