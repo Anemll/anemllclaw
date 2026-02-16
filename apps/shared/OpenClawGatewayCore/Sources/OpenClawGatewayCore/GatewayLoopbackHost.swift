@@ -12,18 +12,37 @@ public extension GatewayRPCTransport {
 
 public actor GatewayLoopbackTransport: GatewayRPCTransport {
     private let core: GatewayCore
+    private let upstream: (any GatewayUpstreamForwarding)?
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
-    public init(core: GatewayCore = GatewayCore()) {
+    public init(
+        core: GatewayCore = GatewayCore(),
+        upstream: (any GatewayUpstreamForwarding)? = nil)
+    {
         self.core = core
+        self.upstream = upstream
     }
 
     public func send(
         _ request: GatewayRequestFrame,
         nowMs: Int64) async throws -> GatewayResponseFrame
     {
-        self.core.dispatch(request, nowMs: nowMs)
+        let localResponse = self.core.dispatch(request, nowMs: nowMs)
+        guard localResponse.error?.code == GatewayCoreErrorCode.unsupportedOnHost.rawValue,
+              let upstream = self.upstream
+        else {
+            return localResponse
+        }
+
+        do {
+            return try await upstream.forward(request)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "upstream forwarding failed: \(error.localizedDescription)")
+        }
     }
 
     public func sendJSON(

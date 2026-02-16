@@ -30,6 +30,12 @@ final class TVOSLocalGatewayRuntime {
     private(set) var tcpListenerPort: UInt16?
     private(set) var tcpListenerErrorText: String?
 
+    // Optional upstream full gateway used for delegated Node-only methods.
+    private(set) var upstreamConfigured: Bool
+    private(set) var upstreamURLText: String?
+    private(set) var lastUpstreamProbeSucceeded: Bool?
+    private(set) var lastUpstreamProbeErrorText: String?
+
     private(set) var listenerAuthMode: GatewayCoreAuthMode
     private(set) var listenerAuthHint: String?
 
@@ -47,12 +53,14 @@ final class TVOSLocalGatewayRuntime {
     private let host: GatewayLoopbackHost
     private let webSocketServer: GatewayWebSocketServer
     private let tcpServer: GatewayTCPJSONServer
+    private let upstreamClient: GatewayUpstreamWebSocketClient?
 
     init(
         exposeTCPListener: Bool = true,
         listenPort: UInt16 = 18_789,
         tcpDebugPort: UInt16 = 18_790,
         transport: GatewayLoopbackTransport? = nil,
+        upstreamConfig: GatewayUpstreamWebSocketConfig? = nil,
         tcpAuthConfig: GatewayCoreAuthConfig = .none)
     {
         self.exposeTCPListener = exposeTCPListener
@@ -62,8 +70,18 @@ final class TVOSLocalGatewayRuntime {
         self.listenerAuthMode = tcpAuthConfig.mode
         self.listenerAuthHint = Self.authHint(for: tcpAuthConfig)
 
+        let resolvedUpstreamConfig = upstreamConfig ?? Self.loadUpstreamConfig()
+        self.upstreamConfigured = resolvedUpstreamConfig != nil
+        self.upstreamURLText = resolvedUpstreamConfig?.url.absoluteString
+        self.lastUpstreamProbeSucceeded = nil
+        self.lastUpstreamProbeErrorText = nil
+
+        let upstreamClient = resolvedUpstreamConfig.map { GatewayUpstreamWebSocketClient(config: $0) }
+        self.upstreamClient = upstreamClient
+
         let resolvedTransport = transport ?? GatewayLoopbackTransport(
-            core: GatewayCore(authConfig: tcpAuthConfig))
+            core: GatewayCore(authConfig: tcpAuthConfig),
+            upstream: upstreamClient)
         self.host = GatewayLoopbackHost(transport: resolvedTransport)
         self.webSocketServer = GatewayWebSocketServer(transport: resolvedTransport)
         self.tcpServer = GatewayTCPJSONServer(transport: resolvedTransport, authConfig: tcpAuthConfig)
@@ -85,6 +103,9 @@ final class TVOSLocalGatewayRuntime {
             await self.stopTCPListener()
         }
         await self.stopWebSocketListener()
+        if let upstreamClient = self.upstreamClient {
+            await upstreamClient.disconnect()
+        }
         await self.host.stop()
 
         self.state = .stopped
@@ -93,6 +114,8 @@ final class TVOSLocalGatewayRuntime {
         self.lastWebSocketProbeErrorText = nil
         self.lastTCPProbeSucceeded = nil
         self.lastTCPProbeErrorText = nil
+        self.lastUpstreamProbeSucceeded = nil
+        self.lastUpstreamProbeErrorText = nil
     }
 
     func probeHealth(nowMs: Int64 = GatewayCore.currentTimestampMs()) async {
@@ -107,6 +130,28 @@ final class TVOSLocalGatewayRuntime {
             self.lastProbeSucceeded = response.ok
         } catch {
             self.lastProbeSucceeded = false
+        }
+    }
+
+    func probeUpstreamHealth() async {
+        guard self.state == .running else {
+            self.lastUpstreamProbeSucceeded = nil
+            self.lastUpstreamProbeErrorText = nil
+            return
+        }
+        guard let upstreamClient = self.upstreamClient else {
+            self.lastUpstreamProbeSucceeded = nil
+            self.lastUpstreamProbeErrorText = "not configured"
+            return
+        }
+
+        do {
+            let response = try await upstreamClient.probeHealth()
+            self.lastUpstreamProbeSucceeded = response.ok
+            self.lastUpstreamProbeErrorText = response.error?.message
+        } catch {
+            self.lastUpstreamProbeSucceeded = false
+            self.lastUpstreamProbeErrorText = error.localizedDescription
         }
     }
 
@@ -394,6 +439,40 @@ final class TVOSLocalGatewayRuntime {
         guard !trimmed.isEmpty else { return "empty" }
         let suffix = String(trimmed.suffix(4))
         return "***\(suffix)"
+    }
+
+    private static func loadUpstreamConfig(defaults: UserDefaults = .standard) -> GatewayUpstreamWebSocketConfig? {
+        guard let rawURL = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.url")),
+              let url = URL(string: rawURL)
+        else {
+            return nil
+        }
+
+        let scheme = url.scheme?.lowercased() ?? ""
+        guard scheme == "ws" || scheme == "wss" else {
+            return nil
+        }
+
+        let token = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.token"))
+        let password = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.password"))
+        let role = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.role")) ?? "node"
+
+        let scopes: [String]? = Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return GatewayUpstreamWebSocketConfig(
+            url: url,
+            token: token,
+            password: password,
+            role: role,
+            scopes: scopes)
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : raw
     }
 }
 #endif

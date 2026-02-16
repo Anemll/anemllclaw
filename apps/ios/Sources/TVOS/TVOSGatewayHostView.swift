@@ -37,6 +37,20 @@ struct TVOSGatewayHostView: View {
                         .foregroundStyle(.orange)
                 }
 
+                Text("Upstream gateway: \(self.upstreamConfigurationLabel)")
+                    .font(.headline)
+                if let upstreamURL = self.runtime.upstreamURLText {
+                    Text("Upstream URL: \(upstreamURL)")
+                        .font(.subheadline)
+                }
+                Text("Upstream probe: \(self.upstreamProbeLabel)")
+                    .font(.headline)
+                if let error = self.runtime.lastUpstreamProbeErrorText, !error.isEmpty {
+                    Text("Upstream probe error: \(error)")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
+
                 Text("TCP debug listener: \(self.tcpListenerLabel)")
                     .font(.headline)
                 if let port = self.runtime.tcpListenerPort {
@@ -69,6 +83,9 @@ struct TVOSGatewayHostView: View {
                 }
                 Button("Probe WebSocket") {
                     Task { await self.runtime.probeHealthOverWebSocket() }
+                }
+                Button("Probe Upstream") {
+                    Task { await self.runtime.probeUpstreamHealth() }
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -141,6 +158,21 @@ struct TVOSGatewayHostView: View {
 
     private var webSocketProbeLabel: String {
         switch self.runtime.lastWebSocketProbeSucceeded {
+        case .none:
+            return "not yet run"
+        case .some(true):
+            return "ok"
+        case .some(false):
+            return "failed"
+        }
+    }
+
+    private var upstreamConfigurationLabel: String {
+        self.runtime.upstreamConfigured ? "configured" : "not configured"
+    }
+
+    private var upstreamProbeLabel: String {
+        switch self.runtime.lastUpstreamProbeSucceeded {
         case .none:
             return "not yet run"
         case .some(true):

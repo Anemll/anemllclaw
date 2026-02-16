@@ -212,6 +212,43 @@ final class GatewayCoreTests: XCTestCase {
         XCTAssertEqual(payloadObject["heartbeatDefaultAgentId"]?.stringValue, "main")
     }
 
+    func testLoopbackTransportDelegatesUnsupportedMethodToUpstream() async throws {
+        let upstream = TestUpstreamForwarder(
+            response: .success(
+                id: "req-chat-send",
+                payload: .object([
+                    "status": .string("proxied"),
+                ])))
+        let transport = GatewayLoopbackTransport(
+            core: GatewayCore(startedAtMs: 1_700_000_000_000),
+            upstream: upstream)
+
+        let response = try await transport.send(
+            GatewayRequestFrame(id: "req-chat-send", method: "chat.send"),
+            nowMs: 1_700_000_000_100)
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.id, "req-chat-send")
+        XCTAssertEqual(response.payload?.objectValue?["status"]?.stringValue, "proxied")
+        let forwarded = await upstream.forwardedRequestIDs()
+        XCTAssertEqual(forwarded, ["req-chat-send"])
+    }
+
+    func testLoopbackTransportReturnsInternalErrorWhenUpstreamFails() async throws {
+        let upstream = TestUpstreamForwarder(errorMessage: "upstream offline")
+        let transport = GatewayLoopbackTransport(
+            core: GatewayCore(startedAtMs: 1_700_000_000_000),
+            upstream: upstream)
+
+        let response = try await transport.send(
+            GatewayRequestFrame(id: "req-chat-send", method: "chat.send"),
+            nowMs: 1_700_000_000_100)
+
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.error?.code, GatewayCoreErrorCode.internalError.rawValue)
+        XCTAssertEqual(response.error?.message, "upstream forwarding failed: upstream offline")
+    }
+
     private func makeConnectRequest(
         id: String,
         minProtocol: Int = GatewayCore.defaultProtocolVersion,
@@ -251,5 +288,34 @@ final class GatewayCoreTests: XCTestCase {
         guard let payload else { return nil }
         let data = try JSONEncoder().encode(payload)
         return try JSONDecoder().decode(type, from: data)
+    }
+}
+
+private actor TestUpstreamForwarder: GatewayUpstreamForwarding {
+    private let response: GatewayResponseFrame?
+    private let errorMessage: String?
+    private var forwardedIDs: [String] = []
+
+    init(response: GatewayResponseFrame? = nil, errorMessage: String? = nil) {
+        self.response = response
+        self.errorMessage = errorMessage
+    }
+
+    func forward(_ request: GatewayRequestFrame) async throws -> GatewayResponseFrame {
+        self.forwardedIDs.append(request.id)
+        if let errorMessage = self.errorMessage {
+            throw NSError(
+                domain: "GatewayCoreTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        if let response = self.response {
+            return response
+        }
+        return GatewayResponseFrame.success(id: request.id, payload: nil)
+    }
+
+    func forwardedRequestIDs() -> [String] {
+        self.forwardedIDs
     }
 }
