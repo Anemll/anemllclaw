@@ -24,6 +24,16 @@ public struct GatewayRequestFrame: Codable, Sendable, Equatable {
     }
 }
 
+public struct GatewayTCPRequestEnvelope: Codable, Sendable, Equatable {
+    public let request: GatewayRequestFrame
+    public let auth: GatewayConnectAuth?
+
+    public init(request: GatewayRequestFrame, auth: GatewayConnectAuth? = nil) {
+        self.request = request
+        self.auth = auth
+    }
+}
+
 public struct GatewayErrorShape: Codable, Sendable, Equatable {
     public let code: String
     public let message: String

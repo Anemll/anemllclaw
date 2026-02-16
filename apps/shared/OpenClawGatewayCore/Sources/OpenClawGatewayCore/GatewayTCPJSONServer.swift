@@ -8,6 +8,7 @@ public enum GatewayTCPJSONServerError: Error, Sendable, Equatable {
 
 public actor GatewayTCPJSONServer {
     private let transport: any GatewayRPCTransport
+    private let authConfig: GatewayCoreAuthConfig
     private let queue = DispatchQueue(label: "ai.openclaw.gatewaycore.tcp-server")
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
@@ -17,8 +18,12 @@ public actor GatewayTCPJSONServer {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var buffers: [ObjectIdentifier: Data] = [:]
 
-    public init(transport: any GatewayRPCTransport = GatewayLoopbackTransport()) {
+    public init(
+        transport: any GatewayRPCTransport = GatewayLoopbackTransport(),
+        authConfig: GatewayCoreAuthConfig = .none)
+    {
         self.transport = transport
+        self.authConfig = authConfig
     }
 
     public func start(port: UInt16 = 0) async throws -> UInt16 {
@@ -147,22 +152,86 @@ public actor GatewayTCPJSONServer {
     }
 
     private func processRequestFrame(_ frameData: Data) async -> GatewayResponseFrame {
-        if let request = try? self.decoder.decode(GatewayRequestFrame.self, from: frameData) {
-            do {
-                return try await self.transport.send(request)
-            } catch {
-                return GatewayResponseFrame.failure(
-                    id: request.id,
-                    code: .internalError,
-                    message: "transport error: \(error.localizedDescription)")
-            }
+        guard let parsed = self.parseRequestFrame(frameData) else {
+            let fallbackID = Self.extractRequestID(frameData) ?? "invalid"
+            return GatewayResponseFrame.failure(
+                id: fallbackID,
+                code: .invalidRequest,
+                message: "invalid request frame")
         }
 
-        let fallbackID = Self.extractRequestID(frameData) ?? "invalid"
-        return GatewayResponseFrame.failure(
-            id: fallbackID,
-            code: .invalidRequest,
-            message: "invalid request frame")
+        let request = parsed.request
+        if let authFailure = Self.validateAuth(self.authConfig, provided: parsed.auth) {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: authFailure.code,
+                message: authFailure.message)
+        }
+
+        do {
+            return try await self.transport.send(request)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "transport error: \(error.localizedDescription)")
+        }
+    }
+
+    private func parseRequestFrame(
+        _ frameData: Data) -> (request: GatewayRequestFrame, auth: GatewayConnectAuth?)?
+    {
+        if let envelope = try? self.decoder.decode(GatewayTCPRequestEnvelope.self, from: frameData) {
+            return (request: envelope.request, auth: envelope.auth)
+        }
+        if let request = try? self.decoder.decode(GatewayRequestFrame.self, from: frameData) {
+            return (request: request, auth: nil)
+        }
+        return nil
+    }
+
+    private static func validateAuth(
+        _ config: GatewayCoreAuthConfig,
+        provided auth: GatewayConnectAuth?) -> GatewayFailurePayload?
+    {
+        switch config.mode {
+        case .none:
+            return nil
+        case .token:
+            guard let expected = config.token, !expected.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .internalError,
+                    message: "tcp auth config missing token")
+            }
+            guard let provided = auth?.token, !provided.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .authRequired,
+                    message: "tcp auth token required")
+            }
+            guard provided == expected else {
+                return GatewayFailurePayload(
+                    code: .authFailed,
+                    message: "tcp auth token mismatch")
+            }
+            return nil
+        case .password:
+            guard let expected = config.password, !expected.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .internalError,
+                    message: "tcp auth config missing password")
+            }
+            guard let provided = auth?.password, !provided.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .authRequired,
+                    message: "tcp auth password required")
+            }
+            guard provided == expected else {
+                return GatewayFailurePayload(
+                    code: .authFailed,
+                    message: "tcp auth password mismatch")
+            }
+            return nil
+        }
     }
 
     private func sendResponse(
@@ -207,6 +276,12 @@ public actor GatewayTCPJSONServer {
         guard let object = try? JSONSerialization.jsonObject(with: frameData),
               let dict = object as? [String: Any]
         else { return nil }
-        return dict["id"] as? String
+        if let directID = dict["id"] as? String {
+            return directID
+        }
+        if let request = dict["request"] as? [String: Any] {
+            return request["id"] as? String
+        }
+        return nil
     }
 }

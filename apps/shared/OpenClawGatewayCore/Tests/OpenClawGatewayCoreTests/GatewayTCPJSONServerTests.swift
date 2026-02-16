@@ -41,6 +41,67 @@ final class GatewayTCPJSONServerTests: XCTestCase {
         XCTAssertEqual(response.error?.message, "invalid request frame")
     }
 
+    func testServerRequiresAuthWhenConfigured() async throws {
+        let server = GatewayTCPJSONServer(
+            transport: GatewayLoopbackTransport(
+                core: GatewayCore(startedAtMs: 1_700_000_000_000)),
+            authConfig: .token("secret-token"))
+        let port = try await server.start(port: 0)
+        defer { Task { await server.stop() } }
+
+        let response = try await Self.sendAndReceive(
+            port: port,
+            payload: Self.encodeLine(
+                GatewayRequestFrame(id: "req-health-no-auth", method: "health")))
+
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.id, "req-health-no-auth")
+        XCTAssertEqual(response.error?.code, GatewayCoreErrorCode.authRequired.rawValue)
+        XCTAssertEqual(response.error?.message, "tcp auth token required")
+    }
+
+    func testServerRejectsMismatchedAuthToken() async throws {
+        let server = GatewayTCPJSONServer(
+            transport: GatewayLoopbackTransport(
+                core: GatewayCore(startedAtMs: 1_700_000_000_000)),
+            authConfig: .token("secret-token"))
+        let port = try await server.start(port: 0)
+        defer { Task { await server.stop() } }
+
+        let envelope = GatewayTCPRequestEnvelope(
+            request: GatewayRequestFrame(id: "req-health-bad-auth", method: "health"),
+            auth: GatewayConnectAuth(token: "wrong-token"))
+        let response = try await Self.sendAndReceive(
+            port: port,
+            payload: Self.encodeLine(envelope))
+
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.id, "req-health-bad-auth")
+        XCTAssertEqual(response.error?.code, GatewayCoreErrorCode.authFailed.rawValue)
+        XCTAssertEqual(response.error?.message, "tcp auth token mismatch")
+    }
+
+    func testServerAcceptsMatchingAuthToken() async throws {
+        let server = GatewayTCPJSONServer(
+            transport: GatewayLoopbackTransport(
+                core: GatewayCore(startedAtMs: 1_700_000_000_000)),
+            authConfig: .token("secret-token"))
+        let port = try await server.start(port: 0)
+        defer { Task { await server.stop() } }
+
+        let envelope = GatewayTCPRequestEnvelope(
+            request: GatewayRequestFrame(id: "req-health-good-auth", method: "health"),
+            auth: GatewayConnectAuth(token: "secret-token"))
+        let response = try await Self.sendAndReceive(
+            port: port,
+            payload: Self.encodeLine(envelope))
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.id, "req-health-good-auth")
+        let payload = response.payload?.objectValue
+        XCTAssertEqual(payload?["ok"]?.boolValue, true)
+    }
+
     private static func sendAndReceive(
         port: UInt16,
         payload: Data) async throws -> GatewayResponseFrame
