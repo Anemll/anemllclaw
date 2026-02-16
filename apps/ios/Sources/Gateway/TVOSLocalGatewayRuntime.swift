@@ -1,5 +1,6 @@
 #if os(tvOS)
 import Foundation
+import Network
 import Observation
 import OpenClawGatewayCore
 
@@ -22,6 +23,8 @@ final class TVOSLocalGatewayRuntime {
     private(set) var listenerPort: UInt16?
     private(set) var listenerErrorText: String?
     private(set) var lastProbeSucceeded: Bool?
+    private(set) var lastTCPProbeSucceeded: Bool?
+    private(set) var lastTCPProbeErrorText: String?
     private let listenPortPreference: UInt16
     private let exposeTCPListener: Bool
     private let host: GatewayLoopbackHost
@@ -55,6 +58,8 @@ final class TVOSLocalGatewayRuntime {
         await self.host.stop()
         self.state = .stopped
         self.lastProbeSucceeded = nil
+        self.lastTCPProbeSucceeded = nil
+        self.lastTCPProbeErrorText = nil
     }
 
     func probeHealth(nowMs: Int64 = GatewayCore.currentTimestampMs()) async {
@@ -97,6 +102,73 @@ final class TVOSLocalGatewayRuntime {
         await self.tcpServer.stop()
         self.listenerPort = nil
         self.listenerState = .stopped
+        self.listenerErrorText = nil
+        self.lastTCPProbeSucceeded = nil
+        self.lastTCPProbeErrorText = nil
+    }
+
+    func probeHealthOverTCP() async {
+        guard self.state == .running, let listenerPort = self.listenerPort else {
+            self.lastTCPProbeSucceeded = nil
+            self.lastTCPProbeErrorText = nil
+            return
+        }
+
+        do {
+            let response = try await Self.sendHealthProbe(port: listenerPort)
+            self.lastTCPProbeSucceeded = response.ok
+            self.lastTCPProbeErrorText = response.error?.message
+        } catch {
+            self.lastTCPProbeSucceeded = false
+            self.lastTCPProbeErrorText = error.localizedDescription
+        }
+    }
+
+    private static func sendHealthProbe(port: UInt16) async throws -> GatewayResponseFrame {
+        let connection = NWConnection(
+            host: NWEndpoint.Host("127.0.0.1"),
+            port: NWEndpoint.Port(rawValue: port) ?? .any,
+            using: .tcp)
+        let queue = DispatchQueue(label: "ai.openclaw.tvos.gateway-probe.\(UUID().uuidString)")
+        connection.start(queue: queue)
+
+        let request = GatewayRequestFrame(id: UUID().uuidString, method: "health")
+        var requestData = try JSONEncoder().encode(request)
+        requestData.append(0x0A)
+
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: requestData, completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume()
+            })
+        }
+
+        let responseData = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Data, Error>) in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) {
+                data,
+                _,
+                _,
+                error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: data ?? Data())
+            }
+        }
+        connection.cancel()
+
+        let line = responseData.split(
+            separator: 0x0A,
+            maxSplits: 1,
+            omittingEmptySubsequences: true).first
+        let frameData = Data(line ?? responseData[...])
+        return try JSONDecoder().decode(GatewayResponseFrame.self, from: frameData)
     }
 }
 #endif

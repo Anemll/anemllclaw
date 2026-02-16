@@ -25,6 +25,13 @@ struct TVOSGatewayHostView: View {
                 }
                 Text("Health probe: \(self.probeLabel)")
                     .font(.headline)
+                Text("TCP health probe: \(self.tcpProbeLabel)")
+                    .font(.headline)
+                if let error = self.runtime.lastTCPProbeErrorText, !error.isEmpty {
+                    Text("TCP probe error: \(error)")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
             }
 
             HStack(spacing: 12) {
@@ -36,6 +43,9 @@ struct TVOSGatewayHostView: View {
                 }
                 Button("Probe Health") {
                     Task { await self.runtime.probeHealth() }
+                }
+                Button("Probe via TCP") {
+                    Task { await self.runtime.probeHealthOverTCP() }
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -77,6 +87,17 @@ struct TVOSGatewayHostView: View {
 
     private var listenerLabel: String {
         self.runtime.listenerState.rawValue
+    }
+
+    private var tcpProbeLabel: String {
+        switch self.runtime.lastTCPProbeSucceeded {
+        case .none:
+            return "not yet run"
+        case .some(true):
+            return "ok"
+        case .some(false):
+            return "failed"
+        }
     }
 }
 #endif
