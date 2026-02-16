@@ -12,6 +12,17 @@ struct TVOSGatewayHostView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Runtime: \(self.runtime.state.rawValue)")
                     .font(.headline)
+                Text("TCP listener: \(self.listenerLabel)")
+                    .font(.headline)
+                if let port = self.runtime.listenerPort {
+                    Text("Listener port: \(port)")
+                        .font(.headline)
+                }
+                if let error = self.runtime.listenerErrorText, !error.isEmpty {
+                    Text("Listener error: \(error)")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                }
                 Text("Health probe: \(self.probeLabel)")
                     .font(.headline)
             }
@@ -28,6 +39,19 @@ struct TVOSGatewayHostView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+
+            HStack(spacing: 12) {
+                Button("Start Listener") {
+                    Task { await self.runtime.startTCPListenerIfNeeded() }
+                }
+                Button("Restart Listener") {
+                    Task { await self.runtime.restartTCPListener() }
+                }
+                Button("Stop Listener") {
+                    Task { await self.runtime.stopTCPListener() }
+                }
+            }
+            .buttonStyle(.bordered)
 
             Spacer()
         }
@@ -49,6 +73,10 @@ struct TVOSGatewayHostView: View {
         case .some(false):
             return "failed"
         }
+    }
+
+    private var listenerLabel: String {
+        self.runtime.listenerState.rawValue
     }
 }
 #endif
