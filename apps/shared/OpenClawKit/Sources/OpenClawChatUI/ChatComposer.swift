@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 
-#if !os(macOS)
+#if os(iOS)
 import PhotosUI
 import UniformTypeIdentifiers
 #endif
@@ -13,8 +13,10 @@ struct OpenClawChatComposer: View {
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
 
-    #if !os(macOS)
+    #if os(iOS)
     @State private var pickerItems: [PhotosPickerItem] = []
+    @FocusState private var isFocused: Bool
+    #elseif os(tvOS)
     @FocusState private var isFocused: Bool
     #else
     @State private var shouldFocusTextView = false
@@ -126,7 +128,7 @@ struct OpenClawChatComposer: View {
         .help("Add Image")
         .buttonStyle(.bordered)
         .controlSize(.small)
-        #else
+        #elseif os(iOS)
         PhotosPicker(selection: self.$pickerItems, maxSelectionCount: 8, matching: .images) {
             Image(systemName: "paperclip")
         }
@@ -136,6 +138,16 @@ struct OpenClawChatComposer: View {
         .onChange(of: self.pickerItems) { _, newItems in
             Task { await self.loadPhotosPickerItems(newItems) }
         }
+        #else
+        Button {
+            // tvOS does not support the iOS PhotosPicker flow in this chat composer.
+        } label: {
+            Image(systemName: "paperclip")
+        }
+        .help("Image picker is unavailable on tvOS")
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(true)
         #endif
     }
 
@@ -243,7 +255,7 @@ struct OpenClawChatComposer: View {
             .frame(minHeight: self.textMinHeight, idealHeight: self.textMinHeight, maxHeight: self.textMaxHeight)
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            #else
+            #elseif os(iOS)
             TextEditor(text: self.$viewModel.input)
                 .font(.system(size: 15))
                 .scrollContentBackground(.hidden)
@@ -253,6 +265,13 @@ struct OpenClawChatComposer: View {
                     maxHeight: self.textMaxHeight)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
+                .focused(self.$isFocused)
+            #else
+            TextField("", text: self.$viewModel.input)
+                .font(.system(size: 15))
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
                 .focused(self.$isFocused)
             #endif
         }
@@ -363,7 +382,7 @@ struct OpenClawChatComposer: View {
         }
         return true
     }
-    #else
+    #elseif os(iOS)
     private func loadPhotosPickerItems(_ items: [PhotosPickerItem]) async {
         for item in items {
             do {

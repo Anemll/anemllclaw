@@ -53,7 +53,7 @@ private struct ChatMarkdownStyle: ViewModifier {
         .font(self.font)
         .foregroundStyle(self.textColor)
         .textual.inlineStyle(self.inlineStyle)
-        .textual.textSelection(.enabled)
+        .openClawTextSelectionEnabledCompat()
     }
 
     private var inlineStyle: InlineStyle {
@@ -62,6 +62,17 @@ private struct ChatMarkdownStyle: ViewModifier {
         return InlineStyle()
             .code(.monospaced, .fontScale(codeScale))
             .link(.foregroundColor(linkColor))
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func openClawTextSelectionEnabledCompat() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        self.textual.textSelection(.enabled)
+        #endif
     }
 }
 

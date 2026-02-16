@@ -9,6 +9,169 @@ public enum GatewayCoreErrorCode: String, Codable, Sendable, Equatable {
     case internalError = "INTERNAL_ERROR"
 }
 
+public enum GatewayCoreAuthMode: String, Codable, Sendable, Equatable {
+    case none
+    case token
+    case password
+}
+
+public struct GatewayCoreAuthConfig: Codable, Sendable, Equatable {
+    public let mode: GatewayCoreAuthMode
+    public let token: String?
+    public let password: String?
+
+    public init(mode: GatewayCoreAuthMode, token: String? = nil, password: String? = nil) {
+        self.mode = mode
+        self.token = token
+        self.password = password
+    }
+
+    public static let none = GatewayCoreAuthConfig(mode: .none)
+
+    public static func token(_ token: String) -> GatewayCoreAuthConfig {
+        GatewayCoreAuthConfig(mode: .token, token: token)
+    }
+
+    public static func password(_ password: String) -> GatewayCoreAuthConfig {
+        GatewayCoreAuthConfig(mode: .password, password: password)
+    }
+}
+
+public struct GatewayConnectAuth: Codable, Sendable, Equatable {
+    public let token: String?
+    public let password: String?
+
+    public init(token: String? = nil, password: String? = nil) {
+        self.token = token
+        self.password = password
+    }
+}
+
+public struct GatewayConnectClient: Codable, Sendable, Equatable {
+    public let id: String
+    public let displayName: String?
+    public let version: String
+    public let platform: String
+    public let mode: String
+
+    public init(
+        id: String,
+        displayName: String? = nil,
+        version: String,
+        platform: String,
+        mode: String)
+    {
+        self.id = id
+        self.displayName = displayName
+        self.version = version
+        self.platform = platform
+        self.mode = mode
+    }
+}
+
+public struct GatewayConnectParams: Codable, Sendable, Equatable {
+    public let minProtocol: Int
+    public let maxProtocol: Int
+    public let client: GatewayConnectClient
+    public let auth: GatewayConnectAuth?
+    public let role: String?
+    public let scopes: [String]?
+
+    public init(
+        minProtocol: Int,
+        maxProtocol: Int,
+        client: GatewayConnectClient,
+        auth: GatewayConnectAuth? = nil,
+        role: String? = nil,
+        scopes: [String]? = nil)
+    {
+        self.minProtocol = minProtocol
+        self.maxProtocol = maxProtocol
+        self.client = client
+        self.auth = auth
+        self.role = role
+        self.scopes = scopes
+    }
+}
+
+public struct GatewayHelloServer: Codable, Sendable, Equatable {
+    public let version: String
+    public let connId: String
+    public let host: String?
+
+    public init(version: String, connId: String, host: String? = nil) {
+        self.version = version
+        self.connId = connId
+        self.host = host
+    }
+}
+
+public struct GatewayHelloFeatures: Codable, Sendable, Equatable {
+    public let methods: [String]
+    public let events: [String]
+
+    public init(methods: [String], events: [String]) {
+        self.methods = methods
+        self.events = events
+    }
+}
+
+public struct GatewayHelloSnapshot: Codable, Sendable, Equatable {
+    public let ts: Int64
+    public let stateVersion: Int64
+
+    public init(ts: Int64, stateVersion: Int64) {
+        self.ts = ts
+        self.stateVersion = stateVersion
+    }
+}
+
+public struct GatewayHelloPolicy: Codable, Sendable, Equatable {
+    public let maxPayload: Int
+    public let maxBufferedBytes: Int
+    public let tickIntervalMs: Int
+
+    public init(maxPayload: Int, maxBufferedBytes: Int, tickIntervalMs: Int) {
+        self.maxPayload = maxPayload
+        self.maxBufferedBytes = maxBufferedBytes
+        self.tickIntervalMs = tickIntervalMs
+    }
+}
+
+public struct GatewayHelloPayload: Codable, Sendable, Equatable {
+    public let type: String
+    public let protocolVersion: Int
+    public let server: GatewayHelloServer
+    public let features: GatewayHelloFeatures
+    public let snapshot: GatewayHelloSnapshot
+    public let policy: GatewayHelloPolicy
+
+    public init(
+        type: String = "hello-ok",
+        protocolVersion: Int,
+        server: GatewayHelloServer,
+        features: GatewayHelloFeatures,
+        snapshot: GatewayHelloSnapshot,
+        policy: GatewayHelloPolicy)
+    {
+        self.type = type
+        self.protocolVersion = protocolVersion
+        self.server = server
+        self.features = features
+        self.snapshot = snapshot
+        self.policy = policy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case protocolVersion = "protocol"
+        case server
+        case features
+        case snapshot
+        case policy
+    }
+}
+
 public struct GatewayInvocationRequest: Sendable, Equatable {
     public let method: String
     public let paramsJSON: String?
@@ -44,6 +207,7 @@ public struct GatewayStatusPayload: Codable, Sendable, Equatable {
 }
 
 public enum GatewaySuccessPayload: Sendable, Equatable {
+    case hello(GatewayHelloPayload)
     case health(GatewayHealthPayload)
     case status(GatewayStatusPayload)
 }
@@ -64,10 +228,24 @@ public enum GatewayInvocationResult: Sendable, Equatable {
 }
 
 public struct GatewayCore: Sendable {
-    private let startedAtMs: Int64
+    public static let defaultProtocolVersion = 1
+    private static let defaultMethods = ["connect", "health", "status"]
 
-    public init(startedAtMs: Int64 = GatewayCore.currentTimestampMs()) {
+    private let startedAtMs: Int64
+    private let protocolVersion: Int
+    private let serverVersion: String
+    private let authConfig: GatewayCoreAuthConfig
+
+    public init(
+        startedAtMs: Int64 = GatewayCore.currentTimestampMs(),
+        protocolVersion: Int = GatewayCore.defaultProtocolVersion,
+        serverVersion: String = "openclaw-gateway-core-swift-dev",
+        authConfig: GatewayCoreAuthConfig = .none)
+    {
         self.startedAtMs = startedAtMs
+        self.protocolVersion = max(1, protocolVersion)
+        self.serverVersion = serverVersion
+        self.authConfig = authConfig
     }
 
     public static func currentTimestampMs() -> Int64 {
@@ -106,11 +284,100 @@ public struct GatewayCore: Sendable {
         _ request: GatewayRequestFrame,
         nowMs: Int64 = GatewayCore.currentTimestampMs()) -> GatewayResponseFrame
     {
+        if request.method == "connect" {
+            return self.makeResponse(id: request.id, result: self.handleConnect(request, nowMs: nowMs))
+        }
         let invocation = GatewayInvocationRequest(
             method: request.method,
             paramsJSON: request.paramsJSON)
         let result = self.handle(invocation, nowMs: nowMs)
         return self.makeResponse(id: request.id, result: result)
+    }
+
+    private func handleConnect(_ request: GatewayRequestFrame, nowMs: Int64) -> GatewayInvocationResult {
+        guard let params = self.decodeConnectParams(request.params) else {
+            return .failure(
+                GatewayFailurePayload(
+                    code: .invalidRequest,
+                    message: "invalid connect params"))
+        }
+        guard params.maxProtocol >= self.protocolVersion, params.minProtocol <= self.protocolVersion else {
+            return .failure(
+                GatewayFailurePayload(
+                    code: .invalidRequest,
+                    message: "protocol mismatch"))
+        }
+        if let authError = self.validateConnectAuth(params.auth) {
+            return .failure(authError)
+        }
+        return .success(
+            .hello(
+                GatewayHelloPayload(
+                    protocolVersion: self.protocolVersion,
+                    server: GatewayHelloServer(
+                        version: self.serverVersion,
+                        connId: "loopback-\(request.id)"),
+                    features: GatewayHelloFeatures(
+                        methods: GatewayCore.defaultMethods,
+                        events: []),
+                    snapshot: GatewayHelloSnapshot(
+                        ts: nowMs,
+                        stateVersion: 1),
+                    policy: GatewayHelloPolicy(
+                        maxPayload: 1_048_576,
+                        maxBufferedBytes: 4_194_304,
+                        tickIntervalMs: 2_000))))
+    }
+
+    private func decodeConnectParams(_ params: GatewayJSONValue?) -> GatewayConnectParams? {
+        guard let params else { return nil }
+        do {
+            let data = try JSONEncoder().encode(params)
+            return try JSONDecoder().decode(GatewayConnectParams.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private func validateConnectAuth(_ auth: GatewayConnectAuth?) -> GatewayFailurePayload? {
+        switch self.authConfig.mode {
+        case .none:
+            return nil
+        case .token:
+            guard let expected = self.authConfig.token, !expected.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .internalError,
+                    message: "gateway auth config missing token")
+            }
+            guard let provided = auth?.token, !provided.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .authRequired,
+                    message: "connect auth token required")
+            }
+            guard provided == expected else {
+                return GatewayFailurePayload(
+                    code: .authFailed,
+                    message: "connect auth token mismatch")
+            }
+            return nil
+        case .password:
+            guard let expected = self.authConfig.password, !expected.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .internalError,
+                    message: "gateway auth config missing password")
+            }
+            guard let provided = auth?.password, !provided.isEmpty else {
+                return GatewayFailurePayload(
+                    code: .authRequired,
+                    message: "connect auth password required")
+            }
+            guard provided == expected else {
+                return GatewayFailurePayload(
+                    code: .authFailed,
+                    message: "connect auth password mismatch")
+            }
+            return nil
+        }
     }
 
     private func makeResponse(id: String, result: GatewayInvocationResult) -> GatewayResponseFrame {
@@ -124,6 +391,8 @@ public struct GatewayCore: Sendable {
 
     private static func encodePayload(_ payload: GatewaySuccessPayload) -> GatewayJSONValue? {
         switch payload {
+        case let .hello(value):
+            return self.encodeCodable(value)
         case let .health(value):
             return self.encodeCodable(value)
         case let .status(value):

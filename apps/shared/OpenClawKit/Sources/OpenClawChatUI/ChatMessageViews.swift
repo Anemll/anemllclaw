@@ -211,7 +211,7 @@ private struct ChatMessageBody: View {
                 }
             }
         }
-        .textSelection(.enabled)
+        .openClawTextSelectionEnabledCompat()
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
         .foregroundStyle(textColor)
@@ -335,6 +335,17 @@ private struct ChatMessageBody: View {
 
     private var bubbleShadowYOffset: CGFloat {
         self.style == .onboarding && !self.isUser ? 2 : 0
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func openClawTextSelectionEnabledCompat() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        self.textSelection(.enabled)
+        #endif
     }
 }
 

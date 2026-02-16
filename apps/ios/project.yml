@@ -146,6 +146,8 @@ targets:
     platform: tvOS
     sources:
       - path: Sources
+        excludes:
+          - Info.plist
     dependencies:
       - package: OpenClawKit
       - package: OpenClawKit
