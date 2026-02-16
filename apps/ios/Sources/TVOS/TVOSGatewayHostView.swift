@@ -62,16 +62,20 @@ struct TVOSGatewayHostView: View {
                     .font(.largeTitle.weight(.semibold))
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Runtime: \(self.runtime.state.rawValue)")
-                        .font(.headline)
+                    self.statusLine(
+                        "Runtime",
+                        self.runtime.state.rawValue,
+                        color: self.runtimeStateColor)
 
-                    Text("WebSocket listener: \(self.webSocketListenerLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "WebSocket listener",
+                        self.webSocketListenerLabel,
+                        color: self.webSocketListenerColor)
                     Text("Listener auth: \(self.listenerAuthLabel)")
-                        .font(.headline)
+                        .font(.subheadline)
                     if let port = self.runtime.listenerPort {
                         Text("WebSocket port: \(port)")
-                            .font(.headline)
+                            .font(.subheadline)
                     }
                     if let error = self.runtime.listenerErrorText, !error.isEmpty {
                         Text("WebSocket error: \(error)")
@@ -79,18 +83,24 @@ struct TVOSGatewayHostView: View {
                             .foregroundStyle(.orange)
                     }
 
-                    Text("In-process health probe: \(self.probeLabel)")
-                        .font(.headline)
-                    Text("WebSocket probe: \(self.webSocketProbeLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "In-process health probe",
+                        self.probeLabel,
+                        color: self.probeColor(self.runtime.lastProbeSucceeded))
+                    self.statusLine(
+                        "WebSocket probe",
+                        self.webSocketProbeLabel,
+                        color: self.probeColor(self.runtime.lastWebSocketProbeSucceeded))
                     if let error = self.runtime.lastWebSocketProbeErrorText, !error.isEmpty {
                         Text("WebSocket probe error: \(error)")
                             .font(.subheadline)
                             .foregroundStyle(.orange)
                     }
 
-                    Text("Upstream gateway: \(self.upstreamConfigurationLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "Upstream gateway",
+                        self.upstreamConfigurationLabel,
+                        color: self.upstreamConfigurationColor)
                     if let upstreamURL = self.runtime.upstreamURLText {
                         Text("Upstream URL: \(upstreamURL)")
                             .font(.subheadline)
@@ -100,27 +110,33 @@ struct TVOSGatewayHostView: View {
                             .font(.subheadline)
                             .foregroundStyle(.orange)
                     }
-                    Text("Upstream probe: \(self.upstreamProbeLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "Upstream probe",
+                        self.upstreamProbeLabel,
+                        color: self.probeColor(self.runtime.lastUpstreamProbeSucceeded))
                     if let error = self.runtime.lastUpstreamProbeErrorText, !error.isEmpty {
                         Text("Upstream probe error: \(error)")
                             .font(.subheadline)
                             .foregroundStyle(.orange)
                     }
 
-                    Text("TCP debug listener: \(self.tcpListenerLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "TCP debug listener",
+                        self.tcpListenerLabel,
+                        color: self.tcpListenerColor)
                     if let port = self.runtime.tcpListenerPort {
                         Text("TCP debug port: \(port)")
-                            .font(.headline)
+                            .font(.subheadline)
                     }
                     if let error = self.runtime.tcpListenerErrorText, !error.isEmpty {
                         Text("TCP listener error: \(error)")
                             .font(.subheadline)
                             .foregroundStyle(.orange)
                     }
-                    Text("TCP debug probe: \(self.tcpProbeLabel)")
-                        .font(.headline)
+                    self.statusLine(
+                        "TCP debug probe",
+                        self.tcpProbeLabel,
+                        color: self.probeColor(self.runtime.lastTCPProbeSucceeded))
                     if let error = self.runtime.lastTCPProbeErrorText, !error.isEmpty {
                         Text("TCP probe error: \(error)")
                             .font(.subheadline)
@@ -129,12 +145,7 @@ struct TVOSGatewayHostView: View {
                 }
 
                 HStack(spacing: 12) {
-                    Button("Start Runtime") {
-                        Task { await self.runtime.start() }
-                    }
-                    Button("Stop Runtime") {
-                        Task { await self.runtime.stop() }
-                    }
+                    self.runtimeToggleButton
                     Button("Probe In-Process") {
                         Task { await self.runtime.probeHealth() }
                     }
@@ -148,14 +159,9 @@ struct TVOSGatewayHostView: View {
                 .buttonStyle(.borderedProminent)
 
                 HStack(spacing: 12) {
-                    Button("Start WebSocket") {
-                        Task { await self.runtime.startWebSocketListenerIfNeeded() }
-                    }
+                    self.webSocketToggleButton
                     Button("Restart WebSocket") {
                         Task { await self.runtime.restartWebSocketListener() }
-                    }
-                    Button("Stop WebSocket") {
-                        Task { await self.runtime.stopWebSocketListener() }
                     }
                     Button("Clear Log") {
                         self.runtime.clearDiagnosticsLog()
@@ -164,14 +170,9 @@ struct TVOSGatewayHostView: View {
                 .buttonStyle(.bordered)
 
                 HStack(spacing: 12) {
-                    Button("Start TCP Debug") {
-                        Task { await self.runtime.startTCPListenerIfNeeded() }
-                    }
+                    self.tcpDebugToggleButton
                     Button("Restart TCP Debug") {
                         Task { await self.runtime.restartTCPListener() }
-                    }
-                    Button("Stop TCP Debug") {
-                        Task { await self.runtime.stopTCPListener() }
                     }
                     Button("Probe TCP Debug") {
                         Task { await self.runtime.probeHealthOverTCP() }
@@ -254,6 +255,107 @@ struct TVOSGatewayHostView: View {
             return "ok"
         case .some(false):
             return "failed"
+        }
+    }
+
+    private var runtimeStateColor: Color {
+        self.runtime.state == .running ? .green : .gray
+    }
+
+    private var webSocketListenerColor: Color {
+        switch self.runtime.listenerState {
+        case .listening:
+            return .green
+        case .failed:
+            return .red
+        case .stopped:
+            return .gray
+        }
+    }
+
+    private var tcpListenerColor: Color {
+        switch self.runtime.tcpListenerState {
+        case .listening:
+            return .green
+        case .failed:
+            return .red
+        case .stopped:
+            return .gray
+        }
+    }
+
+    private var upstreamConfigurationColor: Color {
+        if self.runtime.upstreamConfigured {
+            return .green
+        }
+        if self.runtime.upstreamConfigErrorText != nil {
+            return .orange
+        }
+        return .gray
+    }
+
+    private func probeColor(_ value: Bool?) -> Color {
+        switch value {
+        case .none:
+            return .gray
+        case .some(true):
+            return .green
+        case .some(false):
+            return .red
+        }
+    }
+
+    @ViewBuilder
+    private var runtimeToggleButton: some View {
+        if self.runtime.state == .running {
+            Button("Stop Runtime", role: .destructive) {
+                Task { await self.runtime.stop() }
+            }
+        } else {
+            Button("Start Runtime") {
+                Task { await self.runtime.start() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var webSocketToggleButton: some View {
+        if self.runtime.listenerState == .listening {
+            Button("Stop WebSocket", role: .destructive) {
+                Task { await self.runtime.stopWebSocketListener() }
+            }
+        } else {
+            Button("Start WebSocket") {
+                Task { await self.runtime.startWebSocketListenerIfNeeded() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tcpDebugToggleButton: some View {
+        if self.runtime.tcpListenerState == .listening {
+            Button("Stop TCP Debug", role: .destructive) {
+                Task { await self.runtime.stopTCPListener() }
+            }
+        } else {
+            Button("Start TCP Debug") {
+                Task { await self.runtime.startTCPListenerIfNeeded() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statusLine(_ title: String, _ value: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Text("\(title):")
+                .font(.subheadline.weight(.semibold))
+            Text(value)
+                .font(.caption.weight(.bold))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(color.opacity(0.22))
+                .foregroundStyle(color)
+                .clipShape(Capsule())
         }
     }
 
