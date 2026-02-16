@@ -35,7 +35,7 @@ final class GatewayCoreFixtureReplayTests: XCTestCase {
         let decoder = JSONDecoder()
         let core = GatewayCore(startedAtMs: 1_700_000_000_000)
 
-        for path in fixturePaths {
+        for (index, path) in fixturePaths.enumerated() {
             let data = try Data(contentsOf: path)
             let fixture = try decoder.decode(FixtureReplayEntry.self, from: data)
 
@@ -44,33 +44,45 @@ final class GatewayCoreFixtureReplayTests: XCTestCase {
                 continue
             }
 
-            let result = core.handle(
-                GatewayInvocationRequest(method: fixture.request.method),
+            let request = GatewayRequestFrame(
+                id: "fixture-\(index)-\(fixture.name)",
+                method: fixture.request.method)
+            let response = core.dispatch(
+                request,
                 nowMs: 1_700_000_000_500)
+            XCTAssertEqual(response.type, "res")
+            XCTAssertEqual(response.id, request.id)
 
             if fixture.outcome.ok {
+                XCTAssertTrue(response.ok, "Expected success for fixture \(fixture.name)")
+                XCTAssertNil(response.error, "Expected no error for fixture \(fixture.name)")
+
                 if fixture.request.method == "health" {
-                    guard case let .success(.health(payload)) = result else {
+                    guard let payload = try self.decodePayload(
+                        response.payload,
+                        as: GatewayHealthPayload.self)
+                    else {
                         XCTFail("Expected health success for fixture \(fixture.name)")
                         continue
                     }
                     XCTAssertTrue(payload.ok, "Expected health.ok=true for fixture \(fixture.name)")
                 } else if fixture.request.method == "status" {
-                    guard case let .success(.status(payload)) = result else {
+                    guard let payload = try self.decodePayload(
+                        response.payload,
+                        as: GatewayStatusPayload.self)
+                    else {
                         XCTFail("Expected status success for fixture \(fixture.name)")
                         continue
                     }
                     XCTAssertEqual(payload.heartbeatDefaultAgentId, "main")
                 } else {
-                    guard case .success = result else {
-                        XCTFail("Expected success for fixture \(fixture.name)")
-                        continue
-                    }
+                    XCTAssertNotNil(response.payload, "Expected payload for fixture \(fixture.name)")
                 }
                 continue
             }
 
-            guard case let .failure(error) = result else {
+            XCTAssertFalse(response.ok, "Expected failure for fixture \(fixture.name)")
+            guard let error = response.error else {
                 XCTFail("Expected failure for fixture \(fixture.name)")
                 continue
             }
@@ -78,6 +90,15 @@ final class GatewayCoreFixtureReplayTests: XCTestCase {
                 XCTAssertEqual(error.message, expected, "Failure mismatch for fixture \(fixture.name)")
             }
         }
+    }
+
+    private func decodePayload<T: Decodable>(
+        _ payload: GatewayJSONValue?,
+        as type: T.Type) throws -> T?
+    {
+        guard let payload else { return nil }
+        let data = try JSONEncoder().encode(payload)
+        return try JSONDecoder().decode(type, from: data)
     }
 
     private static func locateFixtureDirectory() throws -> URL {

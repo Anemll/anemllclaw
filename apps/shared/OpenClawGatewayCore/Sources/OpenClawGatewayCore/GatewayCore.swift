@@ -1,7 +1,12 @@
 import Foundation
 
-public enum GatewayCoreErrorCode: String, Sendable, Equatable {
+public enum GatewayCoreErrorCode: String, Codable, Sendable, Equatable {
+    case authRequired = "AUTH_REQUIRED"
+    case authFailed = "AUTH_FAILED"
+    case invalidRequest = "INVALID_REQUEST"
     case methodNotFound = "METHOD_NOT_FOUND"
+    case unsupportedOnHost = "UNSUPPORTED_ON_HOST"
+    case internalError = "INTERNAL_ERROR"
 }
 
 public struct GatewayInvocationRequest: Sendable, Equatable {
@@ -14,7 +19,7 @@ public struct GatewayInvocationRequest: Sendable, Equatable {
     }
 }
 
-public struct GatewayHealthPayload: Sendable, Equatable {
+public struct GatewayHealthPayload: Codable, Sendable, Equatable {
     public let ok: Bool
     public let ts: Int64
     public let uptimeMs: Int64
@@ -28,7 +33,7 @@ public struct GatewayHealthPayload: Sendable, Equatable {
     }
 }
 
-public struct GatewayStatusPayload: Sendable, Equatable {
+public struct GatewayStatusPayload: Codable, Sendable, Equatable {
     public let heartbeatDefaultAgentId: String
     public let sessionCount: Int
 
@@ -43,7 +48,7 @@ public enum GatewaySuccessPayload: Sendable, Equatable {
     case status(GatewayStatusPayload)
 }
 
-public struct GatewayFailurePayload: Sendable, Equatable {
+public struct GatewayFailurePayload: Codable, Sendable, Equatable {
     public let code: GatewayCoreErrorCode
     public let message: String
 
@@ -94,6 +99,44 @@ public struct GatewayCore: Sendable {
                 GatewayFailurePayload(
                     code: .methodNotFound,
                     message: "unknown method: \(request.method)"))
+        }
+    }
+
+    public func dispatch(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64 = GatewayCore.currentTimestampMs()) -> GatewayResponseFrame
+    {
+        let invocation = GatewayInvocationRequest(
+            method: request.method,
+            paramsJSON: request.paramsJSON)
+        let result = self.handle(invocation, nowMs: nowMs)
+        return self.makeResponse(id: request.id, result: result)
+    }
+
+    private func makeResponse(id: String, result: GatewayInvocationResult) -> GatewayResponseFrame {
+        switch result {
+        case let .success(payload):
+            return GatewayResponseFrame.success(id: id, payload: Self.encodePayload(payload))
+        case let .failure(error):
+            return GatewayResponseFrame.failure(id: id, code: error.code, message: error.message)
+        }
+    }
+
+    private static func encodePayload(_ payload: GatewaySuccessPayload) -> GatewayJSONValue? {
+        switch payload {
+        case let .health(value):
+            return self.encodeCodable(value)
+        case let .status(value):
+            return self.encodeCodable(value)
+        }
+    }
+
+    private static func encodeCodable<T: Encodable>(_ value: T) -> GatewayJSONValue? {
+        do {
+            let data = try JSONEncoder().encode(value)
+            return try JSONDecoder().decode(GatewayJSONValue.self, from: data)
+        } catch {
+            return nil
         }
     }
 }

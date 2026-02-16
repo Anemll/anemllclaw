@@ -13,6 +13,8 @@ settings:
 packages:
   OpenClawKit:
     path: ../shared/OpenClawKit
+  OpenClawGatewayCore:
+    path: ../shared/OpenClawGatewayCore
   Swabble:
     path: ../../Swabble
 
@@ -150,6 +152,7 @@ targets:
         product: OpenClawChatUI
       - package: OpenClawKit
         product: OpenClawProtocol
+      - package: OpenClawGatewayCore
       - package: Swabble
         product: SwabbleKit
     preBuildScripts:
