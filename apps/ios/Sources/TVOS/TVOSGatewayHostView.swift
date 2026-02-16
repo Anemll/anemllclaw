@@ -14,6 +14,8 @@ struct TVOSGatewayHostView: View {
                     .font(.headline)
                 Text("TCP listener: \(self.listenerLabel)")
                     .font(.headline)
+                Text("Listener auth: \(self.listenerAuthLabel)")
+                    .font(.headline)
                 if let port = self.runtime.listenerPort {
                     Text("Listener port: \(port)")
                         .font(.headline)
@@ -87,6 +89,13 @@ struct TVOSGatewayHostView: View {
 
     private var listenerLabel: String {
         self.runtime.listenerState.rawValue
+    }
+
+    private var listenerAuthLabel: String {
+        if let hint = self.runtime.listenerAuthHint {
+            return hint
+        }
+        return self.runtime.listenerAuthMode.rawValue
     }
 
     private var tcpProbeLabel: String {

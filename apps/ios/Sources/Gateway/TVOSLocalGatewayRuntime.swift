@@ -22,23 +22,30 @@ final class TVOSLocalGatewayRuntime {
     private(set) var listenerState: ListenerState = .stopped
     private(set) var listenerPort: UInt16?
     private(set) var listenerErrorText: String?
+    private(set) var listenerAuthMode: GatewayCoreAuthMode
+    private(set) var listenerAuthHint: String?
     private(set) var lastProbeSucceeded: Bool?
     private(set) var lastTCPProbeSucceeded: Bool?
     private(set) var lastTCPProbeErrorText: String?
     private let listenPortPreference: UInt16
     private let exposeTCPListener: Bool
+    private let tcpAuthConfig: GatewayCoreAuthConfig
     private let host: GatewayLoopbackHost
     private let tcpServer: GatewayTCPJSONServer
 
     init(
         exposeTCPListener: Bool = true,
         listenPort: UInt16 = 18_789,
-        transport: GatewayLoopbackTransport = GatewayLoopbackTransport())
+        transport: GatewayLoopbackTransport = GatewayLoopbackTransport(),
+        tcpAuthConfig: GatewayCoreAuthConfig = .none)
     {
         self.exposeTCPListener = exposeTCPListener
         self.listenPortPreference = listenPort
+        self.tcpAuthConfig = tcpAuthConfig
+        self.listenerAuthMode = tcpAuthConfig.mode
+        self.listenerAuthHint = Self.authHint(for: tcpAuthConfig)
         self.host = GatewayLoopbackHost(transport: transport)
-        self.tcpServer = GatewayTCPJSONServer(transport: transport)
+        self.tcpServer = GatewayTCPJSONServer(transport: transport, authConfig: tcpAuthConfig)
     }
 
     func start() async {
@@ -115,7 +122,9 @@ final class TVOSLocalGatewayRuntime {
         }
 
         do {
-            let response = try await Self.sendHealthProbe(port: listenerPort)
+            let response = try await Self.sendHealthProbe(
+                port: listenerPort,
+                authConfig: self.tcpAuthConfig)
             self.lastTCPProbeSucceeded = response.ok
             self.lastTCPProbeErrorText = response.error?.message
         } catch {
@@ -124,7 +133,10 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
-    private static func sendHealthProbe(port: UInt16) async throws -> GatewayResponseFrame {
+    private static func sendHealthProbe(
+        port: UInt16,
+        authConfig: GatewayCoreAuthConfig) async throws -> GatewayResponseFrame
+    {
         let connection = NWConnection(
             host: NWEndpoint.Host("127.0.0.1"),
             port: NWEndpoint.Port(rawValue: port) ?? .any,
@@ -133,7 +145,10 @@ final class TVOSLocalGatewayRuntime {
         connection.start(queue: queue)
 
         let request = GatewayRequestFrame(id: UUID().uuidString, method: "health")
-        var requestData = try JSONEncoder().encode(request)
+        let envelope = GatewayTCPRequestEnvelope(
+            request: request,
+            auth: Self.authPayload(for: authConfig))
+        var requestData = try JSONEncoder().encode(envelope)
         requestData.append(0x0A)
 
         try await withCheckedThrowingContinuation {
@@ -169,6 +184,39 @@ final class TVOSLocalGatewayRuntime {
             omittingEmptySubsequences: true).first
         let frameData = Data(line ?? responseData[...])
         return try JSONDecoder().decode(GatewayResponseFrame.self, from: frameData)
+    }
+
+    private static func authPayload(for config: GatewayCoreAuthConfig) -> GatewayConnectAuth? {
+        switch config.mode {
+        case .none:
+            return nil
+        case .token:
+            guard let token = config.token, !token.isEmpty else { return nil }
+            return GatewayConnectAuth(token: token)
+        case .password:
+            guard let password = config.password, !password.isEmpty else { return nil }
+            return GatewayConnectAuth(password: password)
+        }
+    }
+
+    private static func authHint(for config: GatewayCoreAuthConfig) -> String? {
+        switch config.mode {
+        case .none:
+            return nil
+        case .token:
+            guard let token = config.token else { return "(missing token)" }
+            return "token (\(Self.redacted(token)))"
+        case .password:
+            guard let password = config.password else { return "(missing password)" }
+            return "password (\(Self.redacted(password)))"
+        }
+    }
+
+    private static func redacted(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "empty" }
+        let suffix = String(trimmed.suffix(4))
+        return "***\(suffix)"
     }
 }
 #endif

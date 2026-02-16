@@ -102,6 +102,27 @@ final class GatewayTCPJSONServerTests: XCTestCase {
         XCTAssertEqual(payload?["ok"]?.boolValue, true)
     }
 
+    func testServerAcceptsMatchingAuthPassword() async throws {
+        let server = GatewayTCPJSONServer(
+            transport: GatewayLoopbackTransport(
+                core: GatewayCore(startedAtMs: 1_700_000_000_000)),
+            authConfig: .password("secret-password"))
+        let port = try await server.start(port: 0)
+        defer { Task { await server.stop() } }
+
+        let envelope = GatewayTCPRequestEnvelope(
+            request: GatewayRequestFrame(id: "req-health-good-password", method: "health"),
+            auth: GatewayConnectAuth(password: "secret-password"))
+        let response = try await Self.sendAndReceive(
+            port: port,
+            payload: Self.encodeLine(envelope))
+
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.id, "req-health-good-password")
+        let payload = response.payload?.objectValue
+        XCTAssertEqual(payload?["ok"]?.boolValue, true)
+    }
+
     private static func sendAndReceive(
         port: UInt16,
         payload: Data) async throws -> GatewayResponseFrame
