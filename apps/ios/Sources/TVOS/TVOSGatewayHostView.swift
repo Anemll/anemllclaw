@@ -160,7 +160,7 @@ struct TVOSGatewayHostView: View {
 
                 HStack(spacing: 12) {
                     self.webSocketToggleButton
-                    Button("Restart WebSocket") {
+                    Button("Force Rebind WS") {
                         Task { await self.runtime.restartWebSocketListener() }
                     }
                     Button("Clear Log") {
@@ -171,7 +171,7 @@ struct TVOSGatewayHostView: View {
 
                 HStack(spacing: 12) {
                     self.tcpDebugToggleButton
-                    Button("Restart TCP Debug") {
+                    Button("Rebind TCP Debug") {
                         Task { await self.runtime.restartTCPListener() }
                     }
                     Button("Probe TCP Debug") {
@@ -179,6 +179,10 @@ struct TVOSGatewayHostView: View {
                     }
                 }
                 .buttonStyle(.bordered)
+
+                Text("Normal operation only needs Runtime + WebSocket. TCP debug is a developer-only raw JSON-line endpoint.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                 self.capabilityMatrixSection
                 self.runtimeLogSection
@@ -324,6 +328,10 @@ struct TVOSGatewayHostView: View {
             Button("Stop WebSocket", role: .destructive) {
                 Task { await self.runtime.stopWebSocketListener() }
             }
+        } else if self.runtime.listenerState == .failed {
+            Button("Retry WebSocket") {
+                Task { await self.runtime.startWebSocketListenerIfNeeded() }
+            }
         } else {
             Button("Start WebSocket") {
                 Task { await self.runtime.startWebSocketListenerIfNeeded() }
@@ -336,6 +344,10 @@ struct TVOSGatewayHostView: View {
         if self.runtime.tcpListenerState == .listening {
             Button("Stop TCP Debug", role: .destructive) {
                 Task { await self.runtime.stopTCPListener() }
+            }
+        } else if self.runtime.tcpListenerState == .failed {
+            Button("Retry TCP Debug") {
+                Task { await self.runtime.startTCPListenerIfNeeded() }
             }
         } else {
             Button("Start TCP Debug") {
