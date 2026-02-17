@@ -36,6 +36,7 @@ bin/docs-list
 apps/macos/.build-local/
 apps/macos/.swiftpm/
 apps/shared/MoltbotKit/.swiftpm/
+apps/shared/OpenClawKit/.swiftpm/
 Core/
 apps/ios/*.xcodeproj/
 apps/ios/*.xcworkspace/
@@ -87,3 +88,4 @@ USER.md
 /local/
 package-lock.json
 apps/shared/OpenClawGatewayCore/.build
+apps/shared/OpenClawGatewayCore/.swiftpm/

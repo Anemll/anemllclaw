@@ -1,4 +1,5 @@
 #if os(tvOS)
+import Darwin
 import Foundation
 import Network
 import Observation
@@ -30,6 +31,37 @@ private struct TVOSGatewayUpstreamConfigLoadResult: Sendable {
     let errorText: String?
 }
 
+struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
+    var authMode: GatewayCoreAuthMode
+    var authToken: String
+    var authPassword: String
+
+    var upstreamURL: String
+    var upstreamToken: String
+    var upstreamPassword: String
+    var upstreamRole: String
+    var upstreamScopesCSV: String
+
+    var localLLMProvider: GatewayLocalLLMProviderKind
+    var localLLMBaseURL: String
+    var localLLMAPIKey: String
+    var localLLMModel: String
+
+    static let `default` = TVOSGatewayControlPlaneSettings(
+        authMode: .none,
+        authToken: "",
+        authPassword: "",
+        upstreamURL: "",
+        upstreamToken: "",
+        upstreamPassword: "",
+        upstreamRole: "node",
+        upstreamScopesCSV: "",
+        localLLMProvider: .disabled,
+        localLLMBaseURL: "",
+        localLLMAPIKey: "",
+        localLLMModel: "")
+}
+
 @MainActor
 @Observable
 final class TVOSLocalGatewayRuntime {
@@ -57,7 +89,7 @@ final class TVOSLocalGatewayRuntime {
     private(set) var tcpListenerErrorText: String?
 
     // Optional upstream full gateway used for delegated Node-only methods.
-    private(set) var upstreamConfigured: Bool
+    private(set) var upstreamConfigured: Bool = false
     private(set) var upstreamURLText: String?
     private(set) var upstreamConfigErrorText: String?
     private(set) var lastUpstreamProbeSucceeded: Bool?
@@ -65,6 +97,18 @@ final class TVOSLocalGatewayRuntime {
 
     private(set) var listenerAuthMode: GatewayCoreAuthMode
     private(set) var listenerAuthHint: String?
+    private(set) var controlPlaneSettings: TVOSGatewayControlPlaneSettings
+    private(set) var localLLMConfigured: Bool
+    private(set) var localLLMProviderLabel: String
+    private(set) var localLLMConfigErrorText: String?
+
+    private(set) var webSocketRetryAttempt: Int = 0
+    private(set) var webSocketRetryDelaySeconds: Int?
+    private(set) var tcpRetryAttempt: Int = 0
+    private(set) var tcpRetryDelaySeconds: Int?
+
+    private(set) var localIPv4Address: String?
+    private(set) var localIPv4Addresses: [String]
 
     private(set) var lastProbeSucceeded: Bool?
     private(set) var lastWebSocketProbeSucceeded: Bool?
@@ -76,12 +120,16 @@ final class TVOSLocalGatewayRuntime {
     private let webSocketListenPortPreference: UInt16
     private let tcpListenPortPreference: UInt16
     private let exposeTCPListener: Bool
-    private let gatewayAuthConfig: GatewayCoreAuthConfig
+    private var gatewayAuthConfig: GatewayCoreAuthConfig
+    private let transportOverride: GatewayLoopbackTransport?
 
-    private let host: GatewayLoopbackHost
-    private let webSocketServer: GatewayWebSocketServer
-    private let tcpServer: GatewayTCPJSONServer
-    private let upstreamClient: GatewayUpstreamWebSocketClient?
+    private var host: GatewayLoopbackHost?
+    private var webSocketServer: GatewayWebSocketServer?
+    private var tcpServer: GatewayTCPJSONServer?
+    private var upstreamClient: GatewayUpstreamWebSocketClient?
+
+    private var webSocketRetryTask: Task<Void, Never>?
+    private var tcpRetryTask: Task<Void, Never>?
 
     private static let maxDiagnosticsLogEntries = 150
 
@@ -96,39 +144,50 @@ final class TVOSLocalGatewayRuntime {
         self.exposeTCPListener = exposeTCPListener
         self.webSocketListenPortPreference = listenPort
         self.tcpListenPortPreference = tcpDebugPort
-        self.gatewayAuthConfig = tcpAuthConfig
-        self.listenerAuthMode = tcpAuthConfig.mode
-        self.listenerAuthHint = Self.authHint(for: tcpAuthConfig)
+        self.transportOverride = transport
 
-        let upstreamLoadResult: TVOSGatewayUpstreamConfigLoadResult
-        if let upstreamConfig {
-            upstreamLoadResult = TVOSGatewayUpstreamConfigLoadResult(
-                config: upstreamConfig,
-                urlText: upstreamConfig.url.absoluteString,
-                errorText: nil)
-        } else {
-            upstreamLoadResult = Self.loadUpstreamConfig()
+        var settings = Self.loadControlPlaneSettings()
+        if tcpAuthConfig.mode != .none {
+            settings.authMode = tcpAuthConfig.mode
+            settings.authToken = tcpAuthConfig.token ?? ""
+            settings.authPassword = tcpAuthConfig.password ?? ""
         }
-        let resolvedUpstreamConfig = upstreamLoadResult.config
-        self.upstreamConfigured = resolvedUpstreamConfig != nil
-        self.upstreamURLText = upstreamLoadResult.urlText
-        self.upstreamConfigErrorText = upstreamLoadResult.errorText
+        if let upstreamConfig {
+            settings.upstreamURL = upstreamConfig.url.absoluteString
+            settings.upstreamToken = upstreamConfig.token ?? ""
+            settings.upstreamPassword = upstreamConfig.password ?? ""
+            settings.upstreamRole = upstreamConfig.role ?? "node"
+            settings.upstreamScopesCSV = upstreamConfig.scopes?.joined(separator: ",") ?? ""
+        }
+
+        let normalizedSettings = Self.normalizedSettings(settings)
+        let initialAuthConfig = Self.makeAuthConfig(from: normalizedSettings)
+        self.controlPlaneSettings = normalizedSettings
+        self.gatewayAuthConfig = initialAuthConfig
+        self.listenerAuthMode = initialAuthConfig.mode
+        self.listenerAuthHint = Self.authHint(for: initialAuthConfig)
+        self.localLLMConfigured = false
+        self.localLLMProviderLabel = normalizedSettings.localLLMProvider.rawValue
+        self.localLLMConfigErrorText = nil
+
+        self.diagnosticsLog = []
+        self.localIPv4Address = nil
+        self.localIPv4Addresses = []
         self.lastUpstreamProbeSucceeded = nil
         self.lastUpstreamProbeErrorText = nil
-        self.diagnosticsLog = []
 
-        let upstreamClient = resolvedUpstreamConfig.map { GatewayUpstreamWebSocketClient(config: $0) }
-        self.upstreamClient = upstreamClient
+        self.host = nil
+        self.webSocketServer = nil
+        self.tcpServer = nil
+        self.upstreamClient = nil
+        self.webSocketRetryTask = nil
+        self.tcpRetryTask = nil
 
-        let resolvedTransport = transport ?? GatewayLoopbackTransport(
-            core: GatewayCore(authConfig: tcpAuthConfig),
-            upstream: upstreamClient)
-        self.host = GatewayLoopbackHost(transport: resolvedTransport)
-        self.webSocketServer = GatewayWebSocketServer(transport: resolvedTransport)
-        self.tcpServer = GatewayTCPJSONServer(transport: resolvedTransport, authConfig: tcpAuthConfig)
+        self.rebuildGatewayStack()
+        self.refreshLocalNetworkAddresses()
 
         self.appendLog(
-            "runtime initialized wsPort=\(listenPort) tcpDebug=\(exposeTCPListener ? "enabled" : "disabled") auth=\(tcpAuthConfig.mode.rawValue)")
+            "runtime initialized wsPort=\(listenPort) tcpDebug=\(exposeTCPListener ? "enabled" : "disabled") auth=\(self.gatewayAuthConfig.mode.rawValue)")
         if self.upstreamConfigured {
             self.appendLog("upstream configured url=\(self.upstreamURLText ?? "(unknown)")")
         } else if let errorText = self.upstreamConfigErrorText {
@@ -140,8 +199,9 @@ final class TVOSLocalGatewayRuntime {
 
     func start() async {
         guard self.state != .running else { return }
+        self.refreshLocalNetworkAddresses()
         self.appendLog("runtime start requested")
-        await self.host.start()
+        await self.host?.start()
         await self.startWebSocketListenerIfNeeded()
         if self.exposeTCPListener {
             await self.startTCPListenerIfNeeded()
@@ -154,6 +214,14 @@ final class TVOSLocalGatewayRuntime {
     func stop() async {
         guard self.state != .stopped else { return }
         self.appendLog("runtime stop requested")
+        self.webSocketRetryTask?.cancel()
+        self.webSocketRetryTask = nil
+        self.webSocketRetryAttempt = 0
+        self.webSocketRetryDelaySeconds = nil
+        self.tcpRetryTask?.cancel()
+        self.tcpRetryTask = nil
+        self.tcpRetryAttempt = 0
+        self.tcpRetryDelaySeconds = nil
         if self.exposeTCPListener {
             await self.stopTCPListener()
         }
@@ -162,7 +230,7 @@ final class TVOSLocalGatewayRuntime {
             await upstreamClient.disconnect()
             self.appendLog("upstream disconnected")
         }
-        await self.host.stop()
+        await self.host?.stop()
 
         self.state = .stopped
         self.lastProbeSucceeded = nil
@@ -180,13 +248,66 @@ final class TVOSLocalGatewayRuntime {
         self.appendLog("diagnostics log cleared")
     }
 
+    func clearErrorStates() {
+        self.listenerErrorText = nil
+        self.tcpListenerErrorText = nil
+        self.lastWebSocketProbeErrorText = nil
+        self.lastTCPProbeErrorText = nil
+        self.lastUpstreamProbeErrorText = nil
+        self.upstreamConfigErrorText = nil
+        self.localLLMConfigErrorText = nil
+        self.webSocketRetryAttempt = 0
+        self.webSocketRetryDelaySeconds = nil
+        self.tcpRetryAttempt = 0
+        self.tcpRetryDelaySeconds = nil
+        self.appendLog("error states cleared")
+    }
+
+    func applyControlPlaneSettings(_ next: TVOSGatewayControlPlaneSettings) async {
+        let normalized = Self.normalizedSettings(next)
+        guard normalized != self.controlPlaneSettings else {
+            self.appendLog("control plane settings unchanged")
+            return
+        }
+
+        let wasRunning = self.state == .running
+        if wasRunning {
+            await self.stop()
+        }
+
+        self.controlPlaneSettings = normalized
+        Self.persistControlPlaneSettings(normalized)
+        self.rebuildGatewayStack()
+        self.clearErrorStates()
+        self.appendLog(
+            "control plane settings applied auth=\(normalized.authMode.rawValue) upstream=\(Self.trimmed(normalized.upstreamURL) ?? "(none)") llm=\(normalized.localLLMProvider.rawValue)")
+
+        if wasRunning {
+            await self.start()
+            await self.probeHealth()
+            await self.probeHealthOverWebSocket()
+            await self.probeUpstreamHealth()
+        }
+    }
+
+    func refreshLocalNetworkAddresses() {
+        let addresses = Self.collectLocalIPv4Interfaces()
+        self.localIPv4Address = addresses.first?.address
+        self.localIPv4Addresses = addresses.map(\.address)
+    }
+
     func probeHealth(nowMs: Int64 = GatewayCore.currentTimestampMs()) async {
         guard self.state == .running else {
             self.lastProbeSucceeded = nil
             return
         }
+        guard let host = self.host else {
+            self.lastProbeSucceeded = false
+            self.appendLog("in-process probe failed: runtime host unavailable", level: .error)
+            return
+        }
         do {
-            let response = try await self.host.invoke(
+            let response = try await host.invoke(
                 GatewayRequestFrame(id: UUID().uuidString, method: "health"),
                 nowMs: nowMs)
             self.lastProbeSucceeded = response.ok
@@ -236,17 +357,27 @@ final class TVOSLocalGatewayRuntime {
 
     func startWebSocketListenerIfNeeded() async {
         guard self.listenerState != .listening else { return }
+        guard let webSocketServer = self.webSocketServer else {
+            self.listenerState = .failed
+            self.listenerErrorText = "websocket server unavailable"
+            return
+        }
         do {
-            let boundPort = try await self.webSocketServer.start(port: self.webSocketListenPortPreference)
+            let boundPort = try await webSocketServer.start(port: self.webSocketListenPortPreference)
             self.listenerPort = boundPort
             self.listenerErrorText = nil
             self.listenerState = .listening
+            self.webSocketRetryTask?.cancel()
+            self.webSocketRetryTask = nil
+            self.webSocketRetryAttempt = 0
+            self.webSocketRetryDelaySeconds = nil
             self.appendLog("websocket listener active on 127.0.0.1:\(boundPort)")
         } catch {
             self.listenerPort = nil
             self.listenerErrorText = error.localizedDescription
             self.listenerState = .failed
             self.appendLog("websocket listener failed: \(error.localizedDescription)", level: .error)
+            self.scheduleWebSocketRetry()
         }
     }
 
@@ -257,7 +388,11 @@ final class TVOSLocalGatewayRuntime {
     }
 
     func stopWebSocketListener() async {
-        await self.webSocketServer.stop()
+        self.webSocketRetryTask?.cancel()
+        self.webSocketRetryTask = nil
+        self.webSocketRetryAttempt = 0
+        self.webSocketRetryDelaySeconds = nil
+        await self.webSocketServer?.stop()
         self.listenerPort = nil
         self.listenerState = .stopped
         self.listenerErrorText = nil
@@ -296,17 +431,27 @@ final class TVOSLocalGatewayRuntime {
     func startTCPListenerIfNeeded() async {
         guard self.exposeTCPListener else { return }
         guard self.tcpListenerState != .listening else { return }
+        guard let tcpServer = self.tcpServer else {
+            self.tcpListenerState = .failed
+            self.tcpListenerErrorText = "tcp debug server unavailable"
+            return
+        }
         do {
-            let boundPort = try await self.tcpServer.start(port: self.tcpListenPortPreference)
+            let boundPort = try await tcpServer.start(port: self.tcpListenPortPreference)
             self.tcpListenerPort = boundPort
             self.tcpListenerErrorText = nil
             self.tcpListenerState = .listening
+            self.tcpRetryTask?.cancel()
+            self.tcpRetryTask = nil
+            self.tcpRetryAttempt = 0
+            self.tcpRetryDelaySeconds = nil
             self.appendLog("tcp debug listener active on 127.0.0.1:\(boundPort)")
         } catch {
             self.tcpListenerPort = nil
             self.tcpListenerErrorText = error.localizedDescription
             self.tcpListenerState = .failed
             self.appendLog("tcp debug listener failed: \(error.localizedDescription)", level: .error)
+            self.scheduleTCPRetry()
         }
     }
 
@@ -318,7 +463,11 @@ final class TVOSLocalGatewayRuntime {
     }
 
     func stopTCPListener() async {
-        await self.tcpServer.stop()
+        self.tcpRetryTask?.cancel()
+        self.tcpRetryTask = nil
+        self.tcpRetryAttempt = 0
+        self.tcpRetryDelaySeconds = nil
+        await self.tcpServer?.stop()
         self.tcpListenerPort = nil
         self.tcpListenerState = .stopped
         self.tcpListenerErrorText = nil
@@ -352,6 +501,106 @@ final class TVOSLocalGatewayRuntime {
             self.lastTCPProbeErrorText = error.localizedDescription
             self.appendLog("tcp probe threw: \(error.localizedDescription)", level: .error)
         }
+    }
+
+    private func scheduleWebSocketRetry() {
+        guard self.state == .running else { return }
+        guard self.webSocketRetryTask == nil else { return }
+        self.webSocketRetryAttempt += 1
+        let exponentialDelay = 1 << min(self.webSocketRetryAttempt - 1, 5)
+        let delaySeconds = min(30, max(1, exponentialDelay))
+        self.webSocketRetryDelaySeconds = delaySeconds
+        self.appendLog(
+            "websocket retry in \(delaySeconds)s (attempt \(self.webSocketRetryAttempt))",
+            level: .warning)
+
+        self.webSocketRetryTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self.webSocketRetryTask = nil
+            self.webSocketRetryDelaySeconds = nil
+            await self.startWebSocketListenerIfNeeded()
+        }
+    }
+
+    private func scheduleTCPRetry() {
+        guard self.state == .running else { return }
+        guard self.tcpRetryTask == nil else { return }
+        self.tcpRetryAttempt += 1
+        let exponentialDelay = 1 << min(self.tcpRetryAttempt - 1, 4)
+        let delaySeconds = min(20, max(1, exponentialDelay))
+        self.tcpRetryDelaySeconds = delaySeconds
+        self.appendLog(
+            "tcp debug retry in \(delaySeconds)s (attempt \(self.tcpRetryAttempt))",
+            level: .warning)
+
+        self.tcpRetryTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(delaySeconds) * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self.tcpRetryTask = nil
+            self.tcpRetryDelaySeconds = nil
+            await self.startTCPListenerIfNeeded()
+        }
+    }
+
+    private func rebuildGatewayStack() {
+        self.webSocketRetryTask?.cancel()
+        self.webSocketRetryTask = nil
+        self.webSocketRetryAttempt = 0
+        self.webSocketRetryDelaySeconds = nil
+        self.tcpRetryTask?.cancel()
+        self.tcpRetryTask = nil
+        self.tcpRetryAttempt = 0
+        self.tcpRetryDelaySeconds = nil
+
+        self.gatewayAuthConfig = Self.makeAuthConfig(from: self.controlPlaneSettings)
+        self.listenerAuthMode = self.gatewayAuthConfig.mode
+        self.listenerAuthHint = Self.authHint(for: self.gatewayAuthConfig)
+
+        let upstreamLoad = Self.makeUpstreamConfig(from: self.controlPlaneSettings)
+        self.upstreamConfigured = upstreamLoad.config != nil
+        self.upstreamURLText = upstreamLoad.urlText
+        self.upstreamConfigErrorText = upstreamLoad.errorText
+        self.upstreamClient = upstreamLoad.config.map { GatewayUpstreamWebSocketClient(config: $0) }
+
+        let localLLMConfig = Self.makeLocalLLMConfig(from: self.controlPlaneSettings)
+        self.localLLMConfigured = localLLMConfig.isConfigured
+        self.localLLMProviderLabel = localLLMConfig.provider.rawValue
+        self.localLLMConfigErrorText = nil
+        if localLLMConfig.provider != .disabled, !localLLMConfig.isConfigured {
+            self.localLLMConfigErrorText = "provider selected but local LLM config is incomplete"
+        }
+
+        let resolvedTransport: GatewayLoopbackTransport
+        if let transportOverride = self.transportOverride {
+            resolvedTransport = transportOverride
+        } else {
+            var localRouter: GatewayLocalMethodRouter?
+            do {
+                localRouter = try GatewayLocalMethodRouter(
+                    config: GatewayLocalMethodRouterConfig(
+                        hostLabel: "tvos-local",
+                        upstreamConfigured: self.upstreamConfigured,
+                        llmConfig: localLLMConfig,
+                        memoryStorePath: Self.defaultMemoryStorePath(),
+                        enableLocalSafeTools: true))
+            } catch {
+                self.localLLMConfigErrorText = "local router init failed: \(error.localizedDescription)"
+                self.appendLog(
+                    "local method router init failed: \(error.localizedDescription)",
+                    level: .error)
+            }
+            resolvedTransport = GatewayLoopbackTransport(
+                core: GatewayCore(authConfig: self.gatewayAuthConfig),
+                upstream: self.upstreamClient,
+                localMethods: localRouter)
+        }
+
+        self.host = GatewayLoopbackHost(transport: resolvedTransport)
+        self.webSocketServer = GatewayWebSocketServer(transport: resolvedTransport)
+        self.tcpServer = GatewayTCPJSONServer(
+            transport: resolvedTransport,
+            authConfig: self.gatewayAuthConfig)
     }
 
     private static func sendHealthProbeOverWebSocket(
@@ -544,14 +793,110 @@ final class TVOSLocalGatewayRuntime {
         return "***\(suffix)"
     }
 
-    private static func loadUpstreamConfig(
-        defaults: UserDefaults = .standard) -> TVOSGatewayUpstreamConfigLoadResult
+    private static func loadControlPlaneSettings(
+        defaults: UserDefaults = .standard) -> TVOSGatewayControlPlaneSettings
     {
         let env = ProcessInfo.processInfo.environment
-        let rawURLValue = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_URL"])
-            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.url"))
+        var settings = TVOSGatewayControlPlaneSettings.default
 
-        guard let rawURL = rawURLValue else {
+        let authModeRaw = Self.trimmed(env["OPENCLAW_TVOS_AUTH_MODE"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.auth.mode"))
+            ?? GatewayCoreAuthMode.none.rawValue
+        settings.authMode = GatewayCoreAuthMode(rawValue: authModeRaw) ?? .none
+        settings.authToken = Self.trimmed(env["OPENCLAW_TVOS_AUTH_TOKEN"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.auth.token"))
+            ?? ""
+        settings.authPassword = Self.trimmed(env["OPENCLAW_TVOS_AUTH_PASSWORD"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.auth.password"))
+            ?? ""
+
+        settings.upstreamURL = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_URL"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.url"))
+            ?? ""
+        settings.upstreamToken = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_TOKEN"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.token"))
+            ?? ""
+        settings.upstreamPassword = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_PASSWORD"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.password"))
+            ?? ""
+        settings.upstreamRole = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_ROLE"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.role"))
+            ?? "node"
+        settings.upstreamScopesCSV = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_SCOPES"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))
+            ?? ""
+
+        let localProviderRaw = Self.trimmed(env["OPENCLAW_TVOS_LOCAL_LLM_PROVIDER"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.provider"))
+            ?? GatewayLocalLLMProviderKind.disabled.rawValue
+        settings.localLLMProvider = GatewayLocalLLMProviderKind(rawValue: localProviderRaw) ?? .disabled
+        settings.localLLMBaseURL = Self.trimmed(env["OPENCLAW_TVOS_LOCAL_LLM_BASE_URL"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.baseURL"))
+            ?? ""
+        settings.localLLMAPIKey = Self.trimmed(env["OPENCLAW_TVOS_LOCAL_LLM_API_KEY"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.apiKey"))
+            ?? ""
+        settings.localLLMModel = Self.trimmed(env["OPENCLAW_TVOS_LOCAL_LLM_MODEL"])
+            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
+            ?? ""
+
+        return Self.normalizedSettings(settings)
+    }
+
+    private static func persistControlPlaneSettings(
+        _ settings: TVOSGatewayControlPlaneSettings,
+        defaults: UserDefaults = .standard)
+    {
+        defaults.set(settings.authMode.rawValue, forKey: "gateway.tvos.auth.mode")
+        defaults.set(Self.trimmed(settings.authToken), forKey: "gateway.tvos.auth.token")
+        defaults.set(Self.trimmed(settings.authPassword), forKey: "gateway.tvos.auth.password")
+
+        defaults.set(Self.trimmed(settings.upstreamURL), forKey: "gateway.tvos.upstream.url")
+        defaults.set(Self.trimmed(settings.upstreamToken), forKey: "gateway.tvos.upstream.token")
+        defaults.set(Self.trimmed(settings.upstreamPassword), forKey: "gateway.tvos.upstream.password")
+        defaults.set(Self.trimmed(settings.upstreamRole), forKey: "gateway.tvos.upstream.role")
+        defaults.set(Self.trimmed(settings.upstreamScopesCSV), forKey: "gateway.tvos.upstream.scopes")
+
+        defaults.set(settings.localLLMProvider.rawValue, forKey: "gateway.tvos.localLLM.provider")
+        defaults.set(Self.trimmed(settings.localLLMBaseURL), forKey: "gateway.tvos.localLLM.baseURL")
+        defaults.set(Self.trimmed(settings.localLLMAPIKey), forKey: "gateway.tvos.localLLM.apiKey")
+        defaults.set(Self.trimmed(settings.localLLMModel), forKey: "gateway.tvos.localLLM.model")
+    }
+
+    private static func normalizedSettings(_ settings: TVOSGatewayControlPlaneSettings) -> TVOSGatewayControlPlaneSettings {
+        TVOSGatewayControlPlaneSettings(
+            authMode: settings.authMode,
+            authToken: Self.trimmed(settings.authToken) ?? "",
+            authPassword: Self.trimmed(settings.authPassword) ?? "",
+            upstreamURL: Self.trimmed(settings.upstreamURL) ?? "",
+            upstreamToken: Self.trimmed(settings.upstreamToken) ?? "",
+            upstreamPassword: Self.trimmed(settings.upstreamPassword) ?? "",
+            upstreamRole: Self.trimmed(settings.upstreamRole) ?? "node",
+            upstreamScopesCSV: Self.trimmed(settings.upstreamScopesCSV) ?? "",
+            localLLMProvider: settings.localLLMProvider,
+            localLLMBaseURL: Self.trimmed(settings.localLLMBaseURL) ?? "",
+            localLLMAPIKey: Self.trimmed(settings.localLLMAPIKey) ?? "",
+            localLLMModel: Self.trimmed(settings.localLLMModel) ?? "")
+    }
+
+    private static func makeAuthConfig(from settings: TVOSGatewayControlPlaneSettings) -> GatewayCoreAuthConfig {
+        let token = Self.trimmed(settings.authToken)
+        let password = Self.trimmed(settings.authPassword)
+
+        switch settings.authMode {
+        case .none:
+            return .none
+        case .token:
+            return GatewayCoreAuthConfig(mode: .token, token: token)
+        case .password:
+            return GatewayCoreAuthConfig(mode: .password, password: password)
+        }
+    }
+
+    private static func makeUpstreamConfig(
+        from settings: TVOSGatewayControlPlaneSettings) -> TVOSGatewayUpstreamConfigLoadResult
+    {
+        guard let rawURL = Self.trimmed(settings.upstreamURL) else {
             return TVOSGatewayUpstreamConfigLoadResult(
                 config: nil,
                 urlText: nil,
@@ -563,7 +908,6 @@ final class TVOSLocalGatewayRuntime {
                 urlText: rawURL,
                 errorText: "invalid upstream URL")
         }
-
         let scheme = url.scheme?.lowercased() ?? ""
         guard scheme == "ws" || scheme == "wss" else {
             return TVOSGatewayUpstreamConfigLoadResult(
@@ -572,17 +916,7 @@ final class TVOSLocalGatewayRuntime {
                 errorText: "upstream URL scheme must be ws or wss")
         }
 
-        let token = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_TOKEN"])
-            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.token"))
-        let password = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_PASSWORD"])
-            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.password"))
-        let role = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_ROLE"])
-            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.role"))
-            ?? "node"
-
-        let scopesRaw = Self.trimmed(env["OPENCLAW_TVOS_UPSTREAM_SCOPES"])
-            ?? Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))
-        let scopes: [String]? = scopesRaw?
+        let scopes = Self.trimmed(settings.upstreamScopesCSV)?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -590,12 +924,29 @@ final class TVOSLocalGatewayRuntime {
         return TVOSGatewayUpstreamConfigLoadResult(
             config: GatewayUpstreamWebSocketConfig(
                 url: url,
-                token: token,
-                password: password,
-                role: role,
+                token: Self.trimmed(settings.upstreamToken),
+                password: Self.trimmed(settings.upstreamPassword),
+                role: Self.trimmed(settings.upstreamRole) ?? "node",
                 scopes: scopes),
             urlText: url.absoluteString,
             errorText: nil)
+    }
+
+    private static func makeLocalLLMConfig(from settings: TVOSGatewayControlPlaneSettings) -> GatewayLocalLLMConfig {
+        let baseURL = Self.trimmed(settings.localLLMBaseURL).flatMap(URL.init(string:))
+        return GatewayLocalLLMConfig(
+            provider: settings.localLLMProvider,
+            baseURL: baseURL,
+            apiKey: Self.trimmed(settings.localLLMAPIKey),
+            model: Self.trimmed(settings.localLLMModel))
+    }
+
+    private static func defaultMemoryStorePath() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return base
+            .appendingPathComponent("OpenClawTV", isDirectory: true)
+            .appendingPathComponent("GatewayMemory.sqlite", isDirectory: false)
     }
 
     private func appendLog(_ message: String, level: TVOSGatewayRuntimeLogEntry.Level = .info) {
@@ -611,6 +962,102 @@ final class TVOSLocalGatewayRuntime {
     private static func trimmed(_ value: String?) -> String? {
         let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? nil : raw
+    }
+
+    private struct LocalIPv4Interface: Sendable {
+        let name: String
+        let address: String
+    }
+
+    private static func collectLocalIPv4Interfaces() -> [LocalIPv4Interface] {
+        var interfaces: [LocalIPv4Interface] = []
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+
+        guard getifaddrs(&pointer) == 0, let first = pointer else {
+            return []
+        }
+        defer { freeifaddrs(pointer) }
+
+        var current: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = current {
+            defer { current = entry.pointee.ifa_next }
+
+            let flags = entry.pointee.ifa_flags
+            guard (flags & UInt32(IFF_UP)) != 0, (flags & UInt32(IFF_RUNNING)) != 0 else {
+                continue
+            }
+            guard (flags & UInt32(IFF_LOOPBACK)) == 0 else {
+                continue
+            }
+            guard let addressPtr = entry.pointee.ifa_addr else {
+                continue
+            }
+            guard addressPtr.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            let interfaceName = String(cString: entry.pointee.ifa_name)
+            guard !interfaceName.hasPrefix("lo"), !interfaceName.hasPrefix("utun"),
+                  !interfaceName.hasPrefix("awdl"), !interfaceName.hasPrefix("llw")
+            else {
+                continue
+            }
+
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let getNameResult = getnameinfo(
+                addressPtr,
+                socklen_t(addressPtr.pointee.sa_len),
+                &host,
+                socklen_t(host.count),
+                nil,
+                0,
+                NI_NUMERICHOST)
+            guard getNameResult == 0 else {
+                continue
+            }
+
+            let utf8Bytes = host.map { UInt8(bitPattern: $0) }
+            let ipAddress = String(decoding: utf8Bytes.prefix { $0 != 0 }, as: UTF8.self)
+            guard !ipAddress.isEmpty else {
+                continue
+            }
+
+            interfaces.append(
+                LocalIPv4Interface(
+                    name: interfaceName,
+                    address: ipAddress))
+        }
+
+        interfaces.sort { lhs, rhs in
+            let leftPriority = Self.interfacePriority(lhs.name)
+            let rightPriority = Self.interfacePriority(rhs.name)
+            if leftPriority != rightPriority {
+                return leftPriority < rightPriority
+            }
+            if lhs.name != rhs.name {
+                return lhs.name < rhs.name
+            }
+            return lhs.address < rhs.address
+        }
+
+        var seenAddresses = Set<String>()
+        return interfaces.filter { seenAddresses.insert($0.address).inserted }
+    }
+
+    private static func interfacePriority(_ name: String) -> Int {
+        if name == "en0" {
+            return 0
+        }
+        if name == "en1" {
+            return 1
+        }
+        if name.hasPrefix("en") {
+            return 2
+        }
+        if name.hasPrefix("bridge") {
+            return 3
+        }
+        return 4
     }
 }
 #endif
