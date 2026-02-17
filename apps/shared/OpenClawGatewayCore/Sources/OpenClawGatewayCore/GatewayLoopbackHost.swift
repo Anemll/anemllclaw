@@ -13,25 +13,44 @@ public extension GatewayRPCTransport {
 public actor GatewayLoopbackTransport: GatewayRPCTransport {
     private let core: GatewayCore
     private let upstream: (any GatewayUpstreamForwarding)?
+    private let localMethods: (any GatewayLocalMethodHandling)?
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
     public init(
         core: GatewayCore = GatewayCore(),
-        upstream: (any GatewayUpstreamForwarding)? = nil)
+        upstream: (any GatewayUpstreamForwarding)? = nil,
+        localMethods: (any GatewayLocalMethodHandling)? = nil)
     {
         self.core = core
         self.upstream = upstream
+        self.localMethods = localMethods
     }
 
     public func send(
         _ request: GatewayRequestFrame,
         nowMs: Int64) async throws -> GatewayResponseFrame
     {
+        if let localMethods,
+           let localHandledResponse = await localMethods.handle(request, nowMs: nowMs)
+        {
+            return localHandledResponse
+        }
+
         let localResponse = self.core.dispatch(request, nowMs: nowMs)
-        guard Self.shouldForwardToUpstream(localResponse),
-              let upstream = self.upstream
-        else {
+        guard Self.shouldForwardToUpstream(localResponse) else {
+            return localResponse
+        }
+        guard let upstream = self.upstream else {
+            if Self.requiresUpstreamWithoutConfiguredForwarder(
+                method: request.method,
+                response: localResponse)
+            {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .upstreamRequired,
+                    message: "upstream required for \(request.method): configure upstream URL/token or enable local support")
+            }
             return localResponse
         }
 
@@ -51,6 +70,25 @@ public actor GatewayLoopbackTransport: GatewayRPCTransport {
         }
         return code == GatewayCoreErrorCode.unsupportedOnHost.rawValue
             || code == GatewayCoreErrorCode.methodNotFound.rawValue
+    }
+
+    private static func requiresUpstreamWithoutConfiguredForwarder(
+        method: String,
+        response: GatewayResponseFrame) -> Bool
+    {
+        guard let code = response.error?.code else {
+            return false
+        }
+        if code == GatewayCoreErrorCode.unsupportedOnHost.rawValue {
+            return true
+        }
+        guard code == GatewayCoreErrorCode.methodNotFound.rawValue else {
+            return false
+        }
+        if method.hasPrefix("chat.") || method.hasPrefix("memory.") {
+            return true
+        }
+        return GatewayRoutingPolicy.requiresUpstream(method)
     }
 
     public func sendJSON(

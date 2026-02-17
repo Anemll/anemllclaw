@@ -6,6 +6,7 @@ public enum GatewayCoreErrorCode: String, Codable, Sendable, Equatable {
     case invalidRequest = "INVALID_REQUEST"
     case methodNotFound = "METHOD_NOT_FOUND"
     case unsupportedOnHost = "UNSUPPORTED_ON_HOST"
+    case upstreamRequired = "UPSTREAM_REQUIRED"
     case internalError = "INTERNAL_ERROR"
 }
 

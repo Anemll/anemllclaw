@@ -1,0 +1,376 @@
+import Foundation
+
+public enum GatewayLocalLLMProviderKind: String, Codable, Sendable, Equatable {
+    case disabled
+    case openAICompatible = "openai-compatible"
+    case anthropicCompatible = "anthropic-compatible"
+}
+
+public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
+    public let provider: GatewayLocalLLMProviderKind
+    public let baseURL: URL?
+    public let apiKey: String?
+    public let model: String?
+    public let systemPrompt: String?
+    public let temperature: Double?
+    public let maxOutputTokens: Int?
+
+    public init(
+        provider: GatewayLocalLLMProviderKind = .disabled,
+        baseURL: URL? = nil,
+        apiKey: String? = nil,
+        model: String? = nil,
+        systemPrompt: String? = nil,
+        temperature: Double? = nil,
+        maxOutputTokens: Int? = nil)
+    {
+        self.provider = provider
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.model = model
+        self.systemPrompt = systemPrompt
+        self.temperature = temperature
+        self.maxOutputTokens = maxOutputTokens
+    }
+
+    public var isConfigured: Bool {
+        guard self.provider != .disabled else { return false }
+        guard self.baseURL != nil else { return false }
+        guard let apiKey = self.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty else {
+            return false
+        }
+        guard let model = self.model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
+            return false
+        }
+        return true
+    }
+}
+
+public struct GatewayLocalLLMMessage: Sendable, Equatable {
+    public let role: String
+    public let text: String
+
+    public init(role: String, text: String) {
+        self.role = role
+        self.text = text
+    }
+}
+
+public struct GatewayLocalLLMRequest: Sendable, Equatable {
+    public let messages: [GatewayLocalLLMMessage]
+    public let thinkingLevel: String?
+
+    public init(messages: [GatewayLocalLLMMessage], thinkingLevel: String? = nil) {
+        self.messages = messages
+        self.thinkingLevel = thinkingLevel
+    }
+}
+
+public struct GatewayLocalLLMResponse: Sendable, Equatable {
+    public let text: String
+    public let model: String
+    public let provider: GatewayLocalLLMProviderKind
+    public let usageInputTokens: Int?
+    public let usageOutputTokens: Int?
+
+    public init(
+        text: String,
+        model: String,
+        provider: GatewayLocalLLMProviderKind,
+        usageInputTokens: Int? = nil,
+        usageOutputTokens: Int? = nil)
+    {
+        self.text = text
+        self.model = model
+        self.provider = provider
+        self.usageInputTokens = usageInputTokens
+        self.usageOutputTokens = usageOutputTokens
+    }
+}
+
+public enum GatewayLocalLLMProviderError: Error, Sendable, Equatable {
+    case notConfigured
+    case invalidRequest(String)
+    case httpError(status: Int, message: String)
+    case invalidResponse(String)
+}
+
+public protocol GatewayLocalLLMProvider: Sendable {
+    var kind: GatewayLocalLLMProviderKind { get }
+    var model: String { get }
+    func complete(_ request: GatewayLocalLLMRequest) async throws -> GatewayLocalLLMResponse
+}
+
+public enum GatewayLocalLLMProviderFactory {
+    public static func make(
+        config: GatewayLocalLLMConfig,
+        session: URLSession = URLSession(configuration: .ephemeral)) -> (any GatewayLocalLLMProvider)?
+    {
+        guard config.isConfigured else { return nil }
+        switch config.provider {
+        case .disabled:
+            return nil
+        case .openAICompatible:
+            return GatewayOpenAICompatibleLLMProvider(config: config, session: session)
+        case .anthropicCompatible:
+            return GatewayAnthropicCompatibleLLMProvider(config: config, session: session)
+        }
+    }
+}
+
+public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMProvider {
+    public let kind: GatewayLocalLLMProviderKind = .openAICompatible
+    public let model: String
+
+    private let config: GatewayLocalLLMConfig
+    private let endpointURL: URL
+    private let session: URLSession
+
+    public init(config: GatewayLocalLLMConfig, session: URLSession = URLSession(configuration: .ephemeral)) {
+        self.config = config
+        self.model = config.model ?? ""
+        self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL)
+        self.session = session
+    }
+
+    public func complete(_ request: GatewayLocalLLMRequest) async throws -> GatewayLocalLLMResponse {
+        guard let apiKey = self.config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty else {
+            throw GatewayLocalLLMProviderError.notConfigured
+        }
+
+        var payloadMessages: [[String: Any]] = []
+        if let systemPrompt = self.config.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !systemPrompt.isEmpty
+        {
+            payloadMessages.append([
+                "role": "system",
+                "content": systemPrompt,
+            ])
+        }
+        payloadMessages.append(
+            contentsOf: request.messages.map {
+                [
+                    "role": $0.role,
+                    "content": $0.text,
+                ]
+            })
+
+        var body: [String: Any] = [
+            "model": self.model,
+            "messages": payloadMessages,
+            "stream": false,
+        ]
+        if let temperature = self.config.temperature {
+            body["temperature"] = temperature
+        }
+        if let maxTokens = self.config.maxOutputTokens {
+            body["max_tokens"] = max(1, maxTokens)
+        }
+
+        var urlRequest = URLRequest(url: self.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        urlRequest.httpBody = try Self.makeJSONBody(body)
+
+        let (data, response) = try await self.session.data(for: urlRequest)
+        let httpResponse = response as? HTTPURLResponse
+        if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
+            throw GatewayLocalLLMProviderError.httpError(
+                status: statusCode,
+                message: Self.errorText(data))
+        }
+
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GatewayLocalLLMProviderError.invalidResponse("openai-compatible response is not a JSON object")
+        }
+        guard let choices = root["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any]
+        else {
+            throw GatewayLocalLLMProviderError.invalidResponse("openai-compatible response missing choices[0].message")
+        }
+
+        let text = Self.readOpenAIContent(message["content"])
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidResponse("openai-compatible response content is empty")
+        }
+
+        let usage = root["usage"] as? [String: Any]
+        let input = Self.readInt(usage?["prompt_tokens"])
+        let output = Self.readInt(usage?["completion_tokens"])
+        return GatewayLocalLLMResponse(
+            text: trimmed,
+            model: self.model,
+            provider: self.kind,
+            usageInputTokens: input,
+            usageOutputTokens: output)
+    }
+
+    private static func resolveEndpoint(baseURL: URL?) -> URL {
+        guard var baseURL else {
+            return URL(string: "https://api.openai.com/v1/chat/completions")!
+        }
+
+        let path = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            return baseURL.appendingPathComponent("v1/chat/completions")
+        }
+        if path.hasSuffix("chat/completions") {
+            return baseURL
+        }
+        if path.hasSuffix("v1") {
+            return baseURL.appendingPathComponent("chat/completions")
+        }
+        return baseURL.appendingPathComponent("v1/chat/completions")
+    }
+}
+
+public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMProvider {
+    public let kind: GatewayLocalLLMProviderKind = .anthropicCompatible
+    public let model: String
+
+    private let config: GatewayLocalLLMConfig
+    private let endpointURL: URL
+    private let session: URLSession
+
+    public init(config: GatewayLocalLLMConfig, session: URLSession = URLSession(configuration: .ephemeral)) {
+        self.config = config
+        self.model = config.model ?? ""
+        self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL)
+        self.session = session
+    }
+
+    public func complete(_ request: GatewayLocalLLMRequest) async throws -> GatewayLocalLLMResponse {
+        guard let apiKey = self.config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty else {
+            throw GatewayLocalLLMProviderError.notConfigured
+        }
+
+        let anthropicMessages: [[String: Any]] = request.messages.compactMap { message in
+            let role = message.role == "assistant" ? "assistant" : "user"
+            return [
+                "role": role,
+                "content": message.text,
+            ]
+        }
+        guard !anthropicMessages.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
+        }
+
+        var body: [String: Any] = [
+            "model": self.model,
+            "messages": anthropicMessages,
+            "max_tokens": max(64, self.config.maxOutputTokens ?? 1_024),
+        ]
+        if let systemPrompt = self.config.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !systemPrompt.isEmpty
+        {
+            body["system"] = systemPrompt
+        }
+        if let temperature = self.config.temperature {
+            body["temperature"] = temperature
+        }
+
+        var urlRequest = URLRequest(url: self.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        urlRequest.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        urlRequest.httpBody = try Self.makeJSONBody(body)
+
+        let (data, response) = try await self.session.data(for: urlRequest)
+        let httpResponse = response as? HTTPURLResponse
+        if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
+            throw GatewayLocalLLMProviderError.httpError(
+                status: statusCode,
+                message: Self.errorText(data))
+        }
+
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GatewayLocalLLMProviderError.invalidResponse(
+                "anthropic-compatible response is not a JSON object")
+        }
+
+        let text = Self.readAnthropicText(root["content"])
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidResponse("anthropic-compatible response content is empty")
+        }
+
+        let usage = root["usage"] as? [String: Any]
+        let input = Self.readInt(usage?["input_tokens"])
+        let output = Self.readInt(usage?["output_tokens"])
+        return GatewayLocalLLMResponse(
+            text: trimmed,
+            model: self.model,
+            provider: self.kind,
+            usageInputTokens: input,
+            usageOutputTokens: output)
+    }
+
+    private static func resolveEndpoint(baseURL: URL?) -> URL {
+        guard let baseURL else {
+            return URL(string: "https://api.anthropic.com/v1/messages")!
+        }
+
+        let path = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            return baseURL.appendingPathComponent("v1/messages")
+        }
+        if path.hasSuffix("messages") {
+            return baseURL
+        }
+        if path.hasSuffix("v1") {
+            return baseURL.appendingPathComponent("messages")
+        }
+        return baseURL.appendingPathComponent("v1/messages")
+    }
+}
+
+private extension GatewayLocalLLMProvider {
+    static func makeJSONBody(_ value: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: value)
+    }
+
+    static func readOpenAIContent(_ raw: Any?) -> String {
+        if let text = raw as? String {
+            return text
+        }
+        if let list = raw as? [[String: Any]] {
+            let parts = list.compactMap { item in
+                (item["text"] as? String) ?? (item["content"] as? String)
+            }
+            return parts.joined(separator: "\n")
+        }
+        return ""
+    }
+
+    static func readAnthropicText(_ raw: Any?) -> String {
+        guard let blocks = raw as? [[String: Any]] else { return "" }
+        let texts = blocks.compactMap { block -> String? in
+            guard let type = block["type"] as? String, type == "text" else { return nil }
+            return block["text"] as? String
+        }
+        return texts.joined(separator: "\n")
+    }
+
+    static func readInt(_ raw: Any?) -> Int? {
+        if let value = raw as? Int {
+            return value
+        }
+        if let value = raw as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+
+    static func errorText(_ data: Data) -> String {
+        guard let text = String(data: data, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return "upstream returned an empty error body"
+        }
+        return text
+    }
+}

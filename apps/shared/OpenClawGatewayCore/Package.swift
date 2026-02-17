@@ -20,6 +20,9 @@ let package = Package(
             path: "Sources/OpenClawGatewayCore",
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
+            ],
+            linkerSettings: [
+                .linkedLibrary("sqlite3"),
             ]),
         .testTarget(
             name: "OpenClawGatewayCoreTests",
