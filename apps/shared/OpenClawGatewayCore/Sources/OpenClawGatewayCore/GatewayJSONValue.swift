@@ -91,6 +91,30 @@ public enum GatewayJSONValue: Codable, Sendable, Equatable {
         return value
     }
 
+    public var foundationJSONValue: Any {
+        switch self {
+        case .null:
+            return NSNull()
+        case let .bool(value):
+            return value
+        case let .integer(value):
+            return value
+        case let .double(value):
+            return value
+        case let .string(value):
+            return value
+        case let .array(value):
+            return value.map(\.foundationJSONValue)
+        case let .object(value):
+            return value.mapValues(\.foundationJSONValue)
+        }
+    }
+
+    public var foundationJSONObjectValue: [String: Any]? {
+        guard case let .object(value) = self else { return nil }
+        return value.mapValues(\.foundationJSONValue)
+    }
+
     public func jsonString() throws -> String {
         let data = try JSONEncoder().encode(self)
         guard let text = String(data: data, encoding: .utf8) else {

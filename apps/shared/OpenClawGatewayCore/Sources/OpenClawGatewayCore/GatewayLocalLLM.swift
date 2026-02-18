@@ -4,6 +4,7 @@ public enum GatewayLocalLLMProviderKind: String, Codable, Sendable, Equatable {
     case disabled
     case openAICompatible = "openai-compatible"
     case anthropicCompatible = "anthropic-compatible"
+    case minimaxCompatible = "minimax-compatible"
 }
 
 public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
@@ -56,13 +57,116 @@ public struct GatewayLocalLLMMessage: Sendable, Equatable {
     }
 }
 
+public enum GatewayLocalLLMToolMessageRole: String, Codable, Sendable, Equatable {
+    case system
+    case user
+    case assistant
+    case tool
+}
+
+public struct GatewayLocalLLMToolCall: Sendable, Codable, Equatable {
+    public let id: String
+    public let name: String
+    public let argumentsJSON: String
+
+    public init(id: String, name: String, argumentsJSON: String) {
+        self.id = id
+        self.name = name
+        self.argumentsJSON = argumentsJSON
+    }
+}
+
+public struct GatewayLocalLLMToolMessage: Sendable, Codable, Equatable {
+    public let role: GatewayLocalLLMToolMessageRole
+    public let text: String?
+    public let toolCallID: String?
+    public let name: String?
+    public let toolCalls: [GatewayLocalLLMToolCall]
+
+    public init(
+        role: GatewayLocalLLMToolMessageRole,
+        text: String? = nil,
+        toolCallID: String? = nil,
+        name: String? = nil,
+        toolCalls: [GatewayLocalLLMToolCall] = [])
+    {
+        self.role = role
+        self.text = text
+        self.toolCallID = toolCallID
+        self.name = name
+        self.toolCalls = toolCalls
+    }
+}
+
+public struct GatewayLocalLLMToolDefinition: Sendable, Codable, Equatable {
+    public let name: String
+    public let description: String
+    public let parameters: GatewayJSONValue
+
+    public init(name: String, description: String, parameters: GatewayJSONValue) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    }
+}
+
+public struct GatewayLocalLLMToolRequest: Sendable, Codable, Equatable {
+    public let messages: [GatewayLocalLLMToolMessage]
+    public let tools: [GatewayLocalLLMToolDefinition]
+    public let thinkingLevel: String?
+    public let systemPrompt: String?
+
+    public init(
+        messages: [GatewayLocalLLMToolMessage],
+        tools: [GatewayLocalLLMToolDefinition],
+        thinkingLevel: String? = nil,
+        systemPrompt: String? = nil)
+    {
+        self.messages = messages
+        self.tools = tools
+        self.thinkingLevel = thinkingLevel
+        self.systemPrompt = systemPrompt
+    }
+}
+
+public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
+    public let text: String
+    public let toolCalls: [GatewayLocalLLMToolCall]
+    public let model: String
+    public let provider: GatewayLocalLLMProviderKind
+    public let usageInputTokens: Int?
+    public let usageOutputTokens: Int?
+
+    public init(
+        text: String,
+        toolCalls: [GatewayLocalLLMToolCall],
+        model: String,
+        provider: GatewayLocalLLMProviderKind,
+        usageInputTokens: Int? = nil,
+        usageOutputTokens: Int? = nil)
+    {
+        self.text = text
+        self.toolCalls = toolCalls
+        self.model = model
+        self.provider = provider
+        self.usageInputTokens = usageInputTokens
+        self.usageOutputTokens = usageOutputTokens
+    }
+}
+
 public struct GatewayLocalLLMRequest: Sendable, Equatable {
     public let messages: [GatewayLocalLLMMessage]
     public let thinkingLevel: String?
+    public let systemPrompt: String?
 
-    public init(messages: [GatewayLocalLLMMessage], thinkingLevel: String? = nil) {
+    public init(
+        messages: [GatewayLocalLLMMessage],
+        thinkingLevel: String? = nil,
+        systemPrompt: String? = nil)
+    {
         self.messages = messages
         self.thinkingLevel = thinkingLevel
+        self.systemPrompt = systemPrompt
     }
 }
 
@@ -101,6 +205,10 @@ public protocol GatewayLocalLLMProvider: Sendable {
     func complete(_ request: GatewayLocalLLMRequest) async throws -> GatewayLocalLLMResponse
 }
 
+public protocol GatewayLocalLLMToolCallableProvider: GatewayLocalLLMProvider {
+    func completeWithTools(_ request: GatewayLocalLLMToolRequest) async throws -> GatewayLocalLLMToolResponse
+}
+
 public enum GatewayLocalLLMProviderFactory {
     public static func make(
         config: GatewayLocalLLMConfig,
@@ -114,22 +222,33 @@ public enum GatewayLocalLLMProviderFactory {
             return GatewayOpenAICompatibleLLMProvider(config: config, session: session)
         case .anthropicCompatible:
             return GatewayAnthropicCompatibleLLMProvider(config: config, session: session)
+        case .minimaxCompatible:
+            return GatewayOpenAICompatibleLLMProvider(
+                config: config,
+                session: session,
+                kind: .minimaxCompatible)
         }
     }
 }
 
-public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMProvider {
-    public let kind: GatewayLocalLLMProviderKind = .openAICompatible
+public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProvider {
+    public let kind: GatewayLocalLLMProviderKind
     public let model: String
 
     private let config: GatewayLocalLLMConfig
     private let endpointURL: URL
     private let session: URLSession
 
-    public init(config: GatewayLocalLLMConfig, session: URLSession = URLSession(configuration: .ephemeral)) {
+    public init(
+        config: GatewayLocalLLMConfig,
+        session: URLSession = URLSession(configuration: .ephemeral),
+        kind: GatewayLocalLLMProviderKind = .openAICompatible)
+    {
         self.config = config
+        self.kind = kind
         self.model = config.model ?? ""
-        self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL)
+        let defaultEndpoint = Self.defaultEndpointURL(for: kind)
+        self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL, defaultEndpoint: defaultEndpoint)
         self.session = session
     }
 
@@ -139,7 +258,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMProvider {
         }
 
         var payloadMessages: [[String: Any]] = []
-        if let systemPrompt = self.config.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let systemPrompt = (request.systemPrompt ?? self.config.systemPrompt)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
            !systemPrompt.isEmpty
         {
             payloadMessages.append([
@@ -208,9 +328,151 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMProvider {
             usageOutputTokens: output)
     }
 
-    private static func resolveEndpoint(baseURL: URL?) -> URL {
-        guard var baseURL else {
+    public func completeWithTools(_ request: GatewayLocalLLMToolRequest) async throws -> GatewayLocalLLMToolResponse {
+        guard let apiKey = self.config.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !apiKey.isEmpty else {
+            throw GatewayLocalLLMProviderError.notConfigured
+        }
+        guard !request.messages.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
+        }
+
+        var payloadMessages: [[String: Any]] = []
+        if let systemPrompt = (request.systemPrompt ?? self.config.systemPrompt)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !systemPrompt.isEmpty
+        {
+            payloadMessages.append([
+                "role": "system",
+                "content": systemPrompt,
+            ])
+        }
+
+        for message in request.messages {
+            switch message.role {
+            case .system:
+                payloadMessages.append([
+                    "role": "system",
+                    "content": message.text ?? "",
+                ])
+            case .user:
+                payloadMessages.append([
+                    "role": "user",
+                    "content": message.text ?? "",
+                ])
+            case .assistant:
+                var item: [String: Any] = [
+                    "role": "assistant",
+                ]
+                item["content"] = message.text ?? ""
+                if !message.toolCalls.isEmpty {
+                    item["tool_calls"] = message.toolCalls.map { toolCall in
+                        [
+                            "id": toolCall.id,
+                            "type": "function",
+                            "function": [
+                                "name": toolCall.name,
+                                "arguments": toolCall.argumentsJSON,
+                            ],
+                        ] as [String: Any]
+                    }
+                }
+                payloadMessages.append(item)
+            case .tool:
+                var item: [String: Any] = [
+                    "role": "tool",
+                    "content": message.text ?? "",
+                ]
+                if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
+                    item["tool_call_id"] = toolCallID
+                }
+                if let name = message.name, !name.isEmpty {
+                    item["name"] = name
+                }
+                payloadMessages.append(item)
+            }
+        }
+
+        var body: [String: Any] = [
+            "model": self.model,
+            "messages": payloadMessages,
+            "stream": false,
+            "tool_choice": "auto",
+        ]
+        if !request.tools.isEmpty {
+            body["tools"] = request.tools.map { tool in
+                [
+                    "type": "function",
+                    "function": [
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters.foundationJSONObjectValue ?? [:],
+                    ] as [String: Any],
+                ] as [String: Any]
+            }
+        }
+        if let temperature = self.config.temperature {
+            body["temperature"] = temperature
+        }
+        if let maxTokens = self.config.maxOutputTokens {
+            body["max_tokens"] = max(1, maxTokens)
+        }
+
+        var urlRequest = URLRequest(url: self.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        urlRequest.httpBody = try Self.makeJSONBody(body)
+
+        let (data, response) = try await self.session.data(for: urlRequest)
+        let httpResponse = response as? HTTPURLResponse
+        if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
+            throw GatewayLocalLLMProviderError.httpError(
+                status: statusCode,
+                message: Self.errorText(data))
+        }
+
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GatewayLocalLLMProviderError.invalidResponse("openai-compatible response is not a JSON object")
+        }
+        guard let choices = root["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any]
+        else {
+            throw GatewayLocalLLMProviderError.invalidResponse("openai-compatible response missing choices[0].message")
+        }
+
+        let text = Self.readOpenAIContent(message["content"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolCalls = Self.readOpenAIToolCalls(message["tool_calls"])
+
+        if text.isEmpty, toolCalls.isEmpty {
+            throw GatewayLocalLLMProviderError.invalidResponse(
+                "openai-compatible response missing both content and tool calls")
+        }
+
+        let usage = root["usage"] as? [String: Any]
+        let input = Self.readInt(usage?["prompt_tokens"])
+        let output = Self.readInt(usage?["completion_tokens"])
+        return GatewayLocalLLMToolResponse(
+            text: text,
+            toolCalls: toolCalls,
+            model: self.model,
+            provider: self.kind,
+            usageInputTokens: input,
+            usageOutputTokens: output)
+    }
+
+    private static func defaultEndpointURL(for provider: GatewayLocalLLMProviderKind) -> URL {
+        switch provider {
+        case .minimaxCompatible:
+            return URL(string: "https://api.minimax.io/v1/chat/completions")!
+        case .disabled, .openAICompatible, .anthropicCompatible:
             return URL(string: "https://api.openai.com/v1/chat/completions")!
+        }
+    }
+
+    private static func resolveEndpoint(baseURL: URL?, defaultEndpoint: URL) -> URL {
+        guard let baseURL else {
+            return defaultEndpoint
         }
 
         let path = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -263,8 +525,8 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMProvider {
             "messages": anthropicMessages,
             "max_tokens": max(64, self.config.maxOutputTokens ?? 1_024),
         ]
-        if let systemPrompt = self.config.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !systemPrompt.isEmpty
+        if let systemPrompt = request.systemPrompt ?? self.config.systemPrompt,
+           !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             body["system"] = systemPrompt
         }
@@ -330,7 +592,10 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMProvider {
 
 private extension GatewayLocalLLMProvider {
     static func makeJSONBody(_ value: [String: Any]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: value)
+        guard JSONSerialization.isValidJSONObject(value) else {
+            throw GatewayLocalLLMProviderError.invalidRequest("request body contains non-JSON values")
+        }
+        return try JSONSerialization.data(withJSONObject: value)
     }
 
     static func readOpenAIContent(_ raw: Any?) -> String {
@@ -363,6 +628,32 @@ private extension GatewayLocalLLMProvider {
             return value.intValue
         }
         return nil
+    }
+
+    static func readOpenAIToolCalls(_ raw: Any?) -> [GatewayLocalLLMToolCall] {
+        guard let calls = raw as? [[String: Any]] else {
+            return []
+        }
+        return calls.compactMap { call in
+            let id = (call["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let function = call["function"] as? [String: Any] else {
+                return nil
+            }
+            let name = (function["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else {
+                return nil
+            }
+            let arguments: String
+            if let rawArguments = function["arguments"] as? String {
+                arguments = rawArguments
+            } else {
+                arguments = "{}"
+            }
+            return GatewayLocalLLMToolCall(
+                id: id.isEmpty ? UUID().uuidString : id,
+                name: name,
+                argumentsJSON: arguments)
+        }
     }
 
     static func errorText(_ data: Data) -> String {

@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw tvOS Admin</title>
+    <style>
+      :root {
+        --bg: #0b0f16;
+        --panel: #131a26;
+        --panel-2: #1a2333;
+        --fg: #e8eef9;
+        --muted: #8ea2c5;
+        --ok: #2ecc71;
+        --warn: #f1c40f;
+        --err: #ff5a5f;
+        --line: #25344e;
+        --btn: #274272;
+        --btn-2: #314d7a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at 20% 0%, #182642 0%, var(--bg) 50%);
+        color: var(--fg);
+        font: 15px/1.4 "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+      }
+
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 26px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      @media (max-width: 1080px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .panel {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+      }
+
+      .panel h2 {
+        margin: 0 0 10px;
+        font-size: 17px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 170px 1fr;
+        gap: 10px;
+        align-items: center;
+        margin: 8px 0;
+      }
+
+      .row label {
+        color: var(--muted);
+      }
+
+      input,
+      select,
+      button,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0f1521;
+        color: var(--fg);
+        padding: 8px 10px;
+        font: inherit;
+      }
+
+      button {
+        background: var(--btn);
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--btn-2);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+
+      @media (max-width: 1080px) {
+        .actions {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 10px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #7788aa;
+      }
+
+      .dot.ok {
+        background: var(--ok);
+      }
+
+      .dot.warn {
+        background: var(--warn);
+      }
+
+      .dot.err {
+        background: var(--err);
+      }
+
+      pre {
+        margin: 0;
+        max-height: 340px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #0b111b;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .small {
+        font-size: 12px;
+      }
+
+      .inline {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      #bootstrap-file-content {
+        max-height: 300px;
+      }
+
+      #bootstrap-file-meta {
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>OpenClaw tvOS Admin Web Client</h1>
+      <p class="muted small">
+        Connect to the tvOS gateway over WebSocket, then run <code>config.get</code>,
+        <code>config.set</code>, and <code>runtime.restart</code>.
+      </p>
+
+      <div class="panel" style="margin-bottom: 14px">
+        <h2>Connection</h2>
+        <div class="row">
+          <label for="gateway-url">Gateway URL</label>
+          <input id="gateway-url" value="ws://127.0.0.1:18789" />
+        </div>
+        <div class="inline">
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="connect-auth-mode">Auth Mode</label>
+            <select id="connect-auth-mode">
+              <option value="none">none</option>
+              <option value="token">token</option>
+              <option value="password">password</option>
+            </select>
+          </div>
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="connect-secret">Token / Password</label>
+            <input id="connect-secret" type="password" placeholder="optional if auth mode = none" />
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center">
+          <button id="connect-btn">Connect</button>
+          <button id="disconnect-btn" disabled>Disconnect</button>
+          <div class="status">
+            <span class="dot" id="conn-dot"></span>
+            <span id="conn-text">disconnected</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-bottom: 14px">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button id="load-btn" disabled>Load Config</button>
+          <button id="save-btn" disabled>Save Config</button>
+          <button id="restart-btn" disabled>Restart Runtime</button>
+          <button id="health-btn" disabled>Health</button>
+        </div>
+        <div class="inline" style="margin-top: 10px">
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="monitor-session-key">Monitor Session</label>
+            <input id="monitor-session-key" value="main" />
+          </div>
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="monitor-interval-sec">Monitor Every (s)</label>
+            <input id="monitor-interval-sec" type="number" min="2" max="60" value="5" />
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center">
+          <button id="monitor-toggle-btn" disabled>Start Monitor</button>
+          <label class="small muted" style="display: inline-flex; align-items: center; gap: 6px">
+            <input id="monitor-verbose" type="checkbox" style="width: auto" checked />
+            Extended Log
+          </label>
+          <span id="monitor-status" class="muted small">monitor off</span>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <h2>Listener + Upstream</h2>
+          <div class="row">
+            <label for="cfg-auth-mode">Listener Auth Mode</label>
+            <select id="cfg-auth-mode">
+              <option value="none">none</option>
+              <option value="token">token</option>
+              <option value="password">password</option>
+            </select>
+          </div>
+          <div class="row">
+            <label for="cfg-auth-token">Listener Token</label>
+            <input id="cfg-auth-token" type="password" />
+          </div>
+          <div class="row">
+            <label for="cfg-auth-password">Listener Password</label>
+            <input id="cfg-auth-password" type="password" />
+          </div>
+          <div class="row">
+            <label for="cfg-upstream-url">Upstream URL</label>
+            <input id="cfg-upstream-url" placeholder="ws://host:18789" />
+          </div>
+          <div class="row">
+            <label for="cfg-upstream-token">Upstream Token</label>
+            <input id="cfg-upstream-token" type="password" />
+          </div>
+          <div class="row">
+            <label for="cfg-upstream-password">Upstream Password</label>
+            <input id="cfg-upstream-password" type="password" />
+          </div>
+          <div class="row">
+            <label for="cfg-upstream-role">Upstream Role</label>
+            <input id="cfg-upstream-role" placeholder="node" />
+          </div>
+          <div class="row">
+            <label for="cfg-upstream-scopes">Upstream Scopes CSV</label>
+            <input id="cfg-upstream-scopes" placeholder="operator.admin,node.exec" />
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Local LLM + Runtime State</h2>
+          <div class="row">
+            <label for="cfg-llm-provider">Local LLM Provider</label>
+            <select id="cfg-llm-provider">
+              <option value="disabled">disabled</option>
+              <option value="openai-compatible">openai-compatible</option>
+              <option value="anthropic-compatible">anthropic-compatible</option>
+              <option value="minimax-compatible">minimax-compatible</option>
+            </select>
+          </div>
+          <div class="row">
+            <label for="cfg-llm-base-url">Base URL</label>
+            <input id="cfg-llm-base-url" placeholder="https://api.minimax.io/v1" />
+          </div>
+          <div class="row">
+            <label for="cfg-llm-api-key">API Key</label>
+            <input id="cfg-llm-api-key" type="password" />
+          </div>
+          <div class="row">
+            <label for="cfg-llm-model">Model</label>
+            <input id="cfg-llm-model" placeholder="MiniMax-M2.5" />
+          </div>
+
+          <div style="margin-top: 10px">
+            <div class="muted small" style="margin-bottom: 6px">Runtime state (from config.get / restart)</div>
+            <pre id="runtime-state">{}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top: 14px">
+        <div class="panel">
+          <h2>Bootstrap Files</h2>
+          <div class="row">
+            <label for="bootstrap-workspace">Workspace Path</label>
+            <input id="bootstrap-workspace" readonly />
+          </div>
+          <div class="row">
+            <label for="bootstrap-file-select">File</label>
+            <select id="bootstrap-file-select"></select>
+          </div>
+          <div id="bootstrap-file-meta" class="muted small"></div>
+          <pre id="bootstrap-file-content">No bootstrap file data yet.</pre>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top: 14px">
+        <div class="panel">
+          <h2>Last RPC Result</h2>
+          <pre id="result-view">No result yet.</pre>
+        </div>
+        <div class="panel">
+          <h2>Client Log</h2>
+          <pre id="log-view"></pre>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+
+      const state = {
+        ws: null,
+        connected: false,
+        pending: new Map(),
+        bootstrapFiles: [],
+        bootstrapStatus: "",
+        monitorTimer: null,
+        monitorActive: false,
+        monitorBusy: false,
+        monitorLastStamp: "",
+        monitorLastHealthStamp: "",
+      };
+
+      const connectBtn = el("connect-btn");
+      const disconnectBtn = el("disconnect-btn");
+      const loadBtn = el("load-btn");
+      const saveBtn = el("save-btn");
+      const restartBtn = el("restart-btn");
+      const healthBtn = el("health-btn");
+      const monitorToggleBtn = el("monitor-toggle-btn");
+      const monitorVerbose = el("monitor-verbose");
+      const connDot = el("conn-dot");
+      const connText = el("conn-text");
+      const monitorStatus = el("monitor-status");
+      const resultView = el("result-view");
+      const logView = el("log-view");
+      const runtimeState = el("runtime-state");
+      const bootstrapWorkspace = el("bootstrap-workspace");
+      const bootstrapFileSelect = el("bootstrap-file-select");
+      const bootstrapFileMeta = el("bootstrap-file-meta");
+      const bootstrapFileContent = el("bootstrap-file-content");
+
+      const connectAuthMode = el("connect-auth-mode");
+      const connectSecret = el("connect-secret");
+      const gatewayURL = el("gateway-url");
+
+      const cfgAuthMode = el("cfg-auth-mode");
+      const cfgAuthToken = el("cfg-auth-token");
+      const cfgAuthPassword = el("cfg-auth-password");
+      const cfgUpstreamURL = el("cfg-upstream-url");
+      const cfgUpstreamToken = el("cfg-upstream-token");
+      const cfgUpstreamPassword = el("cfg-upstream-password");
+      const cfgUpstreamRole = el("cfg-upstream-role");
+      const cfgUpstreamScopes = el("cfg-upstream-scopes");
+      const cfgLLMProvider = el("cfg-llm-provider");
+      const cfgLLMBaseURL = el("cfg-llm-base-url");
+      const cfgLLMAPIKey = el("cfg-llm-api-key");
+      const cfgLLMModel = el("cfg-llm-model");
+      const monitorSessionKey = el("monitor-session-key");
+      const monitorIntervalSec = el("monitor-interval-sec");
+
+      const storage = {
+        url: "openclaw.tvos.admin.url",
+        authMode: "openclaw.tvos.admin.authMode",
+      };
+
+      function now() {
+        return new Date().toISOString().replace("T", " ").replace("Z", "");
+      }
+
+      function log(message, level = "INFO") {
+        logView.textContent += `[${now()}] [${level}] ${message}\n`;
+        logView.scrollTop = logView.scrollHeight;
+      }
+
+      function setStatus(kind, text) {
+        connDot.className = `dot ${kind || ""}`;
+        connText.textContent = text;
+      }
+
+      function setConnectedUI(connected) {
+        state.connected = connected;
+        connectBtn.disabled = connected;
+        disconnectBtn.disabled = !connected;
+        loadBtn.disabled = !connected;
+        saveBtn.disabled = !connected;
+        restartBtn.disabled = !connected;
+        healthBtn.disabled = !connected;
+        monitorToggleBtn.disabled = !connected;
+        if (!connected) {
+          monitorStatus.textContent = "monitor off";
+        }
+      }
+
+      function setMonitorUI(active) {
+        state.monitorActive = active;
+        monitorToggleBtn.textContent = active ? "Stop Monitor" : "Start Monitor";
+        if (!active) {
+          monitorStatus.textContent = "monitor off";
+        }
+      }
+
+      function stopMonitor() {
+        if (state.monitorTimer) {
+          clearInterval(state.monitorTimer);
+          state.monitorTimer = null;
+        }
+        state.monitorBusy = false;
+        state.monitorLastStamp = "";
+        state.monitorLastHealthStamp = "";
+        setMonitorUI(false);
+      }
+
+      function makeID(prefix) {
+        const suffix =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `${prefix}-${suffix}`;
+      }
+
+      function jsonSafe(text) {
+        try {
+          return JSON.stringify(text, null, 2);
+        } catch {
+          return String(text);
+        }
+      }
+
+      function renderResult(value) {
+        resultView.textContent = jsonSafe(value);
+      }
+
+      function request(method, params = {}, options = {}) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          throw new Error("WebSocket is not connected");
+        }
+
+        const id = makeID(method.replace(/\W+/g, "_"));
+        const frame = { type: "req", id, method, params };
+        const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1000, options.timeoutMs) : 12000;
+        const quiet = options.quiet === true;
+
+        return new Promise((resolve, reject) => {
+          const startedAt = Date.now();
+          if (!quiet) {
+            log(`tx ${method} id=${id} timeoutMs=${timeoutMs}`);
+          }
+          const timeout = setTimeout(() => {
+            state.pending.delete(id);
+            const elapsedMs = Date.now() - startedAt;
+            reject(new Error(`timeout waiting for ${method} (${elapsedMs}ms)`));
+          }, timeoutMs);
+
+          state.pending.set(id, { resolve, reject, timeout, method, startedAt, quiet });
+          state.ws.send(JSON.stringify(frame));
+        });
+      }
+
+      function onFrame(frame) {
+        if (!frame || typeof frame !== "object") {
+          return;
+        }
+
+        if (frame.type === "res" && typeof frame.id === "string") {
+          const pending = state.pending.get(frame.id);
+          if (!pending) {
+            return;
+          }
+          state.pending.delete(frame.id);
+          clearTimeout(pending.timeout);
+          const elapsedMs = Date.now() - pending.startedAt;
+          if (!pending.quiet) {
+            log(`rx ${pending.method} ok=${frame.ok === true ? "true" : "false"} elapsedMs=${elapsedMs}`);
+          }
+          if (frame.ok) {
+            pending.resolve(frame.payload ?? {});
+          } else {
+            const code = frame.error?.code || "UNKNOWN";
+            const message = frame.error?.message || "unknown gateway error";
+            pending.reject(new Error(`${pending.method} failed: ${code} ${message}`));
+          }
+          return;
+        }
+
+        if (frame.type === "evt") {
+          log(`event ${frame.event || "(unknown)"} ${jsonSafe(frame.payload || {})}`, "INFO");
+        }
+      }
+
+      function closeSocket() {
+        for (const [id, pending] of state.pending.entries()) {
+          clearTimeout(pending.timeout);
+          pending.reject(new Error("socket closed"));
+          state.pending.delete(id);
+        }
+
+        if (state.ws) {
+          try {
+            state.ws.close();
+          } catch {}
+        }
+        stopMonitor();
+        state.ws = null;
+        setConnectedUI(false);
+        setStatus("", "disconnected");
+      }
+
+      function connectPayload() {
+        const mode = connectAuthMode.value;
+        const secret = connectSecret.value.trim();
+        const params = {
+          minProtocol: 3,
+          maxProtocol: 3,
+          client: {
+            id: "openclaw.tvos.admin.web",
+            displayName: "OpenClaw tvOS Admin Web",
+            version: "0.0.0-dev",
+            platform: "web",
+            mode: "operator",
+          },
+          role: "operator",
+          scopes: ["operator.admin"],
+        };
+
+        if (mode === "token") {
+          if (!secret) {
+            throw new Error("connect auth mode is token but no token was provided");
+          }
+          params.auth = { token: secret };
+        } else if (mode === "password") {
+          if (!secret) {
+            throw new Error("connect auth mode is password but no password was provided");
+          }
+          params.auth = { password: secret };
+        }
+
+        return params;
+      }
+
+      function readSettingsForm() {
+        return {
+          authMode: cfgAuthMode.value.trim(),
+          authToken: cfgAuthToken.value,
+          authPassword: cfgAuthPassword.value,
+          upstreamURL: cfgUpstreamURL.value,
+          upstreamToken: cfgUpstreamToken.value,
+          upstreamPassword: cfgUpstreamPassword.value,
+          upstreamRole: cfgUpstreamRole.value || "node",
+          upstreamScopesCSV: cfgUpstreamScopes.value,
+          localLLMProvider: cfgLLMProvider.value,
+          localLLMBaseURL: cfgLLMBaseURL.value,
+          localLLMAPIKey: cfgLLMAPIKey.value,
+          localLLMModel: cfgLLMModel.value,
+        };
+      }
+
+      function extractSettings(payload) {
+        if (!payload || typeof payload !== "object") {
+          return {};
+        }
+        if (payload.settings && typeof payload.settings === "object") {
+          return payload.settings;
+        }
+        if (
+          payload.config &&
+          typeof payload.config === "object" &&
+          payload.config.gatewayTVOS &&
+          typeof payload.config.gatewayTVOS === "object"
+        ) {
+          return payload.config.gatewayTVOS;
+        }
+        return payload;
+      }
+
+      function applySettingsForm(settings) {
+        cfgAuthMode.value = settings.authMode || "none";
+        cfgAuthToken.value = settings.authToken || "";
+        cfgAuthPassword.value = settings.authPassword || "";
+        cfgUpstreamURL.value = settings.upstreamURL || "";
+        cfgUpstreamToken.value = settings.upstreamToken || "";
+        cfgUpstreamPassword.value = settings.upstreamPassword || "";
+        cfgUpstreamRole.value = settings.upstreamRole || "node";
+        cfgUpstreamScopes.value = settings.upstreamScopesCSV || "";
+        cfgLLMProvider.value = settings.localLLMProvider || "disabled";
+        cfgLLMBaseURL.value = settings.localLLMBaseURL || "";
+        cfgLLMAPIKey.value = settings.localLLMAPIKey || "";
+        cfgLLMModel.value = settings.localLLMModel || "";
+      }
+
+      function applyRuntimeState(payload) {
+        if (!payload || typeof payload !== "object") {
+          runtimeState.textContent = "{}";
+          return;
+        }
+        runtimeState.textContent = jsonSafe(payload.state || {});
+      }
+
+      function applyBootstrap(payload) {
+        const bootstrap =
+          payload && typeof payload === "object" && payload.bootstrap && typeof payload.bootstrap === "object"
+            ? payload.bootstrap
+            : null;
+
+        if (!bootstrap) {
+          bootstrapWorkspace.value = "";
+          state.bootstrapFiles = [];
+          state.bootstrapStatus = "";
+          bootstrapFileSelect.innerHTML = "";
+          bootstrapFileMeta.textContent = "No bootstrap payload.";
+          bootstrapFileContent.textContent = "No bootstrap payload.";
+          return;
+        }
+
+        bootstrapWorkspace.value =
+          typeof bootstrap.workspacePath === "string" && bootstrap.workspacePath
+            ? bootstrap.workspacePath
+            : "(none)";
+
+        const files = Array.isArray(bootstrap.files) ? bootstrap.files : [];
+        const pending = bootstrap.bootstrapPending !== false;
+        const seededAt =
+          typeof bootstrap.bootstrapSeededAt === "string" && bootstrap.bootstrapSeededAt
+            ? bootstrap.bootstrapSeededAt
+            : null;
+        const completedAt =
+          typeof bootstrap.onboardingCompletedAt === "string" && bootstrap.onboardingCompletedAt
+            ? bootstrap.onboardingCompletedAt
+            : null;
+        const statusPieces = [
+          pending ? "onboarding pending" : "onboarding completed",
+          seededAt ? `seeded=${seededAt}` : null,
+          completedAt ? `completed=${completedAt}` : null,
+        ].filter(Boolean);
+        state.bootstrapStatus = statusPieces.join(" | ");
+        state.bootstrapFiles = files;
+        bootstrapFileSelect.innerHTML = "";
+
+        if (files.length === 0) {
+          bootstrapFileMeta.textContent =
+            (state.bootstrapStatus ? `${state.bootstrapStatus}\n` : "") + "No bootstrap files configured.";
+          bootstrapFileContent.textContent = "";
+          return;
+        }
+
+        files.forEach((file, index) => {
+          const option = document.createElement("option");
+          const name = typeof file?.name === "string" ? file.name : `file-${index + 1}`;
+          const exists = file && file.exists === true;
+          option.value = String(index);
+          option.textContent = `${exists ? "✓" : "•"} ${name}`;
+          bootstrapFileSelect.appendChild(option);
+        });
+
+        bootstrapFileSelect.value = "0";
+        renderBootstrapSelection();
+      }
+
+      function renderBootstrapSelection() {
+        if (!state.bootstrapFiles.length) {
+          bootstrapFileMeta.textContent = (state.bootstrapStatus ? `${state.bootstrapStatus}\n` : "") + "No files";
+          bootstrapFileContent.textContent = "";
+          return;
+        }
+
+        const index = Number(bootstrapFileSelect.value || 0);
+        const file = state.bootstrapFiles[index];
+        if (!file || typeof file !== "object") {
+          bootstrapFileMeta.textContent = "Invalid file selection";
+          bootstrapFileContent.textContent = "";
+          return;
+        }
+
+        const name = typeof file.name === "string" ? file.name : "(unknown)";
+        const path = typeof file.path === "string" ? file.path : "(unknown path)";
+        const exists = file.exists === true;
+        const bytes = Number.isFinite(file.bytes) ? file.bytes : 0;
+        const truncated = file.truncated === true;
+        const content = typeof file.content === "string" ? file.content : "";
+
+        const fileMeta =
+          `${name} | ${exists ? "exists" : "missing"} | ${bytes} bytes${truncated ? " | truncated" : ""}\n${path}`;
+        bootstrapFileMeta.textContent = state.bootstrapStatus ? `${state.bootstrapStatus}\n${fileMeta}` : fileMeta;
+        bootstrapFileContent.textContent = content || "(empty)";
+      }
+
+      async function connect() {
+        if (state.connected) {
+          return;
+        }
+
+        const url = gatewayURL.value.trim();
+        if (!url) {
+          throw new Error("gateway URL is required");
+        }
+
+        localStorage.setItem(storage.url, url);
+        localStorage.setItem(storage.authMode, connectAuthMode.value);
+
+        setStatus("warn", "connecting…");
+        log(`connecting to ${url}`);
+
+        const ws = new WebSocket(url);
+        state.ws = ws;
+
+        ws.addEventListener("message", (event) => {
+          let frame = null;
+          try {
+            frame = JSON.parse(event.data);
+          } catch {
+            log(`received non-JSON frame: ${String(event.data).slice(0, 180)}`, "WARN");
+            return;
+          }
+          onFrame(frame);
+        });
+
+        ws.addEventListener("close", () => {
+          if (state.connected) {
+            log("connection closed", "WARN");
+          }
+          closeSocket();
+        });
+
+        ws.addEventListener("error", () => {
+          log("socket error", "ERR");
+        });
+
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("connect timeout")), 8000);
+          ws.addEventListener("open", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          ws.addEventListener("error", () => {
+            clearTimeout(timer);
+            reject(new Error("socket open failed"));
+          });
+        });
+
+        const params = connectPayload();
+        const connectResult = await request("connect", params);
+        renderResult({ method: "connect", payload: connectResult });
+        log("connect ok");
+        setConnectedUI(true);
+        setStatus("ok", "connected");
+        startMonitor();
+      }
+
+      async function loadConfig() {
+        const payload = await request("config.get", {});
+        renderResult({ method: "config.get", payload });
+        const settings = extractSettings(payload);
+        applySettingsForm(settings);
+        applyRuntimeState(payload);
+        applyBootstrap(payload);
+        log("config.get ok");
+      }
+
+      async function saveConfig() {
+        const settings = readSettingsForm();
+        const payload = await request("config.set", { settings });
+        renderResult({ method: "config.set", payload });
+        const nextSettings = extractSettings(payload);
+        applySettingsForm(nextSettings);
+        applyRuntimeState(payload);
+        applyBootstrap(payload);
+        log("config.set ok");
+      }
+
+      async function restartRuntime() {
+        const payload = await request("runtime.restart", {});
+        renderResult({ method: "runtime.restart", payload });
+        applyRuntimeState(payload);
+        applyBootstrap(payload);
+        log("runtime.restart ok");
+      }
+
+      async function health() {
+        const payload = await request("health", {});
+        renderResult({ method: "health", payload });
+        log("health ok");
+      }
+
+      function parseHistoryText(content) {
+        if (!Array.isArray(content)) {
+          return "";
+        }
+        return content
+          .map((part) => {
+            if (!part || typeof part !== "object") {
+              return "";
+            }
+            if (typeof part.text === "string") {
+              return part.text;
+            }
+            if (typeof part.content === "string") {
+              return part.content;
+            }
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n")
+          .trim();
+      }
+
+      function splitReasoning(text) {
+        const source = String(text || "");
+        const reasoningBlocks = [];
+        const visible = source.replace(/<think>([\s\S]*?)<\/think>/gi, (_, reasoning) => {
+          const cleaned = String(reasoning || "").trim();
+          if (cleaned) {
+            reasoningBlocks.push(cleaned);
+          }
+          return "";
+        });
+        return {
+          visibleText: visible.trim(),
+          reasoningText: reasoningBlocks.join("\n\n"),
+        };
+      }
+
+      function oneLinePreview(text, maxChars) {
+        const compact = String(text || "").replace(/\s+/g, " ").trim();
+        if (!compact) {
+          return "(empty)";
+        }
+        return compact.length > maxChars ? `${compact.slice(0, maxChars)}…` : compact;
+      }
+
+      async function monitorTick() {
+        if (!state.connected || !state.monitorActive || state.monitorBusy) {
+          return;
+        }
+
+        state.monitorBusy = true;
+        try {
+          const sessionKey = monitorSessionKey.value.trim() || "main";
+          const healthPayload = await request("health", {}, { timeoutMs: 8000, quiet: true });
+          const healthState =
+            healthPayload && typeof healthPayload === "object" && healthPayload.state && typeof healthPayload.state === "object"
+              ? healthPayload.state
+              : {};
+          const wsState = typeof healthState.webSocket === "string" ? healthState.webSocket : "unknown";
+          const tcpState = typeof healthState.tcpDebug === "string" ? healthState.tcpDebug : "unknown";
+          monitorStatus.textContent = `monitor on • ws=${wsState} tcp=${tcpState}`;
+          const healthStamp = `ws=${wsState}|tcp=${tcpState}`;
+          if (monitorVerbose.checked && healthStamp !== state.monitorLastHealthStamp) {
+            state.monitorLastHealthStamp = healthStamp;
+            log(`monitor health ws=${wsState} tcp=${tcpState}`);
+          }
+
+          const historyPayload = await request(
+            "chat.history",
+            { sessionKey, limit: 6 },
+            { timeoutMs: 12000, quiet: true },
+          );
+          const messages = Array.isArray(historyPayload?.messages) ? historyPayload.messages : [];
+          const latest = messages.length > 0 ? messages[messages.length - 1] : null;
+          if (latest && typeof latest === "object") {
+            const ts = latest.timestamp ?? "";
+            const role = typeof latest.role === "string" ? latest.role : "unknown";
+            const rawText = parseHistoryText(latest.content);
+            const split = splitReasoning(rawText);
+            const visibleText = split.visibleText || rawText;
+            const preview = oneLinePreview(visibleText, 120);
+            const stamp = `${String(ts)}|${role}|${preview}`;
+            if (stamp !== state.monitorLastStamp) {
+              state.monitorLastStamp = stamp;
+              log(`monitor session=${sessionKey} latest=${role} preview="${preview}"`);
+              if (monitorVerbose.checked) {
+                const tsLabel = ts ? String(ts) : "(no timestamp)";
+                const visibleChars = visibleText.length;
+                log(`monitor detail ts=${tsLabel} role=${role} visibleChars=${visibleChars}`);
+                log(`monitor text: ${oneLinePreview(visibleText, 280)}`);
+                if (split.reasoningText) {
+                  log(`monitor reasoning: ${oneLinePreview(split.reasoningText, 280)}`);
+                }
+              }
+            }
+          } else if (state.monitorLastStamp !== "__empty__") {
+            state.monitorLastStamp = "__empty__";
+            log(`monitor session=${sessionKey} has no messages`, "WARN");
+          }
+        } catch (error) {
+          monitorStatus.textContent = "monitor warning";
+          log(`monitor tick failed: ${error.message}`, "WARN");
+        } finally {
+          state.monitorBusy = false;
+        }
+      }
+
+      function startMonitor() {
+        if (!state.connected) {
+          throw new Error("connect first");
+        }
+        stopMonitor();
+
+        const rawInterval = Number.parseInt(monitorIntervalSec.value, 10);
+        const intervalSec = Number.isFinite(rawInterval) ? Math.max(2, Math.min(rawInterval, 60)) : 5;
+        monitorIntervalSec.value = String(intervalSec);
+        setMonitorUI(true);
+        monitorStatus.textContent = `monitor starting (${intervalSec}s)`;
+        void monitorTick();
+        state.monitorTimer = setInterval(() => {
+          void monitorTick();
+        }, intervalSec * 1000);
+      }
+
+      function toggleMonitor() {
+        if (state.monitorActive) {
+          stopMonitor();
+          log("monitor stopped");
+          return;
+        }
+        startMonitor();
+        log("monitor started");
+      }
+
+      async function withAction(action, title) {
+        try {
+          await action();
+        } catch (error) {
+          log(`${title} failed: ${error.message}`, "ERR");
+          renderResult({ error: error.message, action: title });
+          if (!state.connected) {
+            setStatus("err", "disconnected");
+          }
+        }
+      }
+
+      connectBtn.addEventListener("click", () =>
+        withAction(async () => {
+          await connect();
+          await loadConfig();
+        }, "connect"));
+      disconnectBtn.addEventListener("click", () => {
+        closeSocket();
+        log("disconnected by operator");
+      });
+      monitorToggleBtn.addEventListener("click", () => withAction(async () => toggleMonitor(), "monitor.toggle"));
+      loadBtn.addEventListener("click", () => withAction(loadConfig, "config.get"));
+      saveBtn.addEventListener("click", () => withAction(saveConfig, "config.set"));
+      restartBtn.addEventListener("click", () => withAction(restartRuntime, "runtime.restart"));
+      healthBtn.addEventListener("click", () => withAction(health, "health"));
+      bootstrapFileSelect.addEventListener("change", () => renderBootstrapSelection());
+
+      gatewayURL.value = localStorage.getItem(storage.url) || gatewayURL.value;
+      connectAuthMode.value = localStorage.getItem(storage.authMode) || connectAuthMode.value;
+      setConnectedUI(false);
+      setStatus("", "disconnected");
+      log("ready");
+    </script>
+  </body>
+</html>

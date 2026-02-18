@@ -1,0 +1,1097 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw tvOS Chat</title>
+    <style>
+      :root {
+        --bg: #0b1019;
+        --panel: #121a29;
+        --panel-2: #1a2438;
+        --fg: #e8eef8;
+        --muted: #97accd;
+        --line: #2a3852;
+        --ok: #2ecc71;
+        --warn: #f1c40f;
+        --err: #ff5a5f;
+        --user: rgba(77, 161, 255, 0.18);
+        --assistant: rgba(46, 204, 113, 0.16);
+        --system: rgba(241, 196, 15, 0.1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at 20% 0%, #1d2b47 0%, var(--bg) 55%);
+        color: var(--fg);
+        font: 14px/1.4 "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+      }
+
+      .wrap {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 24px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .subtitle {
+        margin-bottom: 12px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 12px;
+        min-height: calc(100vh - 96px);
+      }
+
+      @media (max-width: 1150px) {
+        .layout {
+          grid-template-columns: 1fr;
+          min-height: auto;
+        }
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+      }
+
+      .panel {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0;
+      }
+
+      .row label {
+        color: var(--muted);
+      }
+
+      input,
+      select,
+      button,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--fg);
+        background: #0d1422;
+        padding: 8px 10px;
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      textarea {
+        min-height: 84px;
+        max-height: 240px;
+        resize: vertical;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 10px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #7f8ea9;
+      }
+
+      .dot.ok {
+        background: var(--ok);
+      }
+
+      .dot.warn {
+        background: var(--warn);
+      }
+
+      .dot.err {
+        background: var(--err);
+      }
+
+      .connect-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .connect-status {
+        margin-top: 10px;
+      }
+
+      .debug-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
+      #debug {
+        margin: 0;
+        height: 260px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        background: #0b111c;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .chat-panel {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .chat-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      @media (max-width: 900px) {
+        .chat-head {
+          flex-direction: column;
+        }
+      }
+
+      .chat-tools {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(130px, 1fr));
+        gap: 8px;
+        width: min(620px, 100%);
+      }
+
+      @media (max-width: 900px) {
+        .chat-tools {
+          grid-template-columns: 1fr 1fr;
+          width: 100%;
+        }
+      }
+
+      #messages {
+        flex: 1;
+        min-height: 320px;
+        overflow-y: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #0b111c;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .msg {
+        width: fit-content;
+        max-width: min(78ch, 88%);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 8px 10px;
+      }
+
+      .msg.user {
+        align-self: flex-end;
+        background: var(--user);
+      }
+
+      .msg.assistant {
+        align-self: flex-start;
+        background: var(--assistant);
+      }
+
+      .msg.system {
+        align-self: center;
+        width: 100%;
+        max-width: 100%;
+        background: var(--system);
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+
+      .body {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .body p {
+        margin: 0 0 8px;
+      }
+
+      .body p:last-child {
+        margin-bottom: 0;
+      }
+
+      .body ul,
+      .body ol {
+        margin: 0 0 8px 20px;
+        padding: 0;
+      }
+
+      .body li {
+        margin: 2px 0;
+      }
+
+      .body code {
+        background: rgba(151, 172, 205, 0.15);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 1px 4px;
+        font-family: inherit;
+      }
+
+      .body .code-block {
+        margin: 0 0 8px;
+        background: #0a0f18;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: auto;
+        white-space: pre;
+        padding: 10px;
+      }
+
+      .body h1,
+      .body h2,
+      .body h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+
+      .reasoning {
+        margin-top: 8px;
+        border-top: 1px dashed var(--line);
+        padding-top: 8px;
+      }
+
+      .reasoning > summary {
+        cursor: pointer;
+        color: var(--muted);
+        user-select: none;
+      }
+
+      .reasoning pre {
+        margin: 8px 0 0;
+        max-height: 180px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        background: #0b111c;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .composer {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        background: rgba(11, 17, 28, 0.55);
+      }
+
+      .composer-actions {
+        margin-top: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .chat-progress {
+        margin-top: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: rgba(241, 196, 15, 0.12);
+        color: var(--warn);
+      }
+
+      .send-wrap {
+        width: 180px;
+      }
+
+      .session-field {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+      }
+
+      .session-field button {
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>OpenClaw tvOS Chat</h1>
+      <div class="muted subtitle">
+        Browser chat client for tvOS gateway (`connect`, `chat.send`, `chat.history`).
+      </div>
+
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="panel">
+            <h2>Connection</h2>
+
+            <div class="row">
+              <label for="gateway-url">Gateway URL</label>
+              <input id="gateway-url" value="ws://192.168.1.176:18789" />
+            </div>
+
+            <div class="row">
+              <label for="request-timeout-sec">Req Timeout (s)</label>
+              <input id="request-timeout-sec" type="number" min="5" max="600" value="120" />
+            </div>
+
+            <div class="row">
+              <label for="auth-mode">Auth</label>
+              <select id="auth-mode">
+                <option value="none">none</option>
+                <option value="token">token</option>
+                <option value="password">password</option>
+              </select>
+            </div>
+
+            <div class="row">
+              <label for="auth-secret">Secret</label>
+              <input id="auth-secret" type="password" />
+            </div>
+
+            <div class="row">
+              <label for="session-key">Session</label>
+              <div class="session-field">
+                <input id="session-key" value="main" />
+                <button id="new-thread-btn" type="button">New Thread</button>
+              </div>
+            </div>
+
+            <div class="connect-actions">
+              <button id="connect-btn">Connect</button>
+              <button id="disconnect-btn" disabled>Disconnect</button>
+            </div>
+
+            <div class="connect-status">
+              <div class="status">
+                <span id="conn-dot" class="dot"></span>
+                <span id="conn-text">disconnected</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="debug-head">
+              <h2>Debug</h2>
+              <button id="clear-debug-btn" type="button">Clear Debug</button>
+            </div>
+            <pre id="debug"></pre>
+          </div>
+        </aside>
+
+        <section class="panel chat-panel">
+          <div class="chat-head">
+            <div>
+              <h2>Chat</h2>
+              <div class="muted">Old messages stay at the top, new messages appear at the bottom.</div>
+            </div>
+            <div class="chat-tools">
+              <button id="history-btn" disabled>Refresh History</button>
+              <button id="health-btn" disabled>Health</button>
+              <button id="clear-chat-btn" type="button">Clear Chat</button>
+              <select id="thinking-level">
+                <option value="low">thinking: low</option>
+                <option value="default">thinking: default</option>
+                <option value="high">thinking: high</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="messages"></div>
+
+          <div class="composer">
+            <textarea id="prompt" placeholder="Type your message to the agent..."></textarea>
+            <div class="composer-actions">
+              <span class="muted">Use Cmd/Ctrl + Enter to send.</span>
+              <div class="send-wrap">
+                <button id="send-btn" disabled>Send</button>
+              </div>
+            </div>
+            <div id="chat-progress" class="chat-progress" hidden></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const gatewayURL = $("gateway-url");
+      const requestTimeoutSec = $("request-timeout-sec");
+      const authMode = $("auth-mode");
+      const authSecret = $("auth-secret");
+      const sessionKey = $("session-key");
+      const connectBtn = $("connect-btn");
+      const disconnectBtn = $("disconnect-btn");
+      const newThreadBtn = $("new-thread-btn");
+      const connDot = $("conn-dot");
+      const connText = $("conn-text");
+      const sendBtn = $("send-btn");
+      const historyBtn = $("history-btn");
+      const healthBtn = $("health-btn");
+      const clearChatBtn = $("clear-chat-btn");
+      const clearDebugBtn = $("clear-debug-btn");
+      const thinkingLevel = $("thinking-level");
+      const prompt = $("prompt");
+      const chatProgress = $("chat-progress");
+      const messages = $("messages");
+      const debug = $("debug");
+
+      const state = {
+        ws: null,
+        connected: false,
+        pending: new Map(),
+        chatInFlight: false,
+        chatProgressTimer: null,
+        chatStartedAtMs: 0,
+        lastInboundTrace: "",
+      };
+
+      function nowStamp() {
+        return new Date().toISOString().replace("T", " ").replace("Z", "");
+      }
+
+      function writeDebug(obj) {
+        const line =
+          typeof obj === "string"
+            ? `[${nowStamp()}] ${obj}`
+            : `[${nowStamp()}] ${JSON.stringify(obj)}`;
+        debug.textContent += `${line}\n`;
+        debug.scrollTop = debug.scrollHeight;
+      }
+
+      function setStatus(kind, text) {
+        connDot.className = `dot ${kind || ""}`;
+        connText.textContent = text;
+      }
+
+      function updateInputAvailability() {
+        const connected = state.connected;
+        const busy = state.chatInFlight;
+        sendBtn.disabled = !connected || busy;
+        prompt.disabled = !connected || busy;
+        newThreadBtn.disabled = !connected || busy;
+        historyBtn.disabled = !connected || busy;
+        healthBtn.disabled = !connected;
+      }
+
+      function setConnected(connected) {
+        state.connected = connected;
+        connectBtn.disabled = connected;
+        disconnectBtn.disabled = !connected;
+        updateInputAvailability();
+      }
+
+      function clearChatProgress() {
+        if (state.chatProgressTimer) {
+          clearInterval(state.chatProgressTimer);
+          state.chatProgressTimer = null;
+        }
+        state.chatStartedAtMs = 0;
+        state.lastInboundTrace = "";
+        chatProgress.hidden = true;
+        chatProgress.textContent = "";
+      }
+
+      function updateChatProgressText() {
+        if (!state.chatInFlight) return;
+        const elapsedSec = state.chatStartedAtMs
+          ? Math.floor((Date.now() - state.chatStartedAtMs) / 1000)
+          : 0;
+        const trace = state.lastInboundTrace ? ` | ${state.lastInboundTrace}` : "";
+        chatProgress.textContent = `Assistant is thinking... ${elapsedSec}s${trace}`;
+      }
+
+      function defaultRequestTimeoutMs() {
+        const raw = Number.parseInt(requestTimeoutSec.value, 10);
+        if (!Number.isFinite(raw)) {
+          return 120000;
+        }
+        return Math.max(5000, Math.min(raw * 1000, 600000));
+      }
+
+      function safeID(prefix) {
+        const id =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        return `${prefix}-${id}`;
+      }
+
+      function makeThreadKey() {
+        const stamp = new Date()
+          .toISOString()
+          .replace(/[-:TZ.]/g, "")
+          .slice(0, 14);
+        const suffix = Math.random().toString(36).slice(2, 6);
+        return `thread-${stamp}-${suffix}`;
+      }
+
+      function closeSocket() {
+        for (const [id, req] of state.pending.entries()) {
+          clearTimeout(req.timeout);
+          req.reject(new Error("socket closed"));
+          state.pending.delete(id);
+        }
+
+        if (state.ws) {
+          try {
+            state.ws.close();
+          } catch {}
+        }
+        state.chatInFlight = false;
+        clearChatProgress();
+        sendBtn.textContent = "Send";
+        state.ws = null;
+        setConnected(false);
+        setStatus("", "disconnected");
+      }
+
+      function request(method, params = {}, options = {}) {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+          throw new Error("not connected");
+        }
+        const id = safeID(method.replace(/\W+/g, "_"));
+        const frame = { type: "req", id, method, params };
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+          ? Math.max(1000, options.timeoutMs)
+          : defaultRequestTimeoutMs();
+
+        return new Promise((resolve, reject) => {
+          const startedAt = Date.now();
+          writeDebug({ req: method, id, timeoutMs });
+          const timeout = setTimeout(() => {
+            state.pending.delete(id);
+            const elapsedMs = Date.now() - startedAt;
+            reject(new Error(`${method} timeout (${elapsedMs}ms)`));
+          }, timeoutMs);
+
+          state.pending.set(id, { resolve, reject, timeout, method, startedAt });
+          state.ws.send(JSON.stringify(frame));
+        });
+      }
+
+      function handleFrame(frame) {
+        if (!frame || typeof frame !== "object") {
+          return;
+        }
+        if (frame.type === "res" && typeof frame.id === "string") {
+          const req = state.pending.get(frame.id);
+          if (!req) return;
+          state.pending.delete(frame.id);
+          clearTimeout(req.timeout);
+          const elapsedMs = Date.now() - req.startedAt;
+          if (state.chatInFlight) {
+            state.lastInboundTrace = `res:${req.method}`;
+            updateChatProgressText();
+          }
+          if (frame.ok) {
+            writeDebug({ res: req.method, id: frame.id, ok: true, elapsedMs });
+            req.resolve(frame.payload || {});
+          } else {
+            const code = frame.error?.code || "UNKNOWN";
+            const message = frame.error?.message || "unknown";
+            writeDebug({ res: req.method, id: frame.id, ok: false, elapsedMs, code, message });
+            req.reject(new Error(`${req.method}: ${code} ${message}`));
+          }
+          return;
+        }
+
+        if (frame.type === "evt") {
+          if (state.chatInFlight) {
+            const eventName = typeof frame.event === "string" ? frame.event : "unknown";
+            state.lastInboundTrace = `evt:${eventName}`;
+            updateChatProgressText();
+          }
+          writeDebug({ event: frame.event, payload: frame.payload || {} });
+        }
+      }
+
+      function parseTextFromContent(content) {
+        if (!Array.isArray(content)) return "";
+        return content
+          .map((part) => {
+            if (!part || typeof part !== "object") return "";
+            if (part.type === "text" && typeof part.text === "string") return part.text;
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n")
+          .trim();
+      }
+
+      function escapeHTML(text) {
+        return String(text)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function formatInlineMarkup(text) {
+        let output = escapeHTML(text);
+        output = output.replace(/`([^`]+)`/g, "<code>$1</code>");
+        output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+        return output;
+      }
+
+      function renderSimpleMarkup(text) {
+        const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+        if (!normalized) {
+          return "<p>(no text)</p>";
+        }
+
+        const codeBlocks = [];
+        const tokenized = normalized.replace(/```([a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g, (_, _lang, code) => {
+          const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+          codeBlocks.push(code);
+          return token;
+        });
+
+        const lines = tokenized.split("\n");
+        const html = [];
+        let inUL = false;
+        let inOL = false;
+
+        const closeLists = () => {
+          if (inUL) {
+            html.push("</ul>");
+            inUL = false;
+          }
+          if (inOL) {
+            html.push("</ol>");
+            inOL = false;
+          }
+        };
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            closeLists();
+            continue;
+          }
+
+          const codeTokenMatch = trimmed.match(/^@@CODE_BLOCK_(\d+)@@$/);
+          if (codeTokenMatch) {
+            closeLists();
+            const index = Number.parseInt(codeTokenMatch[1], 10);
+            const code = codeBlocks[index] || "";
+            html.push(`<pre class="code-block"><code>${escapeHTML(code)}</code></pre>`);
+            continue;
+          }
+
+          const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+          if (headingMatch) {
+            closeLists();
+            const level = headingMatch[1].length;
+            const content = formatInlineMarkup(headingMatch[2]);
+            html.push(`<h${level}>${content}</h${level}>`);
+            continue;
+          }
+
+          const ulMatch = trimmed.match(/^[-*]\s+(.+)$/);
+          if (ulMatch) {
+            if (inOL) {
+              html.push("</ol>");
+              inOL = false;
+            }
+            if (!inUL) {
+              html.push("<ul>");
+              inUL = true;
+            }
+            html.push(`<li>${formatInlineMarkup(ulMatch[1])}</li>`);
+            continue;
+          }
+
+          const olMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+          if (olMatch) {
+            if (inUL) {
+              html.push("</ul>");
+              inUL = false;
+            }
+            if (!inOL) {
+              html.push("<ol>");
+              inOL = true;
+            }
+            html.push(`<li>${formatInlineMarkup(olMatch[1])}</li>`);
+            continue;
+          }
+
+          closeLists();
+          html.push(`<p>${formatInlineMarkup(trimmed)}</p>`);
+        }
+
+        closeLists();
+        return html.join("");
+      }
+
+      function splitReasoningBlocks(text) {
+        const source = String(text || "");
+        const chunks = [];
+        const visible = source.replace(/<think>([\s\S]*?)<\/think>/gi, (_, reasoning) => {
+          const trimmed = String(reasoning || "").trim();
+          if (trimmed) chunks.push(trimmed);
+          return "";
+        });
+        return {
+          visibleText: visible.trim(),
+          reasoningText: chunks.join("\n\n"),
+        };
+      }
+
+      function formatTimestamp(timestamp) {
+        if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+          return new Date(timestamp).toLocaleString();
+        }
+        if (typeof timestamp === "string") {
+          const parsed = Date.parse(timestamp);
+          if (Number.isFinite(parsed)) {
+            return new Date(parsed).toLocaleString();
+          }
+        }
+        return "";
+      }
+
+      function scrollMessagesToBottom() {
+        messages.scrollTop = messages.scrollHeight;
+      }
+
+      function appendMessage(role, text, timestamp) {
+        const el = document.createElement("div");
+        el.className = `msg ${role || "system"}`;
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const ts = formatTimestamp(timestamp);
+        meta.textContent = `${role || "system"}${ts ? ` • ${ts}` : ""}`;
+
+        const body = document.createElement("div");
+        body.className = "body";
+        const split = splitReasoningBlocks(text || "");
+        const visibleText = split.visibleText || "(no text)";
+        body.innerHTML = renderSimpleMarkup(visibleText);
+
+        el.appendChild(meta);
+        el.appendChild(body);
+
+        if (split.reasoningText) {
+          const reasoning = document.createElement("details");
+          reasoning.className = "reasoning";
+          const summary = document.createElement("summary");
+          summary.textContent = "Model reasoning";
+          const reasoningBody = document.createElement("pre");
+          reasoningBody.textContent = split.reasoningText;
+          reasoning.appendChild(summary);
+          reasoning.appendChild(reasoningBody);
+          el.appendChild(reasoning);
+        }
+
+        messages.appendChild(el);
+      }
+
+      function sortHistory(list) {
+        return list
+          .map((item, index) => ({ item, index }))
+          .sort((a, b) => {
+            const aRaw = a.item?.timestamp;
+            const bRaw = b.item?.timestamp;
+            const aTs =
+              typeof aRaw === "number"
+                ? aRaw
+                : typeof aRaw === "string" && Number.isFinite(Date.parse(aRaw))
+                  ? Date.parse(aRaw)
+                  : a.index;
+            const bTs =
+              typeof bRaw === "number"
+                ? bRaw
+                : typeof bRaw === "string" && Number.isFinite(Date.parse(bRaw))
+                  ? Date.parse(bRaw)
+                  : b.index;
+            return aTs - bTs;
+          })
+          .map((entry) => entry.item);
+      }
+
+      function renderHistory(payload) {
+        messages.innerHTML = "";
+        const list = Array.isArray(payload?.messages) ? payload.messages : [];
+        const ordered = sortHistory(list);
+
+        for (const item of ordered) {
+          const role = typeof item.role === "string" ? item.role : "system";
+          const text = parseTextFromContent(item.content);
+          const timestamp = item.timestamp;
+          appendMessage(role, text || "(no text)", timestamp);
+        }
+        scrollMessagesToBottom();
+      }
+
+      function connectParams() {
+        const mode = authMode.value;
+        const secret = authSecret.value.trim();
+        const params = {
+          minProtocol: 3,
+          maxProtocol: 3,
+          client: {
+            id: "openclaw.tvos.chat.web",
+            displayName: "OpenClaw tvOS Chat Web",
+            version: "0.0.0-dev",
+            platform: "web",
+            mode: "chat",
+          },
+          role: "operator",
+          scopes: ["operator.admin"],
+        };
+        if (mode === "token") {
+          if (!secret) throw new Error("token is required for auth mode token");
+          params.auth = { token: secret };
+        } else if (mode === "password") {
+          if (!secret) throw new Error("password is required for auth mode password");
+          params.auth = { password: secret };
+        }
+        return params;
+      }
+
+      async function connect() {
+        const url = gatewayURL.value.trim();
+        if (!url) throw new Error("gateway URL required");
+
+        setStatus("warn", "connecting...");
+        writeDebug(`connecting ${url}`);
+
+        const ws = new WebSocket(url);
+        state.ws = ws;
+
+        ws.addEventListener("message", (event) => {
+          try {
+            handleFrame(JSON.parse(event.data));
+          } catch {
+            writeDebug(`non-json frame: ${String(event.data).slice(0, 200)}`);
+            if (state.chatInFlight) {
+              state.lastInboundTrace = "ws: non-json frame";
+              updateChatProgressText();
+            }
+          }
+        });
+
+        ws.addEventListener("close", () => {
+          if (state.connected) writeDebug("socket closed");
+          closeSocket();
+        });
+
+        ws.addEventListener("error", () => {
+          writeDebug("socket error");
+        });
+
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("connect timeout")), 8000);
+          ws.addEventListener("open", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          ws.addEventListener("error", () => {
+            clearTimeout(timer);
+            reject(new Error("socket open failed"));
+          });
+        });
+
+        await request("connect", connectParams(), { timeoutMs: 10000 });
+        setConnected(true);
+        setStatus("ok", "connected");
+        writeDebug("connect ok");
+        await refreshHistory();
+      }
+
+      async function refreshHistory() {
+        const key = sessionKey.value.trim() || "main";
+        const payload = await request(
+          "chat.history",
+          { sessionKey: key, limit: 80 },
+          { timeoutMs: 20000 },
+        );
+        renderHistory(payload);
+        writeDebug({ method: "chat.history", count: Array.isArray(payload.messages) ? payload.messages.length : 0 });
+      }
+
+      async function sendMessage() {
+        if (state.chatInFlight) {
+          writeDebug("chat.send skipped: previous request still in progress");
+          return;
+        }
+
+        const key = sessionKey.value.trim() || "main";
+        const text = prompt.value.trim();
+        if (!text) return;
+
+        state.chatInFlight = true;
+        sendBtn.textContent = "Sending...";
+        updateInputAvailability();
+
+        state.chatStartedAtMs = Date.now();
+        state.lastInboundTrace = "waiting for gateway response";
+        chatProgress.hidden = false;
+        updateChatProgressText();
+        state.chatProgressTimer = setInterval(() => {
+          updateChatProgressText();
+        }, 1000);
+
+        try {
+          await request(
+            "chat.send",
+            {
+              sessionKey: key,
+              message: text,
+              thinking: thinkingLevel.value,
+              idempotencyKey: safeID("chat"),
+            },
+            { timeoutMs: Math.max(defaultRequestTimeoutMs(), 120000) },
+          );
+          prompt.value = "";
+          await refreshHistory();
+        } catch (error) {
+          if (error && /timeout/i.test(error.message || "")) {
+            writeDebug("chat.send timed out; waiting 2s then refreshing history");
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            try {
+              await refreshHistory();
+            } catch (refreshError) {
+              writeDebug(`chat.history after timeout failed: ${refreshError.message}`);
+            }
+          }
+          throw error;
+        } finally {
+          state.chatInFlight = false;
+          clearChatProgress();
+          sendBtn.textContent = "Send";
+          updateInputAvailability();
+        }
+      }
+
+      async function health() {
+        const payload = await request("health", {});
+        writeDebug({ method: "health", payload });
+      }
+
+      async function startNewThread() {
+        const key = makeThreadKey();
+        sessionKey.value = key;
+        messages.innerHTML = "";
+        writeDebug({ event: "thread.new", sessionKey: key });
+        if (state.connected) {
+          await refreshHistory();
+        }
+      }
+
+      async function run(action, label) {
+        try {
+          await action();
+        } catch (error) {
+          writeDebug(`${label} failed: ${error.message}`);
+          if (!state.connected) setStatus("err", "disconnected");
+        }
+      }
+
+      connectBtn.addEventListener("click", () => run(connect, "connect"));
+      disconnectBtn.addEventListener("click", () => {
+        closeSocket();
+        writeDebug("disconnected");
+      });
+      newThreadBtn.addEventListener("click", () => run(startNewThread, "thread.new"));
+      sendBtn.addEventListener("click", () => run(sendMessage, "chat.send"));
+      historyBtn.addEventListener("click", () => run(refreshHistory, "chat.history"));
+      healthBtn.addEventListener("click", () => run(health, "health"));
+
+      clearChatBtn.addEventListener("click", () => {
+        messages.innerHTML = "";
+        writeDebug("chat view cleared");
+      });
+
+      clearDebugBtn.addEventListener("click", () => {
+        debug.textContent = "";
+      });
+
+      prompt.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          run(sendMessage, "chat.send");
+        }
+      });
+
+      sessionKey.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && state.connected) {
+          event.preventDefault();
+          run(refreshHistory, "chat.history");
+        }
+      });
+
+      setConnected(false);
+      setStatus("", "disconnected");
+      writeDebug("ready");
+    </script>
+  </body>
+</html>
