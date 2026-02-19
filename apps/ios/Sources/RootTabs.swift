@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootTabs: View {
     @Environment(NodeAppModel.self) private var appModel
+    @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(VoiceWakePreferences.enabledKey) private var voiceWakeEnabled: Bool = false
@@ -30,7 +31,7 @@ struct RootTabs: View {
                 voiceWakeEnabled: self.voiceWakeEnabled,
                 activity: self.statusActivity,
                 onTap: {
-                    if self.gatewayStatus == .connected {
+                    if self.appModel.gatewayServerName != nil {
                         self.showGatewayActions = true
                     } else {
                         self.selectedTab = 2
@@ -88,6 +89,10 @@ struct RootTabs: View {
     }
 
     private var gatewayStatus: StatusPill.GatewayState {
+        // Local server is primary.
+        if self.localGatewayRuntime.state == .running && self.localGatewayRuntime.host != nil {
+            return .connected
+        }
         if self.appModel.gatewayServerName != nil { return .connected }
 
         let text = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,4 +1,5 @@
 #if os(tvOS)
+import Foundation
 import SwiftUI
 import OpenClawGatewayCore
 
@@ -77,6 +78,7 @@ struct TVOSGatewayHostView: View {
     private enum FocusTarget: Hashable {
         case restart
         case settings
+        case newThread
         case chatScrollUp
         case chatScrollDown
         case input
@@ -97,24 +99,26 @@ struct TVOSGatewayHostView: View {
         case forceRebindWS
         case clearLog
         case clearErrors
-        // Row 3 – TCP debug
+        // Row 3 – chat mirroring
+        case externalTelegramChatMirror
+        // Row 4 – TCP debug
         case tcpToggle
         case rebindTCP
         case probeTCP
-        // Row 4 – LLM / agent
+        // Row 5 – LLM / agent
         case testLocalLLM
         case testAgenticRun
         case agentStatus
         case abortAgent
-        // Row 5 – Listener auth
+        // Row 6 – Listener auth
         case authMode
         case authToken
         case authPassword
-        // Row 6 – Upstream gateway
+        // Row 7 – Upstream gateway
         case upstreamURL
         case upstreamToken
         case upstreamPassword
-        // Row 7 – LLM settings
+        // Row 8 – LLM settings
         case llmProvider
         case llmBaseURL
         case llmAPIKey
@@ -128,6 +132,7 @@ struct TVOSGatewayHostView: View {
         [.done],
         [.runtimeToggle, .probeInProcess, .probeWebSocket, .probeUpstream],
         [.wsToggle, .forceRebindWS, .clearLog, .clearErrors],
+        [.externalTelegramChatMirror],
         [.tcpToggle, .rebindTCP, .probeTCP],
         [.testLocalLLM, .testAgenticRun, .agentStatus, .abortAgent],
         [.authMode, .authToken, .authPassword],
@@ -146,7 +151,9 @@ struct TVOSGatewayHostView: View {
     @State private var chatInputText = ""
     @State private var chatScrollProxy: ScrollViewProxy?
     @State private var chatScrollTargetIndex: Int = 0
-    @State private var collapsedToolTraceTurnIDs: Set<String> = []
+    /// Tool-trace rows stay collapsed by default (matching web chat traces).
+    /// IDs are added only when the user explicitly expands a row.
+    @State private var expandedToolTraceTurnIDs: Set<String> = []
     /// Timestamp of the last accepted directional move – used to lock out
     /// rapid-fire events from the Siri Remote trackpad.
     @State private var lastMoveDate: Date = .distantPast
@@ -211,6 +218,10 @@ struct TVOSGatewayHostView: View {
                 Text("OpenClaw ANEMLL Server")
                     .font(.title2.weight(.semibold))
 
+                Text("Apple tvOS")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color(red: 0.63, green: 0.84, blue: 1.0))
+
                 Text("HTML: \(self.htmlReadout)")
                     .font(.caption.monospaced())
                     .foregroundStyle(.mint)
@@ -224,8 +235,6 @@ struct TVOSGatewayHostView: View {
                     .truncationMode(.middle)
             }
 
-            Spacer(minLength: 20)
-
             Button("Restart") {
                 Task {
                     await self.runtime.restart(with: self.runtime.controlPlaneSettings)
@@ -234,11 +243,20 @@ struct TVOSGatewayHostView: View {
             .buttonStyle(.borderedProminent)
             .focused(self.$focusedTarget, equals: .restart)
 
+            Spacer(minLength: 20)
+
             Button("Settings") {
                 self.isSettingsPresented = true
             }
             .buttonStyle(.bordered)
             .focused(self.$focusedTarget, equals: .settings)
+
+            Button("New Thread") {
+                self.startNewThread()
+            }
+            .buttonStyle(.bordered)
+            .disabled(self.runtime.chatSendInProgress)
+            .focused(self.$focusedTarget, equals: .newThread)
         }
     }
 
@@ -287,7 +305,7 @@ struct TVOSGatewayHostView: View {
                 self.chatScrollProxy = nil
             }
             .onChange(of: self.runtime.chatTurns) { _, newTurns in
-                self.pruneCollapsedToolTraceTurnIDs(using: newTurns)
+                self.pruneExpandedToolTraceTurnIDs(using: newTurns)
                 self.chatScrollTargetIndex = max(0, newTurns.count - 1)
                 self.scrollChatToBottom(proxy)
             }
@@ -320,7 +338,7 @@ struct TVOSGatewayHostView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(self.roleColor(for: turn.role))
                 if let runID = turn.runID, !runID.isEmpty {
-                    Text(runID)
+                    Text(self.displayRunID(runID))
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -343,7 +361,7 @@ struct TVOSGatewayHostView: View {
                             Image(systemName: self.isToolTraceExpanded(turnID: turn.id) ? "chevron.down" : "chevron.right")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(self.toolTraceSummary(for: turn.text))
+                            Text(self.toolTraceSummary(for: self.redactedDisplayText(turn.text)))
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -355,14 +373,13 @@ struct TVOSGatewayHostView: View {
                     .buttonStyle(.plain)
 
                     if self.isToolTraceExpanded(turnID: turn.id) {
-                        Text(turn.text)
+                        Text(self.redactedDisplayText(turn.text))
                             .font(.body.monospaced())
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             } else {
-                Text(turn.text)
-                    .font(.body)
+                self.markdownDisplayText(self.redactedDisplayText(turn.text))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -372,11 +389,11 @@ struct TVOSGatewayHostView: View {
     }
 
     private func isToolTraceTurn(_ turn: TVOSGatewayChatTurn) -> Bool {
-        let normalizedRole = turn.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedRole == "tool" {
+        let roleToken = self.normalizedRoleToken(turn.role)
+        if roleToken == "tool" {
             return true
         }
-        if normalizedRole != "assistant" {
+        if roleToken != "assistant" {
             return false
         }
         return self.compactWhitespace(turn.text).hasPrefix("[tool-plan]")
@@ -406,20 +423,20 @@ struct TVOSGatewayHostView: View {
     }
 
     private func isToolTraceExpanded(turnID: String) -> Bool {
-        !self.collapsedToolTraceTurnIDs.contains(turnID)
+        self.expandedToolTraceTurnIDs.contains(turnID)
     }
 
     private func toggleToolTraceCollapse(turnID: String) {
-        if self.collapsedToolTraceTurnIDs.contains(turnID) {
-            self.collapsedToolTraceTurnIDs.remove(turnID)
+        if self.expandedToolTraceTurnIDs.contains(turnID) {
+            self.expandedToolTraceTurnIDs.remove(turnID)
         } else {
-            self.collapsedToolTraceTurnIDs.insert(turnID)
+            self.expandedToolTraceTurnIDs.insert(turnID)
         }
     }
 
-    private func pruneCollapsedToolTraceTurnIDs(using turns: [TVOSGatewayChatTurn]) {
+    private func pruneExpandedToolTraceTurnIDs(using turns: [TVOSGatewayChatTurn]) {
         let knownIDs = Set(turns.map(\.id))
-        self.collapsedToolTraceTurnIDs = self.collapsedToolTraceTurnIDs.intersection(knownIDs)
+        self.expandedToolTraceTurnIDs = self.expandedToolTraceTurnIDs.intersection(knownIDs)
     }
 
     private var chatScrollButtons: some View {
@@ -489,6 +506,15 @@ struct TVOSGatewayHostView: View {
         self.chatInputText = ""
         Task {
             await self.runtime.sendChatMessage(message)
+        }
+    }
+
+    private func startNewThread() {
+        guard !self.runtime.chatSendInProgress else { return }
+        self.chatInputText = ""
+        let sessionKey = "thread-\(Int(Date().timeIntervalSince1970 * 1_000))"
+        Task {
+            await self.runtime.setChatSessionKey(sessionKey)
         }
     }
 
@@ -575,21 +601,27 @@ struct TVOSGatewayHostView: View {
 
         let next: FocusTarget? = {
             switch (origin, direction) {
-            // ── Top row (Restart ↔ Settings) ──
-            case (.restart, .right):  return .settings
-            case (.settings, .left):  return .restart
+            // ── Top row (Restart ↔ Settings ↔ New Thread) ──
+            case (.restart, .right):   return .settings
+            case (.settings, .left):   return .restart
+            case (.settings, .right):  return .newThread
+            case (.newThread, .left):  return .settings
 
             // ── Top → Chevron row ──
             case (.restart, .down), (.settings, .down):
                 return .chatScrollUp
+            case (.newThread, .down):
+                return .chatScrollDown
 
             // ── Chevron row ↔ ──
             case (.chatScrollUp, .right):  return .chatScrollDown
             case (.chatScrollDown, .left): return .chatScrollUp
 
             // ── Chevron row ↕ ──
-            case (.chatScrollUp, .up), (.chatScrollDown, .up):
+            case (.chatScrollUp, .up):
                 return .restart
+            case (.chatScrollDown, .up):
+                return .newThread
             case (.chatScrollUp, .down):
                 return .input
             case (.chatScrollDown, .down):
@@ -805,6 +837,12 @@ struct TVOSGatewayHostView: View {
         .buttonStyle(.bordered)
 
         HStack(spacing: 12) {
+            Toggle("Show Telegram external messages in chat", isOn: self.telegramExternalChatMirrorBinding)
+                .toggleStyle(.switch)
+                .focused(self.$settingsFocus, equals: .externalTelegramChatMirror)
+        }
+
+        HStack(spacing: 12) {
             Button("Test Local LLM") {
                 Task { await self.runtime.probeLocalLLM(prompt: "Who are you?") }
             }
@@ -926,6 +964,7 @@ struct TVOSGatewayHostView: View {
                 Text("openai").tag(GatewayLocalLLMProviderKind.openAICompatible)
                 Text("anthropic").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
                 Text("minimax").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
+                Text("grok").tag(GatewayLocalLLMProviderKind.grokCompatible)
             }
             .pickerStyle(.segmented)
             .focused(self.$settingsFocus, equals: .llmProvider)
@@ -959,8 +998,8 @@ struct TVOSGatewayHostView: View {
         }
 
         HStack(spacing: 12) {
-            Button(self.applyingSettings ? "Applying…" : "Apply + Restart Runtime") {
-                self.applyControlPlaneSettings()
+            Button(self.applyingSettings ? "Applying…" : "Apply + Restart + Test") {
+                self.applyControlPlaneSettings(testLocalLLM: true)
             }
             .disabled(self.applyingSettings)
             .buttonStyle(.borderedProminent)
@@ -978,12 +1017,15 @@ struct TVOSGatewayHostView: View {
             .foregroundStyle(.secondary)
     }
 
-    private func applyControlPlaneSettings() {
+    private func applyControlPlaneSettings(testLocalLLM: Bool = false) {
         guard !self.applyingSettings else { return }
         let draft = self.settingsDraft
         self.applyingSettings = true
         Task {
             await self.runtime.applyControlPlaneSettings(draft)
+            if testLocalLLM {
+                await self.runtime.probeLocalLLM(prompt: "Who are you?")
+            }
             self.settingsDraft = self.runtime.controlPlaneSettings
             self.applyingSettings = false
         }
@@ -1254,6 +1296,12 @@ struct TVOSGatewayHostView: View {
                 .focused(self.$settingsFocus, equals: .probeTCP)
             }
             .buttonStyle(.bordered)
+
+            HStack(spacing: 12) {
+                Toggle("Show Telegram external messages in chat", isOn: self.telegramExternalChatMirrorBinding)
+                    .toggleStyle(.switch)
+                    .focused(self.$settingsFocus, equals: .externalTelegramChatMirror)
+            }
 
             HStack(spacing: 12) {
                 Button("Test Local LLM") {
@@ -1637,6 +1685,12 @@ struct TVOSGatewayHostView: View {
         }
     }
 
+    private var telegramExternalChatMirrorBinding: Binding<Bool> {
+        Binding(
+            get: { self.runtime.showExternalTelegramMessagesInChat },
+            set: { self.runtime.setShowExternalTelegramMessagesInChat($0) })
+    }
+
     private var runtimeStateColor: Color {
         self.runtime.state == .running ? .green : .gray
     }
@@ -1718,22 +1772,110 @@ struct TVOSGatewayHostView: View {
     }
 
     private func displayRole(for rawRole: String) -> String {
-        switch rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        let trimmedRole = rawRole.trimmingCharacters(in: .whitespacesAndNewlines)
+        let roleToken = self.normalizedRoleToken(trimmedRole)
+        switch roleToken {
         case "user":
-            return "User"
+            return self.formattedRoleTitle(baseTitle: "User", roleToken: roleToken, rawRole: trimmedRole)
         case "assistant":
-            return "Assistant"
+            return self.formattedRoleTitle(baseTitle: "Assistant", roleToken: roleToken, rawRole: trimmedRole)
         case "tool":
-            return "Tool"
+            return self.formattedRoleTitle(baseTitle: "Tool", roleToken: roleToken, rawRole: trimmedRole)
         case "system":
-            return "System"
+            return self.formattedRoleTitle(baseTitle: "System", roleToken: roleToken, rawRole: trimmedRole)
         default:
-            return rawRole
+            return Self.maskLongDigitSequences(in: trimmedRole)
         }
     }
 
+    private func displayRunID(_ rawRunID: String) -> String {
+        let trimmedRunID = rawRunID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.maskLongDigitSequences(in: trimmedRunID)
+    }
+
+    private static func maskedDisplayUserID(_ rawID: String) -> String {
+        let trimmedID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else { return "*" }
+        let visibleCount = min(4, trimmedID.count)
+        return "*\(trimmedID.suffix(visibleCount))"
+    }
+
+    private func redactedDisplayText(_ rawText: String) -> String {
+        Self.maskLongDigitSequences(in: rawText)
+    }
+
+    @ViewBuilder
+    private func markdownDisplayText(_ rawText: String) -> some View {
+        if let markdown = self.markdownAttributedText(from: rawText) {
+            Text(markdown)
+                .font(.body)
+        } else {
+            Text(rawText)
+                .font(.body)
+        }
+    }
+
+    private func markdownAttributedText(from text: String) -> AttributedString? {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible)
+        return try? AttributedString(markdown: text, options: options)
+    }
+
+    private func normalizedRoleToken(_ rawRole: String) -> String {
+        rawRole
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .first?
+            .lowercased() ?? ""
+    }
+
+    private func formattedRoleTitle(baseTitle: String, roleToken: String, rawRole: String) -> String {
+        guard !roleToken.isEmpty, rawRole.count > roleToken.count else {
+            return baseTitle
+        }
+        let suffixStart = rawRole.index(rawRole.startIndex, offsetBy: roleToken.count)
+        let suffix = rawRole[suffixStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !suffix.isEmpty else {
+            return baseTitle
+        }
+        let maskedSuffix = Self.maskLongDigitSequences(in: suffix)
+        if suffix.hasPrefix(":") || suffix.hasPrefix("-") {
+            return "\(baseTitle)\(maskedSuffix)"
+        }
+        return "\(baseTitle) \(maskedSuffix)"
+    }
+
+    private static func maskLongDigitSequences(in text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\d{7,}"#) else {
+            return text
+        }
+        let nsText = text as NSString
+        let matches = regex.matches(
+            in: text,
+            options: [],
+            range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var cursor = 0
+        for match in matches {
+            let range = match.range
+            if range.location > cursor {
+                result += nsText.substring(with: NSRange(location: cursor, length: range.location - cursor))
+            }
+            let matched = nsText.substring(with: range)
+            result += Self.maskedDisplayUserID(matched)
+            cursor = range.location + range.length
+        }
+        if cursor < nsText.length {
+            result += nsText.substring(from: cursor)
+        }
+        return result
+    }
+
     private func roleColor(for rawRole: String) -> Color {
-        switch rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch self.normalizedRoleToken(rawRole) {
         case "user":
             return .cyan
         case "assistant":
@@ -1748,7 +1890,7 @@ struct TVOSGatewayHostView: View {
     }
 
     private func chatBubbleBackground(for rawRole: String) -> Color {
-        switch rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch self.normalizedRoleToken(rawRole) {
         case "user":
             return Color.cyan.opacity(0.16)
         case "assistant":

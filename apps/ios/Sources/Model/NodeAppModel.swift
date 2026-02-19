@@ -80,11 +80,14 @@ final class NodeAppModel {
         let agentId = (self.selectedAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let defaultId = (self.gatewayDefaultAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedId = agentId.isEmpty ? defaultId : agentId
-        if resolvedId.isEmpty { return "Main" }
+        if resolvedId.isEmpty { return "OpenClaw" }
         if let match = self.gatewayAgents.first(where: { $0.id == resolvedId }) {
             let name = (match.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return name.isEmpty ? match.id : name
+            if !name.isEmpty { return name }
+            if match.id.lowercased() == "main" { return "OpenClaw" }
+            return match.id
         }
+        if resolvedId.lowercased() == "main" { return "OpenClaw" }
         return resolvedId
     }
 

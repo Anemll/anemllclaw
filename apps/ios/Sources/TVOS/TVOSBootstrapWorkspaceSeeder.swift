@@ -1,4 +1,4 @@
-#if os(tvOS)
+#if os(iOS) || os(tvOS)
 import Foundation
 
 private struct TVOSWorkspaceOnboardingState: Codable, Sendable {

@@ -541,7 +541,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     text: message,
                     timestampMs: nowMs,
                     runID: runID)
-                await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: nowMs)
+                await self.sessionStore.recordTurn(
+                    sessionKey: sessionKey,
+                    nowMs: nowMs,
+                    thinkingLevel: parsedPrompt.thinking)
 
                 if let bootstrapNote = Self.maybeApplyBootstrapProfileUpdate(
                     fields: bootstrapFields,
@@ -1141,10 +1144,12 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         do {
             let turns = try await self.memoryStore.history(sessionKey: sessionKey, limit: limit)
             let messages = turns.map(Self.asChatHistoryMessage)
+            let snapshot = await self.sessionStore.snapshot(sessionKey: sessionKey)
+            let thinkingLevel = snapshot.thinkingLevel ?? "low"
             let payload: GatewayJSONValue = .object([
                 "sessionKey": .string(sessionKey),
                 "sessionId": .string(sessionKey),
-                "thinkingLevel": .string("low"),
+                "thinkingLevel": .string(thinkingLevel),
                 "messages": .array(messages),
             ])
             return GatewayResponseFrame.success(id: request.id, payload: payload)
@@ -1159,16 +1164,53 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     private func handleSessionsList(_ request: GatewayRequestFrame) async -> GatewayResponseFrame? {
         let params = GatewayPayloadCodec.decode(request.params, as: SessionsListParams.self)
         let limit = max(1, min(params?.limit ?? 50, 500))
+        struct SessionEntryAggregate {
+            var sessionKey: String
+            var lastActivityMs: Int64
+            var turnCount: Int
+            var thinkingLevel: String?
+        }
+
+        var bySessionKey: [String: SessionEntryAggregate] = [:]
         let snapshots = await self.sessionStore.snapshots()
-        let sessions = snapshots.sorted { $0.lastActivityMs > $1.lastActivityMs }
+        for snapshot in snapshots {
+            bySessionKey[snapshot.sessionKey] = SessionEntryAggregate(
+                sessionKey: snapshot.sessionKey,
+                lastActivityMs: snapshot.lastActivityMs,
+                turnCount: snapshot.turnCount,
+                thinkingLevel: snapshot.thinkingLevel)
+        }
+
+        do {
+            let persistedSummaries = try await self.memoryStore.sessionSummaries(limit: max(limit * 4, 200))
+            for summary in persistedSummaries {
+                if var existing = bySessionKey[summary.sessionKey] {
+                    existing.lastActivityMs = max(existing.lastActivityMs, summary.lastActivityMs)
+                    existing.turnCount = max(existing.turnCount, summary.turnCount)
+                    bySessionKey[summary.sessionKey] = existing
+                } else {
+                    bySessionKey[summary.sessionKey] = SessionEntryAggregate(
+                        sessionKey: summary.sessionKey,
+                        lastActivityMs: summary.lastActivityMs,
+                        turnCount: summary.turnCount,
+                        thinkingLevel: nil)
+                }
+            }
+        } catch {
+            // Keep sessions.list resilient even if sqlite lookup fails.
+        }
+
+        let sessions = bySessionKey.values
+            .sorted { $0.lastActivityMs > $1.lastActivityMs }
             .prefix(limit)
-            .map { snapshot -> GatewayJSONValue in
+            .map { aggregate -> GatewayJSONValue in
+                let thinkingLevel = aggregate.thinkingLevel ?? "low"
                 var object: [String: GatewayJSONValue] = [
-                    "key": .string(snapshot.sessionKey),
-                    "displayName": .string(snapshot.sessionKey),
-                    "updatedAt": .double(Double(snapshot.lastActivityMs)),
-                    "sessionId": .string(snapshot.sessionKey),
-                    "thinkingLevel": .string("low"),
+                    "key": .string(aggregate.sessionKey),
+                    "displayName": .string(aggregate.sessionKey),
+                    "updatedAt": .double(Double(aggregate.lastActivityMs)),
+                    "sessionId": .string(aggregate.sessionKey),
+                    "thinkingLevel": .string(thinkingLevel),
                 ]
                 if let model = self.config.llmConfig.model?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !model.isEmpty

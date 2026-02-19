@@ -1,3 +1,4 @@
+import OpenClawGatewayCore
 import OpenClawKit
 import Network
 import Observation
@@ -9,6 +10,7 @@ struct SettingsTab: View {
     @Environment(NodeAppModel.self) private var appModel: NodeAppModel
     @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
     @Environment(GatewayConnectionController.self) private var gatewayController: GatewayConnectionController
+    @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime: TVOSLocalGatewayRuntime
     @Environment(\.dismiss) private var dismiss
     @AppStorage("node.displayName") private var displayName: String = "iOS Node"
     @AppStorage("node.instanceId") private var instanceId: String = UUID().uuidString
@@ -30,6 +32,9 @@ struct SettingsTab: View {
     @AppStorage("gateway.manual.tls") private var manualGatewayTLS: Bool = true
     @AppStorage("gateway.discovery.debugLogs") private var discoveryDebugLogsEnabled: Bool = false
     @AppStorage("canvas.debugStatusEnabled") private var canvasDebugStatusEnabled: Bool = false
+    @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = true
+    @AppStorage("chat.autoRetryAttemptsOnError") private var chatAutoRetryAttemptsOnError: Int = 1
+    @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
 
     // Onboarding control (RootCanvas listens to onboarding.requestID and force-opens the wizard).
     @AppStorage("onboarding.requestID") private var onboardingRequestID: Int = 0
@@ -50,12 +55,125 @@ struct SettingsTab: View {
 
     @State private var showResetOnboardingAlert: Bool = false
     @State private var suppressCredentialPersist: Bool = false
+    @State private var llmProvider: GatewayLocalLLMProviderKind = .disabled
+    @State private var llmBaseURL: String = ""
+    @State private var llmAPIKey: String = ""
+    @State private var llmModel: String = ""
+    @State private var llmApplying: Bool = false
 
     private let gatewayLogger = Logger(subsystem: "ai.openclaw.ios", category: "GatewaySettings")
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    LabeledContent("Status") {
+                        Text(self.localGatewayRuntime.state == .running ? "Running" : "Stopped")
+                            .foregroundStyle(self.localGatewayRuntime.state == .running ? .green : .orange)
+                    }
+                    if let port = self.localGatewayRuntime.listenerPort {
+                        LabeledContent("Port", value: "\(port)")
+                    }
+                    LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
+
+                    Picker("LLM Provider", selection: self.$llmProvider) {
+                        Text("Disabled").tag(GatewayLocalLLMProviderKind.disabled)
+                        Text("OpenAI-compatible").tag(GatewayLocalLLMProviderKind.openAICompatible)
+                        Text("Anthropic-compatible").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
+                        Text("MiniMax-compatible").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
+                        Text("Grok-compatible").tag(GatewayLocalLLMProviderKind.grokCompatible)
+                    }
+
+                    if self.llmProvider != .disabled {
+                        TextField("Base URL", text: self.$llmBaseURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                        SecureField("API Key", text: self.$llmAPIKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Model (e.g. gpt-4o-mini)", text: self.$llmModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+
+                    if self.llmSettingsDirty {
+                        Button {
+                            Task { await self.applyLLMSettings(test: false) }
+                        } label: {
+                            if self.llmApplying {
+                                HStack(spacing: 8) {
+                                    ProgressView().progressViewStyle(.circular)
+                                    Text("Applying…")
+                                }
+                            } else {
+                                Label("Apply & Restart", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(self.llmApplying)
+
+                        Button {
+                            Task { await self.applyLLMSettings(test: true) }
+                        } label: {
+                            Label("Apply, Restart & Test", systemImage: "arrow.clockwise.circle")
+                        }
+                        .disabled(self.llmApplying)
+                    } else if self.llmProvider != .disabled {
+                        Button {
+                            Task { await self.testLocalLLM() }
+                        } label: {
+                            if self.llmApplying {
+                                HStack(spacing: 8) {
+                                    ProgressView().progressViewStyle(.circular)
+                                    Text("Testing…")
+                                }
+                            } else {
+                                Label("Test LLM", systemImage: "checkmark.seal")
+                            }
+                        }
+                        .disabled(self.llmApplying || self.localGatewayRuntime.state != .running)
+                    }
+
+                    Toggle(
+                        "Show launch prompt when LLM is missing",
+                        isOn: Binding(
+                            get: { !self.llmSetupPromptSuppressed },
+                            set: { self.llmSetupPromptSuppressed = !$0 }))
+
+                    if let error = self.localGatewayRuntime.localLLMConfigErrorText {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+
+                    if let succeeded = self.localGatewayRuntime.lastLocalLLMProbeSucceeded {
+                        HStack(spacing: 6) {
+                            Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(succeeded ? .green : .red)
+                            Text(succeeded ? "LLM test passed" : "LLM test failed")
+                                .font(.footnote.weight(.medium))
+                        }
+                    }
+                    if let errorText = self.localGatewayRuntime.lastLocalLLMProbeErrorText {
+                        Text(Self.formatLLMError(errorText))
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    if let responseText = self.localGatewayRuntime.lastLocalLLMProbeResponseText {
+                        Text(responseText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(4)
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                        Text("Local Server")
+                    }
+                }
+
                 Section {
                     DisclosureGroup(isExpanded: self.$gatewayExpanded) {
                         if !self.isGatewayConnected {
@@ -233,9 +351,9 @@ struct SettingsTab: View {
                             Circle()
                                 .fill(self.isGatewayConnected ? Color.green : Color.secondary.opacity(0.35))
                                 .frame(width: 10, height: 10)
-                            Text("Gateway")
+                            Text("Remote Gateway")
                             Spacer()
-                            Text(self.gatewaySummaryText)
+                            Text(self.isGatewayConnected ? self.gatewaySummaryText : "Optional")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -268,6 +386,16 @@ struct SettingsTab: View {
                             .foregroundStyle(.secondary)
                         // Keep this separate so users can hide the side bubble without disabling Talk Mode.
                         Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
+                        Toggle("Show Tool Calls in Chat", isOn: self.$showsToolCallsInChat)
+                        Text("Tool calls are collapsed by default. Disable to hide tool traces in Chat.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Stepper(value: self.$chatAutoRetryAttemptsOnError, in: 0...5) {
+                            LabeledContent("Auto-Retry on Chat Error", value: "\(self.chatAutoRetryAttemptsOnError)")
+                        }
+                        Text("When chat.send fails, Chat sends \"Continue\" up to this many times per user message.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
 
                         NavigationLink {
                             VoiceWakeWordsSettingsView()
@@ -353,13 +481,18 @@ struct SettingsTab: View {
                     self.gatewayPassword = GatewaySettingsStore.loadGatewayPassword(instanceId: trimmedInstanceId) ?? ""
                 }
                 self.talkElevenLabsApiKey = GatewaySettingsStore.loadTalkElevenLabsApiKey() ?? ""
-                // Keep setup front-and-center when disconnected; keep things compact once connected.
-                self.gatewayExpanded = !self.isGatewayConnected
+                // Local server is primary — collapse remote gateway by default.
+                let localRunning = self.localGatewayRuntime.state == .running
+                self.gatewayExpanded = !localRunning && !self.isGatewayConnected
                 self.selectedAgentPickerId = self.appModel.selectedAgentId ?? ""
+                self.loadLLMSettingsFromRuntime()
             }
             .onChange(of: self.selectedAgentPickerId) { _, newValue in
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appModel.setSelectedAgentId(trimmed.isEmpty ? nil : trimmed)
+            }
+            .onChange(of: self.llmProvider) { _, newValue in
+                self.applyRecommendedLLMDefaultsIfNeeded(for: newValue)
             }
             .onChange(of: self.appModel.selectedAgentId ?? "") { _, newValue in
                 if newValue != self.selectedAgentPickerId {
@@ -504,6 +637,123 @@ struct SettingsTab: View {
         let status = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if status.contains("connected") { return true }
         return self.appModel.gatewayServerName != nil && !status.contains("offline")
+    }
+
+    // MARK: - Local LLM Settings
+
+    private var llmSettingsDirty: Bool {
+        let settings = self.localGatewayRuntime.controlPlaneSettings
+        return self.llmProvider != settings.localLLMProvider
+            || self.llmBaseURL != settings.localLLMBaseURL
+            || self.llmAPIKey != settings.localLLMAPIKey
+            || self.llmModel != settings.localLLMModel
+    }
+
+    private func loadLLMSettingsFromRuntime() {
+        let settings = self.localGatewayRuntime.controlPlaneSettings
+        self.llmProvider = settings.localLLMProvider
+        self.llmBaseURL = settings.localLLMBaseURL
+        self.llmAPIKey = settings.localLLMAPIKey
+        self.llmModel = settings.localLLMModel
+    }
+
+    private func applyRecommendedLLMDefaultsIfNeeded(for provider: GatewayLocalLLMProviderKind) {
+        guard provider != .disabled else { return }
+
+        if self.llmBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let recommendedBaseURL = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: provider)
+        {
+            self.llmBaseURL = recommendedBaseURL
+        }
+
+        if self.llmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let recommendedModel = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: provider)
+        {
+            self.llmModel = recommendedModel
+        }
+    }
+
+    private func applyLLMSettings(test: Bool) async {
+        self.llmApplying = true
+        var settings = self.localGatewayRuntime.controlPlaneSettings
+        settings.localLLMProvider = self.llmProvider
+        settings.localLLMBaseURL = self.llmBaseURL
+        settings.localLLMAPIKey = self.llmAPIKey
+        settings.localLLMModel = self.llmModel
+        await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+        if test {
+            await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
+        }
+        self.llmApplying = false
+    }
+
+    private func testLocalLLM() async {
+        self.llmApplying = true
+        await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
+        self.llmApplying = false
+    }
+
+    /// Extract a human-readable error from the nested gateway LLM error format.
+    /// Input like: `local llm failed: httpError(status: 400, message: "{\"error\":{\"message\":\"unknown model 'x'\"}}")`
+    /// Output: `HTTP 400: unknown model 'x'`
+    private static func formatLLMError(_ raw: String) -> String {
+        // Try to extract HTTP status from "httpError(status: NNN, ...)"
+        var httpStatus: String?
+        if let statusRange = raw.range(of: "status: "),
+           let commaRange = raw[statusRange.upperBound...].range(of: ",")
+        {
+            httpStatus = String(raw[statusRange.upperBound ..< commaRange.lowerBound])
+        }
+
+        // Try to extract the inner JSON message field.
+        // Look for the JSON blob inside message: "..."
+        if let jsonStart = raw.range(of: "message: \"")?.upperBound ?? raw.range(of: "message:\"")?.upperBound {
+            // Find the matching closing quote — the JSON string ends at the last `")` in the error.
+            let tail = raw[jsonStart...]
+            // The JSON is escaped; try to unescape and parse it.
+            var jsonString = String(tail)
+            // Strip trailing `")` wrapper if present.
+            if jsonString.hasSuffix("\")") {
+                jsonString = String(jsonString.dropLast(2))
+            } else if jsonString.hasSuffix("\"") {
+                jsonString = String(jsonString.dropLast(1))
+            }
+            // Unescape \" → "
+            jsonString = jsonString.replacingOccurrences(of: "\\\"", with: "\"")
+
+            if let data = jsonString.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                // Nested: {"error": {"message": "..."}} or {"type":"error","error":{"message":"..."}}
+                if let errorObj = json["error"] as? [String: Any],
+                   let msg = errorObj["message"] as? String
+                {
+                    if let status = httpStatus {
+                        return "HTTP \(status): \(msg)"
+                    }
+                    return msg
+                }
+                // Flat: {"message": "..."}
+                if let msg = json["message"] as? String {
+                    if let status = httpStatus {
+                        return "HTTP \(status): \(msg)"
+                    }
+                    return msg
+                }
+            }
+        }
+
+        // Fallback: strip the common prefix for brevity.
+        var cleaned = raw
+        for prefix in ["local llm failed: ", "httpError(", "local llm "] {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+        if cleaned.hasSuffix(")") {
+            cleaned = String(cleaned.dropLast(1))
+        }
+        return cleaned
     }
 
     private var gatewaySummaryText: String {

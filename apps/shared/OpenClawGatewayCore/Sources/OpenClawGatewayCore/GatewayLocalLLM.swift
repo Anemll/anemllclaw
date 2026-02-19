@@ -5,6 +5,7 @@ public enum GatewayLocalLLMProviderKind: String, Codable, Sendable, Equatable {
     case openAICompatible = "openai-compatible"
     case anthropicCompatible = "anthropic-compatible"
     case minimaxCompatible = "minimax-compatible"
+    case grokCompatible = "grok-compatible"
 }
 
 public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
@@ -227,6 +228,11 @@ public enum GatewayLocalLLMProviderFactory {
                 config: config,
                 session: session,
                 kind: .minimaxCompatible)
+        case .grokCompatible:
+            return GatewayOpenAICompatibleLLMProvider(
+                config: config,
+                session: session,
+                kind: .grokCompatible)
         }
     }
 }
@@ -245,6 +251,12 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         openAIRoleAssistant,
         openAIRoleTool,
     ]
+    private static let minimaxCanonicalModelIDs: [String: String] = [
+        "minimax-m2.1": "MiniMax-M2.1",
+        "minimax-m2.1-lightning": "MiniMax-M2.1-lightning",
+        "minimax-m2.5": "MiniMax-M2.5",
+        "minimax-m2.5-lightning": "MiniMax-M2.5-Lightning",
+    ]
 
     private let config: GatewayLocalLLMConfig
     private let endpointURL: URL
@@ -257,10 +269,33 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     {
         self.config = config
         self.kind = kind
-        self.model = config.model ?? ""
+        self.model = Self.normalizedModelName(config.model ?? "", for: kind)
         let defaultEndpoint = Self.defaultEndpointURL(for: kind)
         self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL, defaultEndpoint: defaultEndpoint)
         self.session = session
+    }
+
+    static func normalizedModelName(_ rawModel: String, for provider: GatewayLocalLLMProviderKind) -> String {
+        let trimmedModel = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard provider == .minimaxCompatible, !trimmedModel.isEmpty else {
+            return trimmedModel
+        }
+
+        let loweredModel = trimmedModel
+            .lowercased()
+            .replacingOccurrences(of: "minmax/", with: "minimax/")
+        var candidates: [String] = [loweredModel]
+        if let slashIndex = loweredModel.lastIndex(of: "/") {
+            candidates.append(String(loweredModel[loweredModel.index(after: slashIndex)...]))
+        }
+
+        for candidate in candidates {
+            let normalizedCandidate = candidate.replacingOccurrences(of: "minmax-", with: "minimax-")
+            if let canonical = Self.minimaxCanonicalModelIDs[normalizedCandidate] {
+                return canonical
+            }
+        }
+        return trimmedModel
     }
 
     public func complete(_ request: GatewayLocalLLMRequest) async throws -> GatewayLocalLLMResponse {
@@ -506,6 +541,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         switch provider {
         case .minimaxCompatible:
             return URL(string: "https://api.minimax.io/v1/chat/completions")!
+        case .grokCompatible:
+            return URL(string: "https://api.x.ai/v1/chat/completions")!
         case .disabled, .openAICompatible, .anthropicCompatible:
             return URL(string: "https://api.openai.com/v1/chat/completions")!
         }

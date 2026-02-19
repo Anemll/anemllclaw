@@ -1,9 +1,12 @@
+import Security
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct RootCanvas: View {
     @Environment(NodeAppModel.self) private var appModel
     @Environment(GatewayConnectionController.self) private var gatewayController
+    @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -17,6 +20,7 @@ struct RootCanvas: View {
     @AppStorage("gateway.manual.enabled") private var manualGatewayEnabled: Bool = false
     @AppStorage("gateway.manual.host") private var manualGatewayHost: String = ""
     @AppStorage("onboarding.quickSetupDismissed") private var quickSetupDismissed: Bool = false
+    @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
     @State private var presentedSheet: PresentedSheet?
     @State private var voiceWakeToastText: String?
     @State private var toastDismissTask: Task<Void, Never>?
@@ -24,6 +28,19 @@ struct RootCanvas: View {
     @State private var onboardingAllowSkip: Bool = true
     @State private var didEvaluateOnboarding: Bool = false
     @State private var didAutoOpenSettings: Bool = false
+    @State private var didEvaluateLLMSetupPromptOnLaunch: Bool = false
+    @State private var showLLMSetupPrompt: Bool = false
+    @State private var llmSetupPromptDontShowAgain: Bool = false
+    @State private var showBackupRestoreActions: Bool = false
+    @State private var showBackupConfirmAlert: Bool = false
+    @State private var showRestoreImporter: Bool = false
+    @State private var pendingRestoreFileURL: URL?
+    @State private var showRestoreConfirmAlert: Bool = false
+    @State private var backupOperationInFlight: Bool = false
+    @State private var backupExportDocument = OpenClawBackupExportDocument(data: Data())
+    @State private var backupExportFileName: String = "OpenClaw-Backup.ocbackup"
+    @State private var showBackupExporter: Bool = false
+    @State private var backupStatusAlert: BackupStatusAlert?
 
     private enum PresentedSheet: Identifiable {
         case settings
@@ -43,6 +60,12 @@ struct RootCanvas: View {
         case none
         case onboarding
         case settings
+    }
+
+    private struct BackupStatusAlert: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
     }
 
     static func startupPresentationRoute(
@@ -67,113 +90,234 @@ struct RootCanvas: View {
     }
 
     var body: some View {
-        ZStack {
-            CanvasContent(
-                systemColorScheme: self.systemColorScheme,
-                gatewayStatus: self.gatewayStatus,
-                voiceWakeEnabled: self.voiceWakeEnabled,
-                voiceWakeToastText: self.voiceWakeToastText,
-                cameraHUDText: self.appModel.cameraHUDText,
-                cameraHUDKind: self.appModel.cameraHUDKind,
-                openChat: {
-                    self.presentedSheet = .chat
-                },
-                openSettings: {
-                    self.presentedSheet = .settings
-                })
-                .preferredColorScheme(.dark)
+        self.backupRestoreWrapped(
+            ZStack {
+                CanvasContent(
+                    systemColorScheme: self.systemColorScheme,
+                    gatewayStatus: self.gatewayStatus,
+                    voiceWakeEnabled: self.voiceWakeEnabled,
+                    voiceWakeToastText: self.voiceWakeToastText,
+                    cameraHUDText: self.appModel.cameraHUDText,
+                    cameraHUDKind: self.appModel.cameraHUDKind,
+                    openChat: {
+                        self.presentedSheet = .chat
+                    },
+                    openSettings: {
+                        self.presentedSheet = .settings
+                    },
+                    openBackupRestore: {
+                        self.showBackupRestoreActions = true
+                    })
+                    .preferredColorScheme(.dark)
 
-            if self.appModel.cameraFlashNonce != 0 {
-                CameraFlashOverlay(nonce: self.appModel.cameraFlashNonce)
+                if self.appModel.cameraFlashNonce != 0 {
+                    CameraFlashOverlay(nonce: self.appModel.cameraFlashNonce)
+                }
             }
-        }
-        .gatewayTrustPromptAlert()
-        .sheet(item: self.$presentedSheet) { sheet in
-            switch sheet {
-            case .settings:
-                SettingsTab()
+            .gatewayTrustPromptAlert()
+            .sheet(item: self.$presentedSheet) { sheet in
+                switch sheet {
+                case .settings:
+                    SettingsTab()
+                        .environment(self.appModel)
+                        .environment(self.appModel.voiceWake)
+                        .environment(self.gatewayController)
+                        .environment(self.localGatewayRuntime)
+                case .chat:
+                    if let host = self.localGatewayRuntime.host {
+                        ChatSheet(
+                            transport: LocalGatewayChatTransport(host: host),
+                            sessionKey: self.localGatewayRuntime.chatSessionKey,
+                            agentName: self.localGatewayRuntime.chatAssistantName,
+                            userAccent: self.appModel.seamColor)
+                    } else {
+                        ChatSheet(
+                            gateway: self.appModel.gatewaySession,
+                            sessionKey: self.appModel.mainSessionKey,
+                            agentName: self.appModel.activeAgentName,
+                            userAccent: self.appModel.seamColor)
+                    }
+                case .quickSetup:
+                    GatewayQuickSetupSheet()
+                        .environment(self.appModel)
+                        .environment(self.gatewayController)
+                }
+            }
+            .fullScreenCover(isPresented: self.$showOnboarding) {
+                OnboardingWizardView(
+                    allowSkip: self.onboardingAllowSkip,
+                    onClose: {
+                        self.showOnboarding = false
+                    })
                     .environment(self.appModel)
                     .environment(self.appModel.voiceWake)
                     .environment(self.gatewayController)
-            case .chat:
-                ChatSheet(
-                    // Mobile chat UI should use the node role RPC surface (chat.* / sessions.*)
-                    // to avoid requiring operator scopes like operator.read.
-                    gateway: self.appModel.gatewaySession,
-                    sessionKey: self.appModel.mainSessionKey,
-                    agentName: self.appModel.activeAgentName,
-                    userAccent: self.appModel.seamColor)
-            case .quickSetup:
-                GatewayQuickSetupSheet()
-                    .environment(self.appModel)
-                    .environment(self.gatewayController)
             }
-        }
-        .fullScreenCover(isPresented: self.$showOnboarding) {
-            OnboardingWizardView(
-                allowSkip: self.onboardingAllowSkip,
-                onClose: {
+            .onAppear { self.updateIdleTimer() }
+            .onAppear { self.evaluateOnboardingPresentation(force: false) }
+            .onAppear { self.maybeAutoOpenSettings() }
+            .onAppear { self.maybePromptForLLMSetupOnLaunch() }
+            .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
+            .onChange(of: self.scenePhase) { _, _ in self.updateIdleTimer() }
+            .onChange(of: self.localGatewayRuntime.state) { _, _ in
+                self.maybePromptForLLMSetupOnLaunch()
+            }
+            .onChange(of: self.localGatewayRuntime.localLLMConfigured) { _, newValue in
+                if newValue {
+                    self.showLLMSetupPrompt = false
+                }
+            }
+            .onAppear { self.maybeShowQuickSetup() }
+            .onChange(of: self.gatewayController.gateways.count) { _, _ in self.maybeShowQuickSetup() }
+            .onAppear { self.updateCanvasDebugStatus() }
+            .onChange(of: self.canvasDebugStatusEnabled) { _, _ in self.updateCanvasDebugStatus() }
+            .onChange(of: self.appModel.gatewayStatusText) { _, _ in self.updateCanvasDebugStatus() }
+            .onChange(of: self.appModel.gatewayServerName) { _, _ in self.updateCanvasDebugStatus() }
+            .onChange(of: self.appModel.gatewayServerName) { _, newValue in
+                if newValue != nil {
                     self.showOnboarding = false
-                })
-                .environment(self.appModel)
-                .environment(self.appModel.voiceWake)
-                .environment(self.gatewayController)
-        }
-        .onAppear { self.updateIdleTimer() }
-        .onAppear { self.evaluateOnboardingPresentation(force: false) }
-        .onAppear { self.maybeAutoOpenSettings() }
-        .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
-        .onChange(of: self.scenePhase) { _, _ in self.updateIdleTimer() }
-        .onAppear { self.maybeShowQuickSetup() }
-        .onChange(of: self.gatewayController.gateways.count) { _, _ in self.maybeShowQuickSetup() }
-        .onAppear { self.updateCanvasDebugStatus() }
-        .onChange(of: self.canvasDebugStatusEnabled) { _, _ in self.updateCanvasDebugStatus() }
-        .onChange(of: self.appModel.gatewayStatusText) { _, _ in self.updateCanvasDebugStatus() }
-        .onChange(of: self.appModel.gatewayServerName) { _, _ in self.updateCanvasDebugStatus() }
-        .onChange(of: self.appModel.gatewayServerName) { _, newValue in
-            if newValue != nil {
-                self.showOnboarding = false
+                }
             }
-        }
-        .onChange(of: self.onboardingRequestID) { _, _ in
-            self.evaluateOnboardingPresentation(force: true)
-        }
-        .onChange(of: self.appModel.gatewayRemoteAddress) { _, _ in self.updateCanvasDebugStatus() }
-        .onChange(of: self.appModel.gatewayServerName) { _, newValue in
-            if newValue != nil {
-                self.onboardingComplete = true
-                self.hasConnectedOnce = true
-                OnboardingStateStore.markCompleted(mode: nil)
+            .onChange(of: self.onboardingRequestID) { _, _ in
+                self.evaluateOnboardingPresentation(force: true)
             }
-            self.maybeAutoOpenSettings()
-        }
-        .onChange(of: self.voiceWake.lastTriggeredCommand) { _, newValue in
-            guard let newValue else { return }
-            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
+            .onChange(of: self.showOnboarding) { _, newValue in
+                if !newValue {
+                    self.maybePromptForLLMSetupOnLaunch()
+                }
+            }
+            .onChange(of: self.appModel.gatewayRemoteAddress) { _, _ in self.updateCanvasDebugStatus() }
+            .onChange(of: self.appModel.gatewayServerName) { _, newValue in
+                if newValue != nil {
+                    self.onboardingComplete = true
+                    self.hasConnectedOnce = true
+                    OnboardingStateStore.markCompleted(mode: nil)
+                }
+                self.maybeAutoOpenSettings()
+            }
+            .onChange(of: self.voiceWake.lastTriggeredCommand) { _, newValue in
+                guard let newValue else { return }
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
 
-            self.toastDismissTask?.cancel()
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
-                self.voiceWakeToastText = trimmed
-            }
+                self.toastDismissTask?.cancel()
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    self.voiceWakeToastText = trimmed
+                }
 
-            self.toastDismissTask = Task {
-                try? await Task.sleep(nanoseconds: 2_300_000_000)
-                await MainActor.run {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        self.voiceWakeToastText = nil
+                self.toastDismissTask = Task {
+                    try? await Task.sleep(nanoseconds: 2_300_000_000)
+                    await MainActor.run {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            self.voiceWakeToastText = nil
+                        }
                     }
                 }
             }
-        }
-        .onDisappear {
-            UIApplication.shared.isIdleTimerDisabled = false
-            self.toastDismissTask?.cancel()
-            self.toastDismissTask = nil
-        }
+            .onDisappear {
+                UIApplication.shared.isIdleTimerDisabled = false
+                self.toastDismissTask?.cancel()
+                self.toastDismissTask = nil
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func backupRestoreWrapped<Content: View>(_ content: Content) -> some View {
+        content
+            .overlay(alignment: .topTrailing) {
+                if self.backupOperationInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .padding(.top, 10)
+                        .padding(.trailing, 10)
+                        .allowsHitTesting(false)
+                }
+            }
+            .confirmationDialog(
+                "Backup / Restore",
+                isPresented: self.$showBackupRestoreActions,
+                titleVisibility: .visible)
+            {
+                Button("Backup to Files…") {
+                    self.showBackupConfirmAlert = true
+                }
+                Button("Restore from Backup…", role: .destructive) {
+                    self.showRestoreImporter = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Export or import local OpenClaw data.")
+            }
+            .alert("Create Backup?", isPresented: self.$showBackupConfirmAlert) {
+                Button("Backup") {
+                    Task { await self.performBackupExport() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Backup includes chats, workspace files, settings, and saved credentials.")
+            }
+            .fileImporter(
+                isPresented: self.$showRestoreImporter,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false)
+            { result in
+                self.handleRestoreSelection(result)
+            }
+            .alert("Restore Backup?", isPresented: self.$showRestoreConfirmAlert) {
+                Button("Restore", role: .destructive) {
+                    Task { await self.performRestoreFromPendingFile() }
+                }
+                Button("Cancel", role: .cancel) {
+                    self.pendingRestoreFileURL = nil
+                }
+            } message: {
+                Text("This replaces current local chats, workspace files, settings, and saved credentials.")
+            }
+            .fileExporter(
+                isPresented: self.$showBackupExporter,
+                document: self.backupExportDocument,
+                contentType: .data,
+                defaultFilename: self.backupExportFileName)
+            { result in
+                switch result {
+                case let .success(url):
+                    self.backupStatusAlert = BackupStatusAlert(
+                        title: "Backup Saved",
+                        message: "Saved to \(url.lastPathComponent).")
+                case let .failure(error):
+                    self.backupStatusAlert = BackupStatusAlert(
+                        title: "Backup Export Failed",
+                        message: error.localizedDescription)
+                }
+            }
+            .alert(item: self.$backupStatusAlert) { status in
+                Alert(title: Text(status.title), message: Text(status.message), dismissButton: .default(Text("OK")))
+            }
+            .sheet(
+                isPresented: self.$showLLMSetupPrompt,
+                onDismiss: {
+                    self.persistLLMSetupPromptPreferenceIfNeeded()
+                },
+                content: {
+                    LLMSetupPromptSheet(
+                        dontShowAgain: self.$llmSetupPromptDontShowAgain,
+                        onSkip: {
+                            self.handleLLMSetupPromptSkip()
+                        },
+                        onOpenSettings: {
+                            self.handleLLMSetupPromptOpenSettings()
+                        })
+                })
     }
 
     private var gatewayStatus: StatusPill.GatewayState {
+        // Local server is primary — show connected when running.
+        if self.localGatewayRuntime.state == .running && self.localGatewayRuntime.host != nil {
+            return .connected
+        }
         if self.appModel.gatewayServerName != nil { return .connected }
 
         let text = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -211,6 +355,10 @@ struct RootCanvas: View {
 
         guard !self.didEvaluateOnboarding else { return }
         self.didEvaluateOnboarding = true
+        // Local server is primary — skip remote gateway onboarding.
+        if self.localGatewayRuntime.state == .running || self.localGatewayRuntime.host != nil {
+            return
+        }
         let route = Self.startupPresentationRoute(
             gatewayConnected: self.appModel.gatewayServerName != nil,
             hasConnectedOnce: self.hasConnectedOnce,
@@ -235,9 +383,121 @@ struct RootCanvas: View {
         return self.manualGatewayEnabled && !manualHost.isEmpty
     }
 
+    private func handleRestoreSelection(_ result: Result<[URL], any Error>) {
+        switch result {
+        case let .success(urls):
+            guard let first = urls.first else { return }
+            self.pendingRestoreFileURL = first
+            self.showRestoreConfirmAlert = true
+        case let .failure(error):
+            self.backupStatusAlert = BackupStatusAlert(
+                title: "Restore File Error",
+                message: error.localizedDescription)
+        }
+    }
+
+    private func performBackupExport() async {
+        guard !self.backupOperationInFlight else { return }
+        self.backupOperationInFlight = true
+        let wasRunning = self.localGatewayRuntime.state == .running
+        if wasRunning {
+            await self.localGatewayRuntime.stop()
+        }
+
+        do {
+            let artifact = try await Task.detached(priority: .userInitiated) {
+                try OpenClawBackupManager.createBackupArtifact()
+            }.value
+
+            if wasRunning {
+                await self.localGatewayRuntime.start()
+                await self.localGatewayRuntime.probeHealth()
+            }
+
+            self.backupOperationInFlight = false
+            self.backupExportDocument = OpenClawBackupExportDocument(data: artifact.data)
+            self.backupExportFileName = artifact.defaultFileName
+            self.showBackupExporter = true
+        } catch {
+            if wasRunning {
+                await self.localGatewayRuntime.start()
+                await self.localGatewayRuntime.probeHealth()
+            }
+            self.backupOperationInFlight = false
+            self.backupStatusAlert = BackupStatusAlert(
+                title: "Backup Failed",
+                message: error.localizedDescription)
+        }
+    }
+
+    private func performRestoreFromPendingFile() async {
+        guard !self.backupOperationInFlight else { return }
+        guard let url = self.pendingRestoreFileURL else { return }
+
+        self.pendingRestoreFileURL = nil
+        self.backupOperationInFlight = true
+
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasSecurityScope {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let archiveData = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url, options: [.mappedIfSafe])
+            }.value
+
+            let wasRunning = self.localGatewayRuntime.state == .running
+            if wasRunning {
+                await self.localGatewayRuntime.stop()
+            }
+
+            do {
+                let restored = try await Task.detached(priority: .userInitiated) {
+                    try OpenClawBackupManager.restoreBackupArchive(from: archiveData)
+                }.value
+
+                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.applyRestoredLocalPreferences()
+                self.backupOperationInFlight = false
+                self.backupStatusAlert = BackupStatusAlert(
+                    title: "Restore Complete",
+                    message:
+                    "Restored \(restored.restoredFileCount) files, "
+                        + "\(restored.restoredDefaultsCount) settings, "
+                        + "\(restored.restoredKeychainCount) keychain entries.")
+            } catch {
+                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.backupOperationInFlight = false
+                self.backupStatusAlert = BackupStatusAlert(
+                    title: "Restore Failed",
+                    message: error.localizedDescription)
+            }
+        } catch {
+            self.backupOperationInFlight = false
+            self.backupStatusAlert = BackupStatusAlert(
+                title: "Restore Failed",
+                message: error.localizedDescription)
+        }
+    }
+
+    private func applyRestoredLocalPreferences() {
+        let voiceWake = UserDefaults.standard.bool(forKey: VoiceWakePreferences.enabledKey)
+        self.appModel.setVoiceWakeEnabled(voiceWake)
+
+        let talkEnabled = UserDefaults.standard.bool(forKey: "talk.enabled")
+        self.appModel.setTalkEnabled(talkEnabled)
+    }
+
     private func maybeAutoOpenSettings() {
         guard !self.didAutoOpenSettings else { return }
         guard !self.showOnboarding else { return }
+        // Local server is primary — don't auto-open settings for remote gateway.
+        if self.localGatewayRuntime.state == .running || self.localGatewayRuntime.host != nil {
+            return
+        }
         let route = Self.startupPresentationRoute(
             gatewayConnected: self.appModel.gatewayServerName != nil,
             hasConnectedOnce: self.hasConnectedOnce,
@@ -249,7 +509,42 @@ struct RootCanvas: View {
         self.presentedSheet = .settings
     }
 
+    private func maybePromptForLLMSetupOnLaunch() {
+        guard !self.didEvaluateLLMSetupPromptOnLaunch else { return }
+        guard self.localGatewayRuntime.state == .running else { return }
+        guard !self.showOnboarding else { return }
+
+        self.didEvaluateLLMSetupPromptOnLaunch = true
+        guard !self.llmSetupPromptSuppressed else { return }
+        guard !self.localGatewayRuntime.localLLMConfigured else { return }
+
+        self.llmSetupPromptDontShowAgain = false
+        self.showLLMSetupPrompt = true
+    }
+
+    private func persistLLMSetupPromptPreferenceIfNeeded() {
+        if self.llmSetupPromptDontShowAgain {
+            self.llmSetupPromptSuppressed = true
+        }
+    }
+
+    private func handleLLMSetupPromptSkip() {
+        self.persistLLMSetupPromptPreferenceIfNeeded()
+        self.showLLMSetupPrompt = false
+    }
+
+    private func handleLLMSetupPromptOpenSettings() {
+        self.persistLLMSetupPromptPreferenceIfNeeded()
+        self.showLLMSetupPrompt = false
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            self.presentedSheet = .settings
+        }
+    }
+
     private func maybeShowQuickSetup() {
+        // Local server is primary — don't auto-prompt for remote gateway discovery.
+        guard self.localGatewayRuntime.host == nil else { return }
         guard !self.quickSetupDismissed else { return }
         guard !self.showOnboarding else { return }
         guard self.presentedSheet == nil else { return }
@@ -272,6 +567,7 @@ private struct CanvasContent: View {
     var cameraHUDKind: NodeAppModel.CameraHUDKind?
     var openChat: () -> Void
     var openSettings: () -> Void
+    var openBackupRestore: () -> Void
 
     private var brightenButtons: Bool { self.systemColorScheme == .light }
 
@@ -304,6 +600,11 @@ private struct CanvasContent: View {
                     self.openSettings()
                 }
                 .accessibilityLabel("Settings")
+
+                OverlayButton(systemImage: "archivebox.fill", brighten: self.brightenButtons) {
+                    self.openBackupRestore()
+                }
+                .accessibilityLabel("Backup and Restore")
             }
             .padding(.top, 10)
             .padding(.trailing, 10)
@@ -321,7 +622,7 @@ private struct CanvasContent: View {
                 activity: self.statusActivity,
                 brighten: self.brightenButtons,
                 onTap: {
-                    if self.gatewayStatus == .connected {
+                    if self.appModel.gatewayServerName != nil {
                         self.showGatewayActions = true
                     } else {
                         self.openSettings()
@@ -499,5 +800,585 @@ private struct CameraFlashOverlay: View {
                     }
                 }
             }
+    }
+}
+
+private struct LLMSetupPromptSheet: View {
+    @Binding var dontShowAgain: Bool
+    var onSkip: () -> Void
+    var onOpenSettings: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Label("Set up your LLM provider", systemImage: "sparkles.rectangle.stack.fill")
+                    .font(.title3.weight(.semibold))
+                Text(
+                    "OpenClaw chat needs an LLM provider. "
+                        + "In Settings, choose provider, base URL, API key, and model, "
+                        + "then tap Apply, Restart & Test."
+                )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Don't show again", isOn: self.$dontShowAgain)
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: 12) {
+                    Button("Skip", role: .cancel) {
+                        self.onSkip()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Open Settings") {
+                        self.onOpenSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(20)
+            .navigationTitle("LLM Setup")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+private struct OpenClawBackupExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        self.data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration _: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: self.data)
+    }
+}
+
+private struct OpenClawBackupArtifact: Sendable {
+    let data: Data
+    let defaultFileName: String
+    let fileCount: Int
+    let defaultsCount: Int
+    let keychainCount: Int
+}
+
+private struct OpenClawBackupRestoreResult: Sendable {
+    let restoredFileCount: Int
+    let restoredDefaultsCount: Int
+    let restoredKeychainCount: Int
+}
+
+private enum OpenClawBackupError: LocalizedError {
+    case invalidArchive
+    case unsupportedArchiveVersion(Int)
+    case unsupportedApp(String)
+    case userDefaultsSerializationFailed
+    case userDefaultsDeserializationFailed
+    case keychainReadFailed(OSStatus)
+    case compressionFailed
+    case decompressionFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidArchive:
+            return "Invalid backup file."
+        case let .unsupportedArchiveVersion(version):
+            return "Unsupported backup version: \(version)."
+        case let .unsupportedApp(app):
+            return "Backup belongs to another app target (\(app))."
+        case .userDefaultsSerializationFailed:
+            return "Could not export settings."
+        case .userDefaultsDeserializationFailed:
+            return "Could not restore settings."
+        case let .keychainReadFailed(status):
+            return "Could not read keychain items (status \(status))."
+        case .compressionFailed:
+            return "Could not compress backup data."
+        case .decompressionFailed:
+            return "Could not decompress backup data."
+        }
+    }
+}
+
+private enum OpenClawBackupManager {
+    private static let archiveMagic = Data("OCB1".utf8)
+    private static let archiveVersion = 1
+    private static let keychainServices = [
+        "ai.openclaw.gateway",
+        "ai.openclaw.node",
+        "ai.openclaw.talk",
+    ]
+
+    private struct Archive: Codable {
+        let version: Int
+        let createdAtISO8601: String
+        let appBundleIdentifier: String
+        let appVersion: String
+        let defaultsDomainPlist: Data
+        let files: [ArchivedFile]
+        let keychainItems: [KeychainItem]
+    }
+
+    private struct ArchivedFile: Codable, Hashable {
+        let pathToken: String
+        let data: Data
+    }
+
+    private struct KeychainItem: Codable, Hashable {
+        let service: String
+        let account: String
+        let value: String
+    }
+
+    private struct RootAlias {
+        let alias: String
+        let url: URL
+    }
+
+    static func createBackupArtifact(now: Date = Date()) throws -> OpenClawBackupArtifact {
+        let fileManager = FileManager.default
+        let roots = self.roots(fileManager: fileManager)
+        let files = try self.captureFiles(fileManager: fileManager, roots: roots)
+        let defaultsData = try self.captureDefaults()
+        let keychainItems = try self.captureKeychainItems()
+
+        let archive = Archive(
+            version: self.archiveVersion,
+            createdAtISO8601: ISO8601DateFormatter().string(from: now),
+            appBundleIdentifier: Bundle.main.bundleIdentifier ?? "ai.openclaw.ios",
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+            defaultsDomainPlist: defaultsData,
+            files: files,
+            keychainItems: keychainItems)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(archive)
+        let compressed = try self.compress(encoded)
+
+        var payload = Data()
+        payload.append(self.archiveMagic)
+        payload.append(compressed)
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let fileName = "OpenClaw-Backup-\(formatter.string(from: now)).ocbackup"
+
+        let defaultsCount = (try? self.decodeDefaultsDomain(defaultsData).count) ?? 0
+        return OpenClawBackupArtifact(
+            data: payload,
+            defaultFileName: fileName,
+            fileCount: files.count,
+            defaultsCount: defaultsCount,
+            keychainCount: keychainItems.count)
+    }
+
+    static func restoreBackupArchive(from payload: Data) throws -> OpenClawBackupRestoreResult {
+        let archive = try self.decodeArchive(payload)
+        guard archive.version == self.archiveVersion else {
+            throw OpenClawBackupError.unsupportedArchiveVersion(archive.version)
+        }
+
+        let currentBundleId = Bundle.main.bundleIdentifier ?? "ai.openclaw.ios"
+        guard archive.appBundleIdentifier == currentBundleId else {
+            throw OpenClawBackupError.unsupportedApp(archive.appBundleIdentifier)
+        }
+
+        let fileManager = FileManager.default
+        try self.clearKnownPersistentStorage(fileManager: fileManager)
+
+        let roots = self.roots(fileManager: fileManager)
+        let rootsByAlias = Dictionary(uniqueKeysWithValues: roots.map { ($0.alias, $0.url) })
+
+        var restoredFiles = 0
+        for entry in archive.files {
+            guard let destination = self.url(fromToken: entry.pathToken, rootsByAlias: rootsByAlias) else {
+                continue
+            }
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try entry.data.write(to: destination, options: .atomic)
+            restoredFiles += 1
+        }
+
+        let defaultsDomain = try self.decodeDefaultsDomain(archive.defaultsDomainPlist)
+        UserDefaults.standard.setPersistentDomain(defaultsDomain, forName: currentBundleId)
+        UserDefaults.standard.synchronize()
+
+        for service in self.keychainServices {
+            self.deleteAllKeychainEntries(service: service)
+        }
+
+        var restoredKeychain = 0
+        for item in archive.keychainItems {
+            guard self.keychainServices.contains(item.service) else { continue }
+            if KeychainStore.saveString(item.value, service: item.service, account: item.account) {
+                restoredKeychain += 1
+            }
+        }
+
+        return OpenClawBackupRestoreResult(
+            restoredFileCount: restoredFiles,
+            restoredDefaultsCount: defaultsDomain.count,
+            restoredKeychainCount: restoredKeychain)
+    }
+
+    private static func decodeArchive(_ payload: Data) throws -> Archive {
+        let archiveData: Data
+        if payload.starts(with: self.archiveMagic) {
+            archiveData = try self.decompress(Data(payload.dropFirst(self.archiveMagic.count)))
+        } else if let decoded = try? JSONDecoder().decode(Archive.self, from: payload) {
+            return decoded
+        } else {
+            archiveData = try self.decompress(payload)
+        }
+
+        guard let archive = try? JSONDecoder().decode(Archive.self, from: archiveData) else {
+            throw OpenClawBackupError.invalidArchive
+        }
+        return archive
+    }
+
+    private static func compress(_ data: Data) throws -> Data {
+        guard let compressed = try (data as NSData).compressed(using: .lzfse) as Data? else {
+            throw OpenClawBackupError.compressionFailed
+        }
+        return compressed
+    }
+
+    private static func decompress(_ data: Data) throws -> Data {
+        guard let decompressed = try (data as NSData).decompressed(using: .lzfse) as Data? else {
+            throw OpenClawBackupError.decompressionFailed
+        }
+        return decompressed
+    }
+
+    private static func captureDefaults() throws -> Data {
+        let bundleID = Bundle.main.bundleIdentifier ?? "ai.openclaw.ios"
+        let domain = UserDefaults.standard.persistentDomain(forName: bundleID) ?? [:]
+        guard PropertyListSerialization.propertyList(domain, isValidFor: .binary) else {
+            throw OpenClawBackupError.userDefaultsSerializationFailed
+        }
+        return try PropertyListSerialization.data(fromPropertyList: domain, format: .binary, options: 0)
+    }
+
+    private static func decodeDefaultsDomain(_ data: Data) throws -> [String: Any] {
+        let object = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        guard let domain = object as? [String: Any] else {
+            throw OpenClawBackupError.userDefaultsDeserializationFailed
+        }
+        return domain
+    }
+
+    private static func captureKeychainItems() throws -> [KeychainItem] {
+        var items: [KeychainItem] = []
+        for service in self.keychainServices {
+            let serviceItems = try self.readKeychainItems(service: service)
+            items.append(contentsOf: serviceItems)
+        }
+        return items.sorted { lhs, rhs in
+            if lhs.service == rhs.service {
+                return lhs.account < rhs.account
+            }
+            return lhs.service < rhs.service
+        }
+    }
+
+    private static func readKeychainItems(service: String) throws -> [KeychainItem] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+        ]
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return []
+        }
+        guard status == errSecSuccess else {
+            throw OpenClawBackupError.keychainReadFailed(status)
+        }
+
+        let rows: [[String: Any]]
+        if let array = result as? [[String: Any]] {
+            rows = array
+        } else if let one = result as? [String: Any] {
+            rows = [one]
+        } else {
+            rows = []
+        }
+
+        var items: [KeychainItem] = []
+        for row in rows {
+            guard let account = row[kSecAttrAccount as String] as? String,
+                  let data = row[kSecValueData as String] as? Data,
+                  let value = String(data: data, encoding: .utf8)
+            else {
+                continue
+            }
+            items.append(KeychainItem(service: service, account: account, value: value))
+        }
+        return items
+    }
+
+    private static func deleteAllKeychainEntries(service: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        _ = SecItemDelete(query as CFDictionary)
+    }
+
+    private static func roots(fileManager: FileManager) -> [RootAlias] {
+        var values: [RootAlias] = []
+        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            values.append(RootAlias(alias: "documents", url: documents))
+        }
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            values.append(RootAlias(alias: "caches", url: caches))
+        }
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            values.append(RootAlias(alias: "appSupport", url: appSupport))
+        }
+        if let library = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            values.append(RootAlias(alias: "library", url: library))
+        }
+        values.append(RootAlias(alias: "tmp", url: fileManager.temporaryDirectory))
+        return values
+    }
+
+    private static func pathToken(for fileURL: URL, roots: [RootAlias]) -> String? {
+        let standardized = fileURL.standardizedFileURL.path
+        let sortedRoots = roots.sorted { lhs, rhs in
+            lhs.url.standardizedFileURL.path.count > rhs.url.standardizedFileURL.path.count
+        }
+
+        for root in sortedRoots {
+            let rootPath = root.url.standardizedFileURL.path
+            if standardized == rootPath {
+                return root.alias
+            }
+            let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            guard standardized.hasPrefix(prefix) else { continue }
+            let relative = String(standardized.dropFirst(prefix.count))
+            if relative.isEmpty { continue }
+            return "\(root.alias)/\(relative)"
+        }
+        return nil
+    }
+
+    private static func url(fromToken token: String, rootsByAlias: [String: URL]) -> URL? {
+        let parts = token.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let alias = parts.first.map(String.init),
+              let root = rootsByAlias[alias]
+        else {
+            return nil
+        }
+        guard parts.count > 1 else { return root }
+        let relative = String(parts[1])
+        guard !relative.contains("..") else { return nil }
+        return root.appendingPathComponent(relative, isDirectory: false)
+    }
+
+    private static func captureFiles(fileManager: FileManager, roots: [RootAlias]) throws -> [ArchivedFile] {
+        var tokenToData: [String: Data] = [:]
+
+        func addFile(_ fileURL: URL) throws {
+            guard self.isRegularFile(fileURL, fileManager: fileManager) else { return }
+            guard let token = self.pathToken(for: fileURL, roots: roots) else { return }
+            let data = try Data(contentsOf: fileURL)
+            tokenToData[token] = data
+        }
+
+        func addDirectory(_ directoryURL: URL) throws {
+            guard self.isDirectory(directoryURL, fileManager: fileManager) else { return }
+            guard let enumerator = fileManager.enumerator(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+                options: [],
+                errorHandler: nil)
+            else {
+                return
+            }
+
+            for case let fileURL as URL in enumerator {
+                guard self.isRegularFile(fileURL, fileManager: fileManager) else { continue }
+                try addFile(fileURL)
+            }
+        }
+
+        for directory in self.workspaceCandidates(fileManager: fileManager) {
+            try addDirectory(directory)
+        }
+
+        let memoryPaths = self.memoryStoreCandidates(fileManager: fileManager)
+        for memoryPath in memoryPaths {
+            try addFile(memoryPath)
+            try addFile(URL(fileURLWithPath: memoryPath.path + "-wal"))
+            try addFile(URL(fileURLWithPath: memoryPath.path + "-shm"))
+            let cronDirectory = memoryPath
+                .deletingLastPathComponent()
+                .appendingPathComponent("cron", isDirectory: true)
+            try addDirectory(cronDirectory)
+        }
+
+        for pairingFile in self.telegramPairingCandidates(fileManager: fileManager) {
+            try addFile(pairingFile)
+        }
+
+        for directory in self.additionalDirectoryCandidates(fileManager: fileManager) {
+            try addDirectory(directory)
+        }
+
+        for file in self.additionalFileCandidates(fileManager: fileManager) {
+            try addFile(file)
+        }
+
+        return tokenToData
+            .map { ArchivedFile(pathToken: $0.key, data: $0.value) }
+            .sorted { lhs, rhs in lhs.pathToken < rhs.pathToken }
+    }
+
+    private static func clearKnownPersistentStorage(fileManager: FileManager) throws {
+        let workspaceCandidates = self.workspaceCandidates(fileManager: fileManager)
+        let memoryCandidates = self.memoryStoreCandidates(fileManager: fileManager)
+        let pairingCandidates = self.telegramPairingCandidates(fileManager: fileManager)
+        let additionalDirectories = self.additionalDirectoryCandidates(fileManager: fileManager)
+        let additionalFiles = self.additionalFileCandidates(fileManager: fileManager)
+
+        for directory in workspaceCandidates {
+            try self.removeIfExists(directory, fileManager: fileManager)
+        }
+        for memoryPath in memoryCandidates {
+            try self.removeIfExists(memoryPath, fileManager: fileManager)
+            try self.removeIfExists(URL(fileURLWithPath: memoryPath.path + "-wal"), fileManager: fileManager)
+            try self.removeIfExists(URL(fileURLWithPath: memoryPath.path + "-shm"), fileManager: fileManager)
+            let cronDirectory = memoryPath
+                .deletingLastPathComponent()
+                .appendingPathComponent("cron", isDirectory: true)
+            try self.removeIfExists(cronDirectory, fileManager: fileManager)
+        }
+        for file in pairingCandidates {
+            try self.removeIfExists(file, fileManager: fileManager)
+        }
+        for directory in additionalDirectories {
+            try self.removeIfExists(directory, fileManager: fileManager)
+        }
+        for file in additionalFiles {
+            try self.removeIfExists(file, fileManager: fileManager)
+        }
+    }
+
+    private static func workspaceCandidates(fileManager: FileManager) -> [URL] {
+        var values: [URL] = []
+        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            values.append(
+                documents
+                    .appendingPathComponent("OpenClawTV", isDirectory: true)
+                    .appendingPathComponent("Workspace", isDirectory: true))
+        }
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            values.append(caches.appendingPathComponent("OpenClawTVWorkspace", isDirectory: true))
+        }
+        values.append(fileManager.temporaryDirectory.appendingPathComponent("OpenClawTVWorkspace", isDirectory: true))
+        return self.uniqueURLs(values)
+    }
+
+    private static func memoryStoreCandidates(fileManager: FileManager) -> [URL] {
+        var values: [URL] = []
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            values.append(
+                caches
+                    .appendingPathComponent("OpenClawTV", isDirectory: true)
+                    .appendingPathComponent("GatewayMemory.sqlite", isDirectory: false))
+            values.append(caches.appendingPathComponent("GatewayMemory.sqlite", isDirectory: false))
+        }
+        if let library = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            values.append(
+                library
+                    .appendingPathComponent("Caches", isDirectory: true)
+                    .appendingPathComponent("OpenClawTV", isDirectory: true)
+                    .appendingPathComponent("GatewayMemory.sqlite", isDirectory: false))
+            values.append(
+                library
+                    .appendingPathComponent("Caches", isDirectory: true)
+                    .appendingPathComponent("GatewayMemory.sqlite", isDirectory: false))
+        }
+        values.append(fileManager.temporaryDirectory.appendingPathComponent("GatewayMemory.sqlite", isDirectory: false))
+        return self.uniqueURLs(values)
+    }
+
+    private static func telegramPairingCandidates(fileManager: FileManager) -> [URL] {
+        var values: [URL] = []
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            values.append(
+                caches
+                    .appendingPathComponent("OpenClawTV", isDirectory: true)
+                    .appendingPathComponent("TelegramPairing.json", isDirectory: false))
+            values.append(caches.appendingPathComponent("TelegramPairing.json", isDirectory: false))
+        }
+        values.append(fileManager.temporaryDirectory.appendingPathComponent("TelegramPairing.json", isDirectory: false))
+        return self.uniqueURLs(values)
+    }
+
+    private static func additionalDirectoryCandidates(fileManager: FileManager) -> [URL] {
+        var values: [URL] = []
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            values.append(appSupport.appendingPathComponent("OpenClaw", isDirectory: true))
+        }
+        if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            values.append(caches.appendingPathComponent("OpenClaw", isDirectory: true))
+        }
+        return self.uniqueURLs(values)
+    }
+
+    private static func additionalFileCandidates(fileManager: FileManager) -> [URL] {
+        guard let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return []
+        }
+        return [documents.appendingPathComponent("openclaw-gateway.log", isDirectory: false)]
+    }
+
+    private static func uniqueURLs(_ values: [URL]) -> [URL] {
+        var seen: Set<String> = []
+        var deduped: [URL] = []
+        for value in values {
+            let key = value.standardizedFileURL.path
+            if seen.contains(key) { continue }
+            seen.insert(key)
+            deduped.append(value)
+        }
+        return deduped
+    }
+
+    private static func isRegularFile(_ url: URL, fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
+        return !isDirectory.boolValue
+    }
+
+    private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
+        return isDirectory.boolValue
+    }
+
+    private static func removeIfExists(_ url: URL, fileManager: FileManager) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 
 #if os(iOS)
 import PhotosUI
+import UIKit
 import UniformTypeIdentifiers
 #endif
 
@@ -12,9 +13,13 @@ struct OpenClawChatComposer: View {
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
+    @State private var showCreateThreadConfirm = false
+    @State private var showCreateThreadSheet = false
+    @State private var newThreadName: String = ""
 
     #if os(iOS)
     @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var isKeyboardVisible = false
     @FocusState private var isFocused: Bool
     #elseif os(tvOS)
     @FocusState private var isFocused: Bool
@@ -32,6 +37,11 @@ struct OpenClawChatComposer: View {
                     self.thinkingPicker
                     Spacer()
                     self.refreshButton
+                    #if os(iOS)
+                    if self.isKeyboardVisible {
+                        self.keyboardDismissButton
+                    }
+                    #endif
                     self.attachmentPicker
                 }
             }
@@ -82,6 +92,31 @@ struct OpenClawChatComposer: View {
             self.shouldFocusTextView = true
         }
         #endif
+        .confirmationDialog(
+            "Do you want to create a new thread?",
+            isPresented: self.$showCreateThreadConfirm,
+            titleVisibility: .visible)
+        {
+            Button("Create New Thread") {
+                self.newThreadName = ""
+                self.showCreateThreadSheet = true
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: self.$showCreateThreadSheet) {
+            self.createThreadSheet
+        }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            self.isKeyboardVisible = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            self.isKeyboardVisible = false
+        }
+        .onDisappear {
+            self.isKeyboardVisible = false
+        }
+        #endif
     }
 
     private var thinkingPicker: some View {
@@ -98,23 +133,84 @@ struct OpenClawChatComposer: View {
     }
 
     private var sessionPicker: some View {
-        Picker(
-            "Session",
-            selection: Binding(
-                get: { self.viewModel.sessionKey },
-                set: { next in self.viewModel.switchSession(to: next) }))
-        {
+        Menu {
             ForEach(self.viewModel.sessionChoices, id: \.key) { session in
-                Text(session.displayName ?? session.key)
+                Button {
+                    self.viewModel.switchSession(to: session.key)
+                } label: {
+                    if session.key == self.viewModel.sessionKey {
+                        Label {
+                            Text(session.displayName ?? session.key)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                        } icon: {
+                            Image(systemName: "checkmark")
+                        }
+                    } else {
+                        Text(session.displayName ?? session.key)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Divider()
+            Button("Create New…") {
+                self.showCreateThreadConfirm = true
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(self.activeSessionLabel)
                     .font(.system(.caption, design: .monospaced))
-                    .tag(session.key)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .allowsTightening(true)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
         }
-        .labelsHidden()
-        .pickerStyle(.menu)
+        .buttonStyle(.bordered)
         .controlSize(.small)
-        .frame(maxWidth: 160, alignment: .leading)
+        .frame(maxWidth: self.sessionPickerMaxWidth, alignment: .leading)
         .help("Session")
+    }
+
+    private var createThreadSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    #if os(iOS) || os(tvOS)
+                    TextField("Thread name", text: self.$newThreadName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    #else
+                    TextField("Thread name", text: self.$newThreadName)
+                    #endif
+                } header: {
+                    Text("New Thread")
+                }
+            }
+            #if os(macOS)
+            .navigationTitle("Create Thread")
+            #else
+            .navigationTitle("Create Thread")
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        self.showCreateThreadSheet = false
+                        self.newThreadName = ""
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        self.createThreadFromInput()
+                    }
+                    .disabled(self.trimmedNewThreadName.isEmpty)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -239,6 +335,10 @@ struct OpenClawChatComposer: View {
         return trimmed.isEmpty ? self.viewModel.sessionKey : trimmed
     }
 
+    private var sessionPickerMaxWidth: CGFloat {
+        self.activeSessionLabel.count > 22 ? 148 : 160
+    }
+
     private var editorOverlay: some View {
         ZStack(alignment: .topLeading) {
             if self.viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -297,7 +397,7 @@ struct OpenClawChatComposer: View {
                 .disabled(self.viewModel.isAborting)
             } else {
                 Button {
-                    self.viewModel.send()
+                    self.sendFromComposer()
                 } label: {
                     if self.viewModel.isSending {
                         ProgressView().controlSize(.mini)
@@ -326,6 +426,19 @@ struct OpenClawChatComposer: View {
         .help("Refresh")
     }
 
+    #if os(iOS)
+    private var keyboardDismissButton: some View {
+        Button {
+            self.dismissKeyboardFromComposer()
+        } label: {
+            Image(systemName: "keyboard.chevron.compact.down")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Dismiss Keyboard")
+    }
+    #endif
+
     private var showsToolbar: Bool {
         self.style == .standard
     }
@@ -353,6 +466,37 @@ struct OpenClawChatComposer: View {
     private var textMaxHeight: CGFloat {
         self.style == .onboarding ? 52 : 64
     }
+
+    private var trimmedNewThreadName: String {
+        self.newThreadName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func createThreadFromInput() {
+        let threadName = self.trimmedNewThreadName
+        guard !threadName.isEmpty else { return }
+        self.showCreateThreadSheet = false
+        self.newThreadName = ""
+        self.viewModel.switchSession(to: threadName)
+    }
+
+    private func sendFromComposer() {
+        #if os(iOS)
+        self.dismissKeyboardFromComposer()
+        #endif
+        self.viewModel.send()
+    }
+
+    #if os(iOS)
+    private func dismissKeyboardFromComposer() {
+        self.isFocused = false
+        self.isKeyboardVisible = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil)
+    }
+    #endif
 
     #if os(macOS)
     private func pickFilesMac() {

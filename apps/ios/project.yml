@@ -45,6 +45,7 @@ targets:
         product: OpenClawChatUI
       - package: OpenClawKit
         product: OpenClawProtocol
+      - package: OpenClawGatewayCore
       - package: Swabble
         product: SwabbleKit
       - sdk: AppIntents.framework

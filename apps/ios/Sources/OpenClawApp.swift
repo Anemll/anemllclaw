@@ -9,6 +9,7 @@ struct OpenClawApp: App {
     #else
     @State private var appModel: NodeAppModel
     @State private var gatewayController: GatewayConnectionController
+    @State private var localGatewayRuntime: TVOSLocalGatewayRuntime
     @Environment(\.scenePhase) private var scenePhase
     #endif
 
@@ -21,6 +22,7 @@ struct OpenClawApp: App {
         let appModel = NodeAppModel()
         _appModel = State(initialValue: appModel)
         _gatewayController = State(initialValue: GatewayConnectionController(appModel: appModel))
+        _localGatewayRuntime = State(initialValue: TVOSLocalGatewayRuntime())
         #endif
     }
 
@@ -42,12 +44,25 @@ struct OpenClawApp: App {
                 .environment(self.appModel)
                 .environment(self.appModel.voiceWake)
                 .environment(self.gatewayController)
+                .environment(self.localGatewayRuntime)
                 .onOpenURL { url in
                     Task { await self.appModel.handleDeepLink(url: url) }
+                }
+                .task {
+                    if self.localGatewayRuntime.state == .stopped {
+                        await self.localGatewayRuntime.start()
+                    }
+                    // Local server is primary — auto-complete onboarding so the wizard
+                    // never blocks the app on fresh install.
+                    if self.localGatewayRuntime.state == .running {
+                        UserDefaults.standard.set(true, forKey: "gateway.onboardingComplete")
+                        UserDefaults.standard.set(true, forKey: "gateway.hasConnectedOnce")
+                    }
                 }
                 .onChange(of: self.scenePhase) { _, newValue in
                     self.appModel.setScenePhase(newValue)
                     self.gatewayController.setScenePhase(newValue)
+                    self.updateLocalGatewayScenePhase(newValue)
                 }
             #endif
         }
@@ -90,6 +105,27 @@ extension OpenClawApp {
                 await self.tvOSGatewayRuntime.probeHealth()
                 await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
                 await self.tvOSGatewayRuntime.probeUpstreamHealth()
+            }
+        }
+    }
+    #else
+    private func updateLocalGatewayScenePhase(_ phase: ScenePhase) {
+        Task { @MainActor in
+            switch phase {
+            case .background:
+                await self.localGatewayRuntime.stop()
+            case .active:
+                if self.localGatewayRuntime.state == .stopped {
+                    await self.localGatewayRuntime.start()
+                }
+                await self.localGatewayRuntime.probeHealth()
+            case .inactive:
+                break
+            @unknown default:
+                if self.localGatewayRuntime.state == .stopped {
+                    await self.localGatewayRuntime.start()
+                }
+                await self.localGatewayRuntime.probeHealth()
             }
         }
     }

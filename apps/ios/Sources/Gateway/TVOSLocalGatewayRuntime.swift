@@ -1,4 +1,4 @@
-#if os(tvOS)
+#if os(iOS) || os(tvOS)
 import Darwin
 import Foundation
 import Network
@@ -247,6 +247,10 @@ final class TVOSLocalGatewayRuntime {
     private(set) var lastAgentAbortProbeResponseText: String?
     private(set) var lastAgentRunID: String?
     private(set) var chatSessionKey: String
+    var chatAssistantName: String {
+        Self.bootstrapAssistantName(workspacePath: Self.defaultBootstrapWorkspacePath()) ?? "OpenClaw"
+    }
+    private(set) var showExternalTelegramMessagesInChat: Bool
     private(set) var chatTurns: [TVOSGatewayChatTurn]
     private(set) var chatSendInProgress: Bool
     private(set) var chatProgressText: String?
@@ -259,7 +263,10 @@ final class TVOSLocalGatewayRuntime {
     private var gatewayAuthConfig: GatewayCoreAuthConfig
     private let transportOverride: GatewayLoopbackTransport?
 
-    private var host: GatewayLoopbackHost?
+    /// The loopback host used for in-process RPC.  Exposed so that
+    /// ``LocalGatewayChatTransport`` (and similar adapters) can invoke
+    /// gateway methods without a WebSocket round-trip.
+    private(set) var host: GatewayLoopbackHost?
     private var webSocketServer: GatewayWebSocketServer?
     private var tcpServer: GatewayTCPJSONServer?
     private var upstreamClient: GatewayUpstreamWebSocketClient?
@@ -268,6 +275,8 @@ final class TVOSLocalGatewayRuntime {
     private var tcpRetryTask: Task<Void, Never>?
     private var chatHistoryPollTask: Task<Void, Never>?
     private var telegramPairingPollTask: Task<Void, Never>?
+    private var sessionChatTurns: [TVOSGatewayChatTurn]
+    private var mirroredTelegramChatTurns: [TVOSGatewayChatTurn]
     private var chatSendStartedAt: Date?
     private var runtimeTransitionTask: Task<Void, Never> = Task {}
     private var runtimeTransitionInProgress = false
@@ -290,6 +299,9 @@ final class TVOSLocalGatewayRuntime {
     private static let telegramReplyMaxChars = 3_800
     private static let telegramReplyPollAttempts = 16
     private static let telegramReplyPollDelayNanoseconds: UInt64 = 750_000_000
+    private static let showExternalTelegramMessagesInChatDefaultsKey =
+        "gateway.tvos.chat.showExternalTelegramMessagesInChat"
+    private static let maxMirroredTelegramChatTurns = 120
 
     init(
         exposeTCPListener: Bool = true,
@@ -348,6 +360,9 @@ final class TVOSLocalGatewayRuntime {
         self.lastAgentAbortProbeResponseText = nil
         self.lastAgentRunID = nil
         self.chatSessionKey = Self.defaultChatSessionKey
+        self.showExternalTelegramMessagesInChat = Self.loadShowExternalTelegramMessagesInChat()
+        self.sessionChatTurns = []
+        self.mirroredTelegramChatTurns = []
         self.chatTurns = []
         self.chatSendInProgress = false
         self.chatProgressText = nil
@@ -384,7 +399,8 @@ final class TVOSLocalGatewayRuntime {
         self.appendLog(
             "runtime initialized wsPort=\(listenPort)"
                 + " tcpDebug=\(exposeTCPListener ? "enabled" : "disabled")"
-                + " auth=\(self.gatewayAuthConfig.mode.rawValue)")
+                + " auth=\(self.gatewayAuthConfig.mode.rawValue)"
+                + " telegramMirrorInChat=\(self.showExternalTelegramMessagesInChat ? "on" : "off")")
         if self.upstreamConfigured {
             self.appendLog("upstream configured url=\(self.upstreamURLText ?? "(unknown)")")
         } else if let errorText = self.upstreamConfigErrorText {
@@ -624,6 +640,34 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
+    func reloadPersistedControlPlaneSettings(startIfStopped: Bool = false) async {
+        let persisted = Self.loadControlPlaneSettings()
+        let normalized = Self.normalizedSettings(persisted)
+        await self.withRuntimeTransition("reload persisted settings") {
+            let wasRunning = self.state == .running
+            if wasRunning {
+                await self.stopLocked()
+                if self.exposeTCPListener {
+                    try? await Task.sleep(nanoseconds: Self.listenerRestartQuiesceDurationNanoseconds)
+                }
+            }
+
+            self.controlPlaneSettings = normalized
+            Self.persistControlPlaneSettings(normalized)
+            self.verifyPersistedControlPlaneSettings(normalized)
+            self.logControlPlaneConfigDump(context: "settings reloaded from persistence")
+            self.rebuildGatewayStack()
+            self.clearErrorStates()
+
+            if wasRunning || startIfStopped {
+                await self.startLocked()
+                await self.probeHealth()
+                await self.probeHealthOverWebSocket()
+                await self.probeUpstreamHealth()
+            }
+        }
+    }
+
     func refreshLocalNetworkAddresses() {
         let addresses = Self.collectLocalIPv4Interfaces()
         self.localIPv4Address = addresses.first?.address
@@ -634,10 +678,19 @@ final class TVOSLocalGatewayRuntime {
         let normalized = Self.normalizedSessionKey(rawValue)
         guard normalized != self.chatSessionKey else { return }
         self.chatSessionKey = normalized
-        self.chatTurns = []
+        self.sessionChatTurns = []
+        self.rebuildDisplayedChatTurns()
         self.chatLastErrorText = nil
         self.appendLog("chat session switched to \(normalized)")
         await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
+    }
+
+    func setShowExternalTelegramMessagesInChat(_ enabled: Bool) {
+        guard self.showExternalTelegramMessagesInChat != enabled else { return }
+        self.showExternalTelegramMessagesInChat = enabled
+        Self.persistShowExternalTelegramMessagesInChat(enabled)
+        self.rebuildDisplayedChatTurns()
+        self.appendLog("chat mirror external telegram messages \(enabled ? "enabled" : "disabled")")
     }
 
     func refreshChatHistory(limit: Int = 240, quiet: Bool = false) async {
@@ -675,7 +728,8 @@ final class TVOSLocalGatewayRuntime {
                 return
             }
 
-            self.chatTurns = Self.decodeChatTurns(from: response.payload)
+            self.sessionChatTurns = Self.decodeChatTurns(from: response.payload)
+            self.rebuildDisplayedChatTurns()
             if !quiet {
                 self.chatLastErrorText = nil
             }
@@ -772,6 +826,59 @@ final class TVOSLocalGatewayRuntime {
     private func stopChatProgressPolling() {
         self.chatHistoryPollTask?.cancel()
         self.chatHistoryPollTask = nil
+    }
+
+    private func rebuildDisplayedChatTurns() {
+        if self.showExternalTelegramMessagesInChat {
+            self.chatTurns = self.sessionChatTurns + self.mirroredTelegramChatTurns
+        } else {
+            self.chatTurns = self.sessionChatTurns
+        }
+    }
+
+    private func mirrorTelegramInboundChatMessage(senderID: String, text: String) {
+        self.appendMirroredTelegramChatTurn(
+            role: "user",
+            senderID: senderID,
+            text: text,
+            directionPrefix: "Telegram -> OpenClaw")
+    }
+
+    private func mirrorTelegramOutboundChatReply(senderID: String, text: String) {
+        self.appendMirroredTelegramChatTurn(
+            role: "assistant",
+            senderID: senderID,
+            text: text,
+            directionPrefix: "OpenClaw -> Telegram")
+    }
+
+    private func appendMirroredTelegramChatTurn(
+        role: String,
+        senderID: String,
+        text: String,
+        directionPrefix: String)
+    {
+        guard self.showExternalTelegramMessagesInChat else { return }
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        let now = Date()
+        let timestampMs = Int64((now.timeIntervalSince1970 * 1_000).rounded())
+        let maskedSenderID = Self.maskedDisplayUserID(senderID)
+        let displayText = "[\(directionPrefix) @\(maskedSenderID)] \(trimmedText)"
+        let turn = TVOSGatewayChatTurn(
+            id: "telegram-mirror|\(timestampMs)|\(role)|\(maskedSenderID)|\(UUID().uuidString)",
+            role: role,
+            text: displayText,
+            timestamp: now,
+            runID: "telegram:\(maskedSenderID)")
+
+        self.mirroredTelegramChatTurns.append(turn)
+        if self.mirroredTelegramChatTurns.count > Self.maxMirroredTelegramChatTurns {
+            self.mirroredTelegramChatTurns.removeFirst(
+                self.mirroredTelegramChatTurns.count - Self.maxMirroredTelegramChatTurns)
+        }
+        self.rebuildDisplayedChatTurns()
     }
 
     func probeHealth(nowMs: Int64 = GatewayCore.currentTimestampMs()) async {
@@ -2011,7 +2118,7 @@ final class TVOSLocalGatewayRuntime {
             self.appendLog("telegram pairing approval notice failed: \(sendError)", level: .warning)
         }
 
-        self.appendLog("telegram pairing approved id=\(approved.id) code=\(code)")
+        self.appendLog("telegram pairing approved id=\(Self.maskedDisplayUserID(approved.id)) code=\(code)")
 
         return .object([
             "approved": .bool(true),
@@ -2196,6 +2303,8 @@ final class TVOSLocalGatewayRuntime {
             return .anthropicCompatible
         case "minimax", "minimax-compatible", "minimax_compatible":
             return .minimaxCompatible
+        case "grok", "grok-compatible", "grok_compatible", "xai", "x-ai", "x.ai":
+            return .grokCompatible
         default:
             return GatewayLocalLLMProviderKind(rawValue: normalized)
         }
@@ -2361,6 +2470,8 @@ final class TVOSLocalGatewayRuntime {
             return "anthropic-compatible"
         case .minimaxCompatible:
             return "minimax-compatible"
+        case .grokCompatible:
+            return "grok-compatible"
         }
     }
 
@@ -2374,6 +2485,8 @@ final class TVOSLocalGatewayRuntime {
             return "https://api.anthropic.com/v1"
         case .minimaxCompatible:
             return "https://api.minimax.io/v1"
+        case .grokCompatible:
+            return "https://api.x.ai/v1"
         }
     }
 
@@ -2387,6 +2500,8 @@ final class TVOSLocalGatewayRuntime {
             return "claude-3.5-sonnet"
         case .minimaxCompatible:
             return "MiniMax-M2.5"
+        case .grokCompatible:
+            return "grok-3-mini-beta"
         }
     }
 
@@ -2623,6 +2738,22 @@ final class TVOSLocalGatewayRuntime {
         return "***\(suffix)"
     }
 
+    private static func loadShowExternalTelegramMessagesInChat(defaults: UserDefaults = .standard) -> Bool {
+        guard let raw = defaults.object(
+            forKey: Self.showExternalTelegramMessagesInChatDefaultsKey) as? NSNumber
+        else {
+            return true
+        }
+        return raw.boolValue
+    }
+
+    private static func persistShowExternalTelegramMessagesInChat(
+        _ enabled: Bool,
+        defaults: UserDefaults = .standard)
+    {
+        defaults.set(enabled, forKey: Self.showExternalTelegramMessagesInChatDefaultsKey)
+    }
+
     private static func loadControlPlaneSettings(
         defaults: UserDefaults = .standard) -> TVOSGatewayControlPlaneSettings
     {
@@ -2828,19 +2959,21 @@ final class TVOSLocalGatewayRuntime {
             self.appendLog("telegram update ignored: missing sender id", level: .warning)
             return false
         }
+        let maskedSenderID = Self.maskedDisplayUserID(senderID)
 
         let chatType = update.chatType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "private"
         let isAllowedSender = self.telegramPairingStore.allowFrom.contains(senderID)
         guard chatType == "private" else {
             if isAllowedSender {
-                let sendError = await self.sendTelegramMessage(
+                let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: update.chatID,
+                    senderID: senderID,
                     text: "OpenClaw tvOS currently supports Telegram replies in private chats only.")
                 if let sendError {
                     self.appendLog("telegram non-private notice failed: \(sendError)", level: .warning)
                 }
                 self.appendLog(
-                    "telegram update ignored: non-private chat type=\(chatType) sender=\(senderID)",
+                    "telegram update ignored: non-private chat type=\(chatType) sender=\(maskedSenderID)",
                     level: .warning)
                 return true
             }
@@ -2848,7 +2981,7 @@ final class TVOSLocalGatewayRuntime {
         }
 
         if isAllowedSender {
-            return await self.handleTelegramInboundChat(update, senderID: senderID, nowMs: nowMs)
+            return await self.handleTelegramInboundChat(update, senderID: senderID)
         }
 
         if let pairCode = Self.extractPairCode(from: update.text) {
@@ -2857,18 +2990,20 @@ final class TVOSLocalGatewayRuntime {
                 senderID: senderID,
                 nowMs: nowMs)
             {
-                let sendError = await self.sendTelegramMessage(
+                let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: approved.id,
+                    senderID: senderID,
                     text: "OpenClaw tvOS pairing approved. You are now linked.")
                 if let sendError {
                     self.appendLog("telegram /pair reply failed: \(sendError)", level: .warning)
                 }
-                self.appendLog("telegram pairing self-approved sender=\(senderID) code=\(pairCode)")
+                self.appendLog("telegram pairing self-approved sender=\(maskedSenderID) code=\(pairCode)")
                 return true
             }
 
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "Pairing code not found. Request a new code by sending any message.")
             if let sendError {
                 self.appendLog("telegram /pair invalid reply failed: \(sendError)", level: .warning)
@@ -2906,22 +3041,25 @@ final class TVOSLocalGatewayRuntime {
         Pairing code: \(code)
         Approve in tvOS admin panel (Pairing List + Approve).
         """
-        let sendError = await self.sendTelegramMessage(chatID: update.chatID, text: message)
+        let sendError = await self.sendTelegramReplyAndMirror(
+            chatID: update.chatID,
+            senderID: senderID,
+            text: message)
         if let sendError {
             self.appendLog("telegram pairing code send failed: \(sendError)", level: .warning)
         }
-        self.appendLog("telegram pairing request queued sender=\(senderID) code=\(code)")
+        self.appendLog("telegram pairing request queued sender=\(maskedSenderID) code=\(code)")
         return true
     }
 
     private func handleTelegramInboundChat(
         _ update: TVOSTelegramInboundUpdate,
-        senderID: String,
-        nowMs: Int64) async -> Bool
+        senderID: String) async -> Bool
     {
         guard let messageText = Self.trimmed(update.text) else {
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "Please send a text message.")
             if let sendError {
                 self.appendLog("telegram non-text reply failed: \(sendError)", level: .warning)
@@ -2929,9 +3067,13 @@ final class TVOSLocalGatewayRuntime {
             return true
         }
 
+        let maskedSenderID = Self.maskedDisplayUserID(senderID)
+        self.mirrorTelegramInboundChatMessage(senderID: senderID, text: messageText)
+
         if messageText.hasPrefix("/pair") {
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "This account is already paired. Send a normal message to chat.")
             if let sendError {
                 self.appendLog("telegram already-paired reply failed: \(sendError)", level: .warning)
@@ -2940,8 +3082,9 @@ final class TVOSLocalGatewayRuntime {
         }
 
         if messageText == "/start" {
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "OpenClaw tvOS is linked. Send a message and I will reply.")
             if let sendError {
                 self.appendLog("telegram start reply failed: \(sendError)", level: .warning)
@@ -2950,8 +3093,9 @@ final class TVOSLocalGatewayRuntime {
         }
 
         guard self.state == .running else {
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "OpenClaw tvOS runtime is not running.")
             if let sendError {
                 self.appendLog("telegram runtime-not-running reply failed: \(sendError)", level: .warning)
@@ -2959,8 +3103,9 @@ final class TVOSLocalGatewayRuntime {
             return true
         }
         guard let host = self.host else {
-            let sendError = await self.sendTelegramMessage(
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "OpenClaw tvOS runtime host is unavailable.")
             if let sendError {
                 self.appendLog("telegram host-unavailable reply failed: \(sendError)", level: .warning)
@@ -2969,7 +3114,7 @@ final class TVOSLocalGatewayRuntime {
         }
 
         let sessionKey = "telegram:\(senderID)"
-        self.appendLog("telegram chat inbound sender=\(senderID) chars=\(messageText.count)")
+        self.appendLog("telegram chat inbound sender=\(maskedSenderID) chars=\(messageText.count)")
 
         do {
             func historyRequest() -> GatewayRequestFrame {
@@ -3003,10 +3148,11 @@ final class TVOSLocalGatewayRuntime {
                 let code = sendResponse.error?.code ?? "UNKNOWN"
                 let message = sendResponse.error?.message ?? "chat.send failed"
                 self.appendLog(
-                    "telegram chat.send failed sender=\(senderID) code=\(code) message=\(message)",
+                    "telegram chat.send failed sender=\(maskedSenderID) code=\(code) message=\(message)",
                     level: .error)
-                let sendError = await self.sendTelegramMessage(
+                let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: update.chatID,
+                    senderID: senderID,
                     text: "Chat request failed (\(code)): \(message)")
                 if let sendError {
                     self.appendLog("telegram chat.send-failure reply failed: \(sendError)", level: .warning)
@@ -3021,10 +3167,11 @@ final class TVOSLocalGatewayRuntime {
                     let code = historyResponse.error?.code ?? "UNKNOWN"
                     let message = historyResponse.error?.message ?? "chat.history failed"
                     self.appendLog(
-                        "telegram chat.history failed sender=\(senderID) code=\(code) message=\(message)",
+                        "telegram chat.history failed sender=\(maskedSenderID) code=\(code) message=\(message)",
                         level: .error)
-                    let sendError = await self.sendTelegramMessage(
+                    let sendError = await self.sendTelegramReplyAndMirror(
                         chatID: update.chatID,
+                        senderID: senderID,
                         text: "I processed your message, but failed to fetch the reply (\(code)).")
                     if let sendError {
                         self.appendLog("telegram history-failure reply failed: \(sendError)", level: .warning)
@@ -3045,7 +3192,7 @@ final class TVOSLocalGatewayRuntime {
                 }
 
                 if attempt == 0 {
-                    self.appendLog("telegram reply pending sender=\(senderID) waiting for assistant output")
+                    self.appendLog("telegram reply pending sender=\(maskedSenderID) waiting for assistant output")
                 }
                 try? await Task.sleep(nanoseconds: Self.telegramReplyPollDelayNanoseconds)
             }
@@ -3053,9 +3200,10 @@ final class TVOSLocalGatewayRuntime {
             guard let historyPayload = finalHistoryPayload,
                   let assistantReplyRaw = Self.latestAssistantReplyText(from: historyPayload)
             else {
-                self.appendLog("telegram reply missing from chat.history sender=\(senderID)", level: .warning)
-                let sendError = await self.sendTelegramMessage(
+                self.appendLog("telegram reply missing from chat.history sender=\(maskedSenderID)", level: .warning)
+                let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: update.chatID,
+                    senderID: senderID,
                     text: "I processed your message, but no assistant reply was found.")
                 if let sendError {
                     self.appendLog("telegram empty-reply notice failed: \(sendError)", level: .warning)
@@ -3065,23 +3213,35 @@ final class TVOSLocalGatewayRuntime {
 
             let sanitizedReply = Self.sanitizeTelegramReplyText(assistantReplyRaw)
             let clampedReply = Self.clampTelegramReply(sanitizedReply, maxChars: Self.telegramReplyMaxChars)
-            let sendError = await self.sendTelegramMessage(chatID: update.chatID, text: clampedReply)
+            let sendError = await self.sendTelegramReplyAndMirror(
+                chatID: update.chatID,
+                senderID: senderID,
+                text: clampedReply)
             if let sendError {
-                self.appendLog("telegram reply send failed sender=\(senderID): \(sendError)", level: .warning)
+                self.appendLog("telegram reply send failed sender=\(maskedSenderID): \(sendError)", level: .warning)
             } else {
-                self.appendLog("telegram chat reply sent sender=\(senderID) chars=\(clampedReply.count)")
+                self.appendLog("telegram chat reply sent sender=\(maskedSenderID) chars=\(clampedReply.count)")
             }
             return true
         } catch {
-            self.appendLog("telegram chat route threw sender=\(senderID): \(error.localizedDescription)", level: .error)
-            let sendError = await self.sendTelegramMessage(
+            self.appendLog("telegram chat route threw sender=\(maskedSenderID): \(error.localizedDescription)", level: .error)
+            let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
+                senderID: senderID,
                 text: "Internal error while processing your message.")
             if let sendError {
                 self.appendLog("telegram thrown-error reply failed: \(sendError)", level: .warning)
             }
             return true
         }
+    }
+
+    private func sendTelegramReplyAndMirror(chatID: String, senderID: String, text: String) async -> String? {
+        let sendError = await self.sendTelegramMessage(chatID: chatID, text: text)
+        if sendError == nil {
+            self.mirrorTelegramOutboundChatReply(senderID: senderID, text: text)
+        }
+        return sendError
     }
 
     private func fetchTelegramUpdates(
@@ -3632,6 +3792,30 @@ final class TVOSLocalGatewayRuntime {
         return ""
     }
 
+    private static func bootstrapAssistantName(workspacePath: String) -> String? {
+        let trimmedPath = workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else { return nil }
+
+        let identityURL = URL(fileURLWithPath: trimmedPath, isDirectory: true)
+            .appendingPathComponent("IDENTITY.md", isDirectory: false)
+        guard let content = try? String(contentsOf: identityURL, encoding: .utf8) else { return nil }
+
+        for rawLine in content.split(whereSeparator: \.isNewline) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.lowercased().hasPrefix("- **name:**") else { continue }
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            let rawValue = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawValue.isEmpty else { return nil }
+            guard !rawValue.hasPrefix("_("), !rawValue.hasPrefix("(") else { return nil }
+
+            let cleaned = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "*_` "))
+            if cleaned.isEmpty { return nil }
+            return cleaned
+        }
+
+        return nil
+    }
+
     private static func isWritableDirectory(_ directory: URL) -> Bool {
         let fileManager = FileManager.default
         do {
@@ -3697,6 +3881,13 @@ final class TVOSLocalGatewayRuntime {
     private static func trimmed(_ value: String?) -> String? {
         let raw = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return raw.isEmpty ? nil : raw
+    }
+
+    private static func maskedDisplayUserID(_ rawID: String) -> String {
+        let trimmedID = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty else { return "*" }
+        let visibleCount = min(4, trimmedID.count)
+        return "*\(trimmedID.suffix(visibleCount))"
     }
 
     private static func listenerEndpointSummary(

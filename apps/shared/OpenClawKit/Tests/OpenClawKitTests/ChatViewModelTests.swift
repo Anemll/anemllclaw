@@ -28,23 +28,46 @@ private actor TestChatTransportState {
     var historyCallCount: Int = 0
     var sessionsCallCount: Int = 0
     var sentRunIds: [String] = []
+    var sentMessages: [String] = []
     var abortedRunIds: [String] = []
+    var remainingSendFailures: Int
+
+    init(sendFailuresBeforeSuccess: Int = 0) {
+        self.remainingSendFailures = max(0, sendFailuresBeforeSuccess)
+    }
+
+    func consumeSendFailureIfNeeded() -> Bool {
+        guard self.remainingSendFailures > 0 else { return false }
+        self.remainingSendFailures -= 1
+        return true
+    }
 }
 
 private final class TestChatTransport: @unchecked Sendable, OpenClawChatTransport {
-    private let state = TestChatTransportState()
+    private let state: TestChatTransportState
     private let historyResponses: [OpenClawChatHistoryPayload]
     private let sessionsResponses: [OpenClawChatSessionsListResponse]
+    private let supportsRealtimeEvents: Bool
+    private let sendStatus: String
+    private let failNonContinueMessages: Bool
 
     private let stream: AsyncStream<OpenClawChatTransportEvent>
     private let continuation: AsyncStream<OpenClawChatTransportEvent>.Continuation
 
     init(
         historyResponses: [OpenClawChatHistoryPayload],
-        sessionsResponses: [OpenClawChatSessionsListResponse] = [])
+        sessionsResponses: [OpenClawChatSessionsListResponse] = [],
+        supportsRealtimeEvents: Bool = true,
+        sendStatus: String = "ok",
+        sendFailuresBeforeSuccess: Int = 0,
+        failNonContinueMessages: Bool = false)
     {
+        self.state = TestChatTransportState(sendFailuresBeforeSuccess: sendFailuresBeforeSuccess)
         self.historyResponses = historyResponses
         self.sessionsResponses = sessionsResponses
+        self.supportsRealtimeEvents = supportsRealtimeEvents
+        self.sendStatus = sendStatus
+        self.failNonContinueMessages = failNonContinueMessages
         var cont: AsyncStream<OpenClawChatTransportEvent>.Continuation!
         self.stream = AsyncStream { c in
             cont = c
@@ -54,6 +77,10 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
 
     func events() -> AsyncStream<OpenClawChatTransportEvent> {
         self.stream
+    }
+
+    var supportsRealtimeRunEvents: Bool {
+        self.supportsRealtimeEvents
     }
 
     func setActiveSessionKey(_: String) async throws {}
@@ -73,13 +100,26 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
 
     func sendMessage(
         sessionKey _: String,
-        message _: String,
+        message: String,
         thinking _: String,
         idempotencyKey: String,
         attachments _: [OpenClawChatAttachmentPayload]) async throws -> OpenClawChatSendResponse
     {
         await self.state.sentRunIdsAppend(idempotencyKey)
-        return OpenClawChatSendResponse(runId: idempotencyKey, status: "ok")
+        await self.state.sentMessagesAppend(message)
+        if self.failNonContinueMessages, message != "Continue" {
+            throw NSError(
+                domain: "TestChatTransport",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "injected send failure for non-Continue message"])
+        }
+        if await self.state.consumeSendFailureIfNeeded() {
+            throw NSError(
+                domain: "TestChatTransport",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "injected send failure"])
+        }
+        return OpenClawChatSendResponse(runId: idempotencyKey, status: self.sendStatus)
     }
 
     func abortRun(sessionKey _: String, runId: String) async throws {
@@ -116,6 +156,10 @@ private final class TestChatTransport: @unchecked Sendable, OpenClawChatTranspor
     func abortedRunIds() async -> [String] {
         await self.state.abortedRunIds
     }
+
+    func sentMessages() async -> [String] {
+        await self.state.sentMessages
+    }
 }
 
 extension TestChatTransportState {
@@ -129,6 +173,10 @@ extension TestChatTransportState {
 
     fileprivate func sentRunIdsAppend(_ v: String) {
         self.sentRunIds.append(v)
+    }
+
+    fileprivate func sentMessagesAppend(_ v: String) {
+        self.sentMessages.append(v)
     }
 
     fileprivate func abortedRunIdsAppend(_ v: String) {
@@ -261,6 +309,49 @@ extension TestChatTransportState {
         }
     }
 
+    @Test func refreshesHistoryAfterCompletedSendWithoutRealtimeEvents() async throws {
+        let history1 = OpenClawChatHistoryPayload(
+            sessionKey: "main",
+            sessionId: "sess-main",
+            messages: [],
+            thinkingLevel: "off")
+        let history2 = OpenClawChatHistoryPayload(
+            sessionKey: "main",
+            sessionId: "sess-main",
+            messages: [
+                AnyCodable([
+                    "role": "assistant",
+                    "content": [["type": "text", "text": "local completed reply"]],
+                    "timestamp": Date().timeIntervalSince1970 * 1000,
+                ]),
+            ],
+            thinkingLevel: "off")
+
+        let transport = TestChatTransport(
+            historyResponses: [history1, history2],
+            supportsRealtimeEvents: false,
+            sendStatus: "completed")
+        let vm = await MainActor.run { OpenClawChatViewModel(sessionKey: "main", transport: transport) }
+
+        await MainActor.run { vm.load() }
+        try await waitUntil("bootstrap") { await MainActor.run { vm.healthOK } }
+
+        await MainActor.run {
+            vm.input = "hello"
+            vm.send()
+        }
+
+        try await waitUntil("pending run clears") { await MainActor.run { vm.pendingRunCount == 0 } }
+        try await waitUntil("assistant message is visible") {
+            await MainActor.run {
+                vm.messages.contains { message in
+                    message.role == "assistant"
+                        && message.content.contains(where: { $0.text == "local completed reply" })
+                }
+            }
+        }
+    }
+
     @Test func preservesMessageIDsAcrossHistoryRefreshes() async throws {
         let now = Date().timeIntervalSince1970 * 1000
         let history1 = OpenClawChatHistoryPayload(
@@ -366,7 +457,7 @@ extension TestChatTransportState {
         #expect(await MainActor.run { vm.pendingToolCalls.isEmpty })
     }
 
-    @Test func sessionChoicesPreferMainAndRecent() async throws {
+    @Test func sessionChoicesPreferMainAndIncludeOlderSessions() async throws {
         let now = Date().timeIntervalSince1970 * 1000
         let recent = now - (2 * 60 * 60 * 1000)
         let recentOlder = now - (5 * 60 * 60 * 1000)
@@ -468,7 +559,7 @@ extension TestChatTransportState {
         try await waitUntil("sessions loaded") { await MainActor.run { !vm.sessions.isEmpty } }
 
         let keys = await MainActor.run { vm.sessionChoices.map(\.key) }
-        #expect(keys == ["main", "recent-1", "recent-2"])
+        #expect(keys == ["main", "recent-1", "recent-2", "old-1"])
     }
 
     @Test func sessionChoicesIncludeCurrentWhenMissing() async throws {
@@ -595,5 +686,79 @@ extension TestChatTransportState {
                     errorMessage: nil)))
 
         try await waitUntil("pending run clears") { await MainActor.run { vm.pendingRunCount == 0 } }
+    }
+
+    @Test func autoRetrySendsContinueAndResetsForNextUserSend() async throws {
+        let now = Date().timeIntervalSince1970 * 1000
+        let history = OpenClawChatHistoryPayload(
+            sessionKey: "main",
+            sessionId: "sess-main",
+            messages: [
+                AnyCodable([
+                    "role": "assistant",
+                    "content": [["type": "text", "text": "ok"]],
+                    "timestamp": now,
+                ]),
+            ],
+            thinkingLevel: "off")
+        let transport = TestChatTransport(
+            historyResponses: [history, history, history, history],
+            supportsRealtimeEvents: false,
+            sendStatus: "completed",
+            failNonContinueMessages: true)
+        let vm = await MainActor.run { OpenClawChatViewModel(sessionKey: "main", transport: transport) }
+
+        await MainActor.run {
+            vm.autoRetryAttemptsOnError = 1
+            vm.load()
+        }
+        try await waitUntil("bootstrap") { await MainActor.run { vm.healthOK } }
+
+        await MainActor.run {
+            vm.input = "first question"
+            vm.send()
+        }
+        try await waitUntil("first send finished") { await MainActor.run { !vm.isSending && vm.pendingRunCount == 0 } }
+
+        await MainActor.run {
+            vm.input = "second question"
+            vm.send()
+        }
+        try await waitUntil("second send finished") { await MainActor.run { !vm.isSending && vm.pendingRunCount == 0 } }
+
+        let sentMessages = await transport.sentMessages()
+        #expect(sentMessages == ["first question", "Continue", "second question", "Continue"])
+        #expect(await MainActor.run { vm.errorText } == nil)
+    }
+
+    @Test func autoRetryCanBeDisabledWithZeroAttempts() async throws {
+        let history = OpenClawChatHistoryPayload(
+            sessionKey: "main",
+            sessionId: "sess-main",
+            messages: [],
+            thinkingLevel: "off")
+        let transport = TestChatTransport(
+            historyResponses: [history],
+            supportsRealtimeEvents: false,
+            sendStatus: "completed",
+            failNonContinueMessages: true)
+        let vm = await MainActor.run { OpenClawChatViewModel(sessionKey: "main", transport: transport) }
+
+        await MainActor.run {
+            vm.autoRetryAttemptsOnError = 0
+            vm.load()
+        }
+        try await waitUntil("bootstrap") { await MainActor.run { vm.healthOK } }
+
+        await MainActor.run {
+            vm.input = "hello"
+            vm.send()
+        }
+        try await waitUntil("send finished with error") { await MainActor.run { !vm.isSending } }
+
+        let sentMessages = await transport.sentMessages()
+        #expect(sentMessages == ["hello"])
+        let errorText = await MainActor.run { vm.errorText ?? "" }
+        #expect(errorText.contains("injected send failure for non-Continue message"))
     }
 }

@@ -36,6 +36,18 @@ public struct GatewayMemorySearchHit: Codable, Sendable, Equatable {
     }
 }
 
+public struct GatewayMemorySessionSummary: Codable, Sendable, Equatable {
+    public let sessionKey: String
+    public let turnCount: Int
+    public let lastActivityMs: Int64
+
+    public init(sessionKey: String, turnCount: Int, lastActivityMs: Int64) {
+        self.sessionKey = sessionKey
+        self.turnCount = turnCount
+        self.lastActivityMs = lastActivityMs
+    }
+}
+
 public struct GatewayMemoryDocument: Codable, Sendable, Equatable {
     public let key: String
     public let sourcePath: String?
@@ -155,6 +167,41 @@ public actor GatewaySQLiteMemoryStore {
             result.append(Self.readTurn(statement))
         }
         return result.reversed()
+    }
+
+    public func sessionSummaries(limit: Int = 50) throws -> [GatewayMemorySessionSummary] {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+
+        let sql = """
+            SELECT session_key, COUNT(*) as turn_count, MAX(timestamp_ms) as last_activity_ms
+            FROM transcript_turns
+            WHERE session_key != ''
+            GROUP BY session_key
+            ORDER BY last_activity_ms DESC
+            LIMIT ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        sqlite3_bind_int64(statement, 1, Int64(max(1, min(limit, 500))))
+
+        var summaries: [GatewayMemorySessionSummary] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let key = Self.readText(statement, at: 0)
+            let turnCount = Int(sqlite3_column_int64(statement, 1))
+            let lastActivityMs = sqlite3_column_int64(statement, 2)
+            summaries.append(
+                GatewayMemorySessionSummary(
+                    sessionKey: key,
+                    turnCount: max(0, turnCount),
+                    lastActivityMs: lastActivityMs))
+        }
+        return summaries
     }
 
     public func search(

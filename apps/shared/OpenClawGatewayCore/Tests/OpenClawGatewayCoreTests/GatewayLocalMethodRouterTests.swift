@@ -342,6 +342,73 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         XCTAssertEqual(history.last?.role, "assistant")
     }
 
+    func testSQLiteMemoryStoreSessionSummariesIncludePersistedSessions() async throws {
+        let dbPath = self.temporaryMemoryStorePath()
+        let store = try GatewaySQLiteMemoryStore(path: dbPath)
+        _ = try await store.appendTurn(
+            sessionKey: "thread-a",
+            role: "user",
+            text: "first",
+            timestampMs: 1_700_000_000_100,
+            runID: nil)
+        _ = try await store.appendTurn(
+            sessionKey: "thread-b",
+            role: "user",
+            text: "second",
+            timestampMs: 1_700_000_000_200,
+            runID: nil)
+        _ = try await store.appendTurn(
+            sessionKey: "thread-a",
+            role: "assistant",
+            text: "reply",
+            timestampMs: 1_700_000_000_300,
+            runID: nil)
+
+        let reopenedStore = try GatewaySQLiteMemoryStore(path: dbPath)
+        let summaries = try await reopenedStore.sessionSummaries(limit: 10)
+        let keys = summaries.map(\.sessionKey)
+        XCTAssertEqual(Array(keys.prefix(2)), ["thread-a", "thread-b"])
+        XCTAssertEqual(summaries.first(where: { $0.sessionKey == "thread-a" })?.turnCount, 2)
+        XCTAssertEqual(summaries.first(where: { $0.sessionKey == "thread-b" })?.turnCount, 1)
+    }
+
+    func testSessionsListIncludesPersistedSessionsAfterRouterRestart() async throws {
+        let dbPath = self.temporaryMemoryStorePath()
+        let store = try GatewaySQLiteMemoryStore(path: dbPath)
+        _ = try await store.appendTurn(
+            sessionKey: "persisted-one",
+            role: "user",
+            text: "hello",
+            timestampMs: 1_700_000_000_100,
+            runID: nil)
+        _ = try await store.appendTurn(
+            sessionKey: "persisted-two",
+            role: "assistant",
+            text: "world",
+            timestampMs: 1_700_000_000_200,
+            runID: nil)
+
+        let router = try GatewayLocalMethodRouter(
+            config: GatewayLocalMethodRouterConfig(
+                hostLabel: "unit-test",
+                upstreamConfigured: false,
+                llmConfig: GatewayLocalLLMConfig(provider: .disabled),
+                memoryStorePath: dbPath,
+                enableLocalSafeTools: true))
+
+        let sessionsRequest = GatewayRequestFrame(
+            id: "sessions-persisted",
+            method: "sessions.list",
+            params: .object(["limit": .integer(10)]))
+        let sessionsResponse = await router.handle(sessionsRequest, nowMs: 1_700_000_000_500)
+        XCTAssertEqual(sessionsResponse?.ok, true)
+
+        let payload = try self.decodePayload(sessionsResponse?.payload, as: SessionsListPayload.self)
+        let keys = payload?.sessions.map(\.key) ?? []
+        XCTAssertTrue(keys.contains("persisted-one"))
+        XCTAssertTrue(keys.contains("persisted-two"))
+    }
+
     func testLocalRouterHandlesChatAndHistoryWithLocalProvider() async throws {
         let dbPath = self.temporaryMemoryStorePath()
         let llmProvider = StubLLMProvider()
@@ -388,9 +455,59 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         XCTAssertEqual(historyPayload?.messages.first?.role, "user")
         XCTAssertEqual(historyPayload?.messages.last?.role, "assistant")
         XCTAssertEqual(historyPayload?.messages.last?.content.first?.text, "echo: hello")
+        XCTAssertEqual(historyPayload?.thinkingLevel, "low")
 
         let providerCalls = await llmProvider.observedRequestCount()
         XCTAssertEqual(providerCalls, 1)
+    }
+
+    func testChatThinkingLevelPersistsInHistoryAndSessionsList() async throws {
+        let dbPath = self.temporaryMemoryStorePath()
+        let llmProvider = StubLLMProvider()
+        let config = GatewayLocalMethodRouterConfig(
+            hostLabel: "unit-test",
+            upstreamConfigured: false,
+            llmConfig: GatewayLocalLLMConfig(
+                provider: .openAICompatible,
+                baseURL: URL(string: "https://example.invalid"),
+                apiKey: "test-key",
+                model: "stub-model"),
+            memoryStorePath: dbPath,
+            enableLocalSafeTools: true)
+        let router = try GatewayLocalMethodRouter(config: config, llmProvider: llmProvider)
+
+        let chatSend = GatewayRequestFrame(
+            id: "chat-thinking-1",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string("session-thinking"),
+                "message": .string("hello"),
+                "thinking": .string("high"),
+            ]))
+        let chatResponse = await router.handle(chatSend, nowMs: 1_700_000_001_100)
+        XCTAssertEqual(chatResponse?.ok, true)
+
+        let historyRequest = GatewayRequestFrame(
+            id: "history-thinking-1",
+            method: "chat.history",
+            params: .object([
+                "sessionKey": .string("session-thinking"),
+                "limit": .integer(10),
+            ]))
+        let historyResponse = await router.handle(historyRequest, nowMs: 1_700_000_001_150)
+        XCTAssertEqual(historyResponse?.ok, true)
+        let historyPayload = try self.decodePayload(historyResponse?.payload, as: ChatHistoryPayload.self)
+        XCTAssertEqual(historyPayload?.thinkingLevel, "high")
+
+        let sessionsRequest = GatewayRequestFrame(
+            id: "sessions-thinking-1",
+            method: "sessions.list",
+            params: .object(["limit": .integer(10)]))
+        let sessionsResponse = await router.handle(sessionsRequest, nowMs: 1_700_000_001_175)
+        XCTAssertEqual(sessionsResponse?.ok, true)
+        let sessionsPayload = try self.decodePayload(sessionsResponse?.payload, as: SessionsListPayload.self)
+        let entry = sessionsPayload?.sessions.first(where: { $0.key == "session-thinking" })
+        XCTAssertEqual(entry?.thinkingLevel, "high")
     }
 
     func testLocalRouterParsesChatDirectivesAndStripsPrompt() async throws {
@@ -1700,6 +1817,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
 
 private struct ChatHistoryPayload: Decodable {
     let sessionKey: String
+    let thinkingLevel: String?
     let messages: [ChatHistoryMessage]
 }
 
@@ -1711,6 +1829,15 @@ private struct ChatHistoryMessage: Decodable {
 private struct ChatHistoryContent: Decodable {
     let type: String
     let text: String
+}
+
+private struct SessionsListPayload: Decodable {
+    let sessions: [SessionListEntry]
+}
+
+private struct SessionListEntry: Decodable {
+    let key: String
+    let thinkingLevel: String?
 }
 
 private struct CapabilitiesPayload: Decodable {

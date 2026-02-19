@@ -1,5 +1,6 @@
 import SwiftUI
 import Textual
+import Foundation
 
 public enum ChatMarkdownVariant: String, CaseIterable, Sendable {
     case standard
@@ -20,7 +21,8 @@ struct ChatMarkdownRenderer: View {
     let textColor: Color
 
     var body: some View {
-        let processed = ChatMarkdownPreprocessor.preprocess(markdown: self.text)
+        let redacted = ChatSensitiveValueRedactor.redact(self.text)
+        let processed = ChatMarkdownPreprocessor.preprocess(markdown: redacted)
         VStack(alignment: .leading, spacing: 10) {
             StructuredText(markdown: processed.cleaned)
                 .modifier(ChatMarkdownStyle(
@@ -33,6 +35,43 @@ struct ChatMarkdownRenderer: View {
                 InlineImageList(images: processed.images)
             }
         }
+    }
+}
+
+private enum ChatSensitiveValueRedactor {
+    static func redact(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\d{7,}"#) else {
+            return text
+        }
+        let nsText = text as NSString
+        let matches = regex.matches(
+            in: text,
+            options: [],
+            range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var cursor = 0
+        for match in matches {
+            let range = match.range
+            if range.location > cursor {
+                result += nsText.substring(with: NSRange(location: cursor, length: range.location - cursor))
+            }
+            let rawID = nsText.substring(with: range)
+            result += self.maskID(rawID)
+            cursor = range.location + range.length
+        }
+        if cursor < nsText.length {
+            result += nsText.substring(from: cursor)
+        }
+        return result
+    }
+
+    private static func maskID(_ rawID: String) -> String {
+        let trimmed = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "*" }
+        let visibleCount = min(4, trimmed.count)
+        return "*\(trimmed.suffix(visibleCount))"
     }
 }
 

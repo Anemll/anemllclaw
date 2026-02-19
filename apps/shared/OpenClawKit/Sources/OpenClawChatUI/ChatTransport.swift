@@ -9,6 +9,8 @@ public enum OpenClawChatTransportEvent: Sendable {
 }
 
 public protocol OpenClawChatTransport: Sendable {
+    var supportsRealtimeRunEvents: Bool { get }
+
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload
     func sendMessage(
         sessionKey: String,
@@ -27,6 +29,8 @@ public protocol OpenClawChatTransport: Sendable {
 }
 
 extension OpenClawChatTransport {
+    public var supportsRealtimeRunEvents: Bool { true }
+
     public func setActiveSessionKey(_: String) async throws {}
 
     public func abortRun(sessionKey _: String, runId _: String) async throws {

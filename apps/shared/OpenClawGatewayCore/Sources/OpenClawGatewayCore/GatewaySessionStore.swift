@@ -4,11 +4,13 @@ public struct GatewaySessionSnapshot: Sendable, Equatable {
     public let sessionKey: String
     public let turnCount: Int
     public let lastActivityMs: Int64
+    public let thinkingLevel: String?
 
-    public init(sessionKey: String, turnCount: Int, lastActivityMs: Int64) {
+    public init(sessionKey: String, turnCount: Int, lastActivityMs: Int64, thinkingLevel: String? = nil) {
         self.sessionKey = sessionKey
         self.turnCount = turnCount
         self.lastActivityMs = lastActivityMs
+        self.thinkingLevel = thinkingLevel
     }
 }
 
@@ -50,6 +52,7 @@ public actor GatewaySessionStore {
     private struct SessionState: Sendable {
         var turnCount: Int
         var lastActivityMs: Int64
+        var thinkingLevel: String?
         let queue: GatewaySessionOperationQueue
     }
 
@@ -66,6 +69,7 @@ public actor GatewaySessionStore {
         self.sessions[key] = SessionState(
             turnCount: 0,
             lastActivityMs: GatewayCore.currentTimestampMs(),
+            thinkingLevel: nil,
             queue: queue)
         return queue
     }
@@ -78,12 +82,14 @@ public actor GatewaySessionStore {
         return try await queue.enqueue(operation)
     }
 
-    public func recordTurn(sessionKey: String, nowMs: Int64) {
+    public func recordTurn(sessionKey: String, nowMs: Int64, thinkingLevel: String? = nil) {
         let key = Self.normalizedSessionKey(sessionKey)
+        let normalizedThinkingLevel = Self.normalizedThinkingLevel(thinkingLevel)
         if let current = self.sessions[key] {
             self.sessions[key] = SessionState(
                 turnCount: current.turnCount + 1,
                 lastActivityMs: nowMs,
+                thinkingLevel: normalizedThinkingLevel ?? current.thinkingLevel,
                 queue: current.queue)
             return
         }
@@ -91,6 +97,7 @@ public actor GatewaySessionStore {
         self.sessions[key] = SessionState(
             turnCount: 1,
             lastActivityMs: nowMs,
+            thinkingLevel: normalizedThinkingLevel,
             queue: GatewaySessionOperationQueue())
     }
 
@@ -104,12 +111,14 @@ public actor GatewaySessionStore {
             return GatewaySessionSnapshot(
                 sessionKey: key,
                 turnCount: current.turnCount,
-                lastActivityMs: current.lastActivityMs)
+                lastActivityMs: current.lastActivityMs,
+                thinkingLevel: current.thinkingLevel)
         }
         return GatewaySessionSnapshot(
             sessionKey: key,
             turnCount: 0,
-            lastActivityMs: GatewayCore.currentTimestampMs())
+            lastActivityMs: GatewayCore.currentTimestampMs(),
+            thinkingLevel: nil)
     }
 
     public func snapshots() -> [GatewaySessionSnapshot] {
@@ -118,17 +127,26 @@ public actor GatewaySessionStore {
                 return GatewaySessionSnapshot(
                     sessionKey: key,
                     turnCount: current.turnCount,
-                    lastActivityMs: current.lastActivityMs)
+                    lastActivityMs: current.lastActivityMs,
+                    thinkingLevel: current.thinkingLevel)
             }
             return GatewaySessionSnapshot(
                 sessionKey: key,
                 turnCount: 0,
-                lastActivityMs: GatewayCore.currentTimestampMs())
+                lastActivityMs: GatewayCore.currentTimestampMs(),
+                thinkingLevel: nil)
         }
     }
 
     private static func normalizedSessionKey(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "main" : trimmed
+    }
+
+    private static func normalizedThinkingLevel(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        return normalized
     }
 }
