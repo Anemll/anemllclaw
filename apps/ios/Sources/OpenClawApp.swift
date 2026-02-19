@@ -30,10 +30,9 @@ struct OpenClawApp: App {
             TVOSGatewayHostView()
                 .environment(self.tvOSGatewayRuntime)
                 .task {
-                    await self.tvOSGatewayRuntime.start()
-                    await self.tvOSGatewayRuntime.probeHealth()
-                    await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
-                    await self.tvOSGatewayRuntime.probeUpstreamHealth()
+                    if self.tvOSGatewayRuntime.state == .stopped {
+                        await self.tvOSGatewayRuntime.start()
+                    }
                 }
                 .onChange(of: self.scenePhase) { _, newValue in
                     self.updateTVOSGatewayScenePhase(newValue)
@@ -76,15 +75,18 @@ extension OpenClawApp {
             case .background:
                 await self.tvOSGatewayRuntime.stop()
             case .active:
-                await self.tvOSGatewayRuntime.start()
+                if self.tvOSGatewayRuntime.state == .stopped {
+                    await self.tvOSGatewayRuntime.start()
+                }
                 await self.tvOSGatewayRuntime.probeHealth()
                 await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
                 await self.tvOSGatewayRuntime.probeUpstreamHealth()
             case .inactive:
-                // Keep runtime alive, but avoid repeated socket probes while the app transitions focus.
-                await self.tvOSGatewayRuntime.start()
+                break
             @unknown default:
-                await self.tvOSGatewayRuntime.start()
+                if self.tvOSGatewayRuntime.state == .stopped {
+                    await self.tvOSGatewayRuntime.start()
+                }
                 await self.tvOSGatewayRuntime.probeHealth()
                 await self.tvOSGatewayRuntime.probeHealthOverWebSocket()
                 await self.tvOSGatewayRuntime.probeUpstreamHealth()

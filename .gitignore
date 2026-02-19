@@ -80,6 +80,13 @@ USER.md
 
 # local tooling
 .serena/
+.claude/
+
+# Personal/local skills (keep out of git; shared skills stay in /skills)
+# Use skills/local/ for personal skills that should still be auto-discovered.
+skills/local/
+skills/.local/
+skills/.private/
 
 # Agent credentials and memory (NEVER COMMIT)
 /memory/

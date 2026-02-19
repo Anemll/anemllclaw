@@ -32,7 +32,6 @@ enum GatewayPayloadCodec {
 enum GatewayRoutingPolicy {
     static let upstreamOnlyMethodPrefixes = [
         "sessions.",
-        "agents.",
         "channel.",
         "hooks.",
         "skills.",

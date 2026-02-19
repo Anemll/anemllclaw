@@ -106,13 +106,25 @@
 
       .actions {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+      }
+
+      .actions-3 {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
         gap: 10px;
       }
 
       @media (max-width: 1080px) {
         .actions {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 1080px) {
+        .actions-3 {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -177,6 +189,30 @@
       #bootstrap-file-meta {
         margin-top: 8px;
       }
+
+      #skills-file-content {
+        max-height: 300px;
+      }
+
+      #skills-file-meta {
+        margin-top: 8px;
+      }
+
+      #cron-list-content {
+        max-height: 300px;
+      }
+
+      #cron-list-meta {
+        margin-bottom: 8px;
+      }
+
+      #pairing-command-preview {
+        min-height: 110px;
+      }
+
+      #pairing-list-content {
+        max-height: 260px;
+      }
     </style>
   </head>
   <body>
@@ -224,6 +260,7 @@
           <button id="save-btn" disabled>Save Config</button>
           <button id="restart-btn" disabled>Restart Runtime</button>
           <button id="health-btn" disabled>Health</button>
+          <button id="cron-list-btn" disabled>List Crons</button>
         </div>
         <div class="inline" style="margin-top: 10px">
           <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
@@ -243,6 +280,42 @@
           </label>
           <span id="monitor-status" class="muted small">monitor off</span>
         </div>
+      </div>
+
+      <div class="panel" style="margin-bottom: 14px">
+        <h2>Telegram Pairing</h2>
+        <p class="muted small" style="margin: 0 0 10px">
+          Use local pairing RPC on tvOS, or copy CLI commands for upstream/full-gateway environments.
+        </p>
+        <div id="pairing-context" class="muted small" style="margin-bottom: 10px">
+          Connect + Load Config to detect pairing status.
+        </div>
+        <div class="inline">
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="pairing-channel">Channel</label>
+            <select id="pairing-channel">
+              <option value="telegram">telegram</option>
+            </select>
+          </div>
+          <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
+            <label for="pairing-code">Pairing Code</label>
+            <input id="pairing-code" placeholder="e.g. ABCDEFGH" maxlength="8" />
+          </div>
+        </div>
+        <div class="actions-3" style="margin-top: 10px">
+          <button id="pairing-list-btn" disabled>Pairing List (RPC)</button>
+          <button id="pairing-approve-btn" disabled>Approve Code (RPC)</button>
+          <button id="pairing-clear-code-btn">Clear Code</button>
+        </div>
+        <div class="actions-3" style="margin-top: 10px">
+          <button id="copy-pairing-gateway-btn">Copy Gateway Cmd</button>
+          <button id="copy-pairing-list-btn">Copy List Cmd</button>
+          <button id="copy-pairing-approve-btn">Copy Approve Cmd</button>
+        </div>
+        <div class="muted small" style="margin: 10px 0 6px">Command Preview</div>
+        <textarea id="pairing-command-preview" readonly></textarea>
+        <div id="pairing-meta" class="muted small" style="margin: 10px 0 6px">No pairing data yet.</div>
+        <pre id="pairing-list-content">No pairing data yet.</pre>
       </div>
 
       <div class="grid">
@@ -283,6 +356,21 @@
           <div class="row">
             <label for="cfg-upstream-scopes">Upstream Scopes CSV</label>
             <input id="cfg-upstream-scopes" placeholder="operator.admin,node.exec" />
+          </div>
+          <div class="row">
+            <label for="cfg-telegram-bot-token">Telegram Bot Token</label>
+            <input
+              id="cfg-telegram-bot-token"
+              type="text"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="123456789:AA..."
+            />
+          </div>
+          <div class="row">
+            <label for="cfg-telegram-default-chat-id">Telegram Default Chat ID</label>
+            <input id="cfg-telegram-default-chat-id" placeholder="e.g. 6891700702" />
           </div>
         </div>
 
@@ -331,6 +419,30 @@
           <div id="bootstrap-file-meta" class="muted small"></div>
           <pre id="bootstrap-file-content">No bootstrap file data yet.</pre>
         </div>
+
+        <div class="panel">
+          <h2>Skills Files</h2>
+          <div class="row">
+            <label for="skills-workspace">Workspace Path</label>
+            <input id="skills-workspace" readonly />
+          </div>
+          <div class="row">
+            <label for="skills-root">Skills Root</label>
+            <input id="skills-root" readonly />
+          </div>
+          <div class="row">
+            <label for="skills-file-select">Skill File</label>
+            <select id="skills-file-select"></select>
+          </div>
+          <div id="skills-file-meta" class="muted small"></div>
+          <pre id="skills-file-content">No skills data yet.</pre>
+        </div>
+
+        <div class="panel">
+          <h2>Cron Schedules</h2>
+          <div id="cron-list-meta" class="muted small">No cron data yet.</div>
+          <pre id="cron-list-content">No cron data yet.</pre>
+        </div>
       </div>
 
       <div class="grid" style="margin-top: 14px">
@@ -354,11 +466,20 @@
         pending: new Map(),
         bootstrapFiles: [],
         bootstrapStatus: "",
+        skillFiles: [],
+        skillStatus: "",
+        skillCollisionSummary: "",
+        cronJobs: [],
+        cronStatus: "",
         monitorTimer: null,
         monitorActive: false,
         monitorBusy: false,
         monitorLastStamp: "",
         monitorLastHealthStamp: "",
+        actionInProgress: false,
+        activeActionTitle: "",
+        lastRuntimeState: {},
+        pairingPayload: null,
       };
 
       const connectBtn = el("connect-btn");
@@ -367,6 +488,7 @@
       const saveBtn = el("save-btn");
       const restartBtn = el("restart-btn");
       const healthBtn = el("health-btn");
+      const cronListBtn = el("cron-list-btn");
       const monitorToggleBtn = el("monitor-toggle-btn");
       const monitorVerbose = el("monitor-verbose");
       const connDot = el("conn-dot");
@@ -375,10 +497,29 @@
       const resultView = el("result-view");
       const logView = el("log-view");
       const runtimeState = el("runtime-state");
+      const pairingContext = el("pairing-context");
+      const pairingChannel = el("pairing-channel");
+      const pairingCode = el("pairing-code");
+      const pairingCommandPreview = el("pairing-command-preview");
+      const copyPairingGatewayBtn = el("copy-pairing-gateway-btn");
+      const copyPairingListBtn = el("copy-pairing-list-btn");
+      const copyPairingApproveBtn = el("copy-pairing-approve-btn");
+      const pairingListBtn = el("pairing-list-btn");
+      const pairingApproveBtn = el("pairing-approve-btn");
+      const pairingClearCodeBtn = el("pairing-clear-code-btn");
+      const pairingMeta = el("pairing-meta");
+      const pairingListContent = el("pairing-list-content");
       const bootstrapWorkspace = el("bootstrap-workspace");
       const bootstrapFileSelect = el("bootstrap-file-select");
       const bootstrapFileMeta = el("bootstrap-file-meta");
       const bootstrapFileContent = el("bootstrap-file-content");
+      const skillsWorkspace = el("skills-workspace");
+      const skillsRoot = el("skills-root");
+      const skillsFileSelect = el("skills-file-select");
+      const skillsFileMeta = el("skills-file-meta");
+      const skillsFileContent = el("skills-file-content");
+      const cronListMeta = el("cron-list-meta");
+      const cronListContent = el("cron-list-content");
 
       const connectAuthMode = el("connect-auth-mode");
       const connectSecret = el("connect-secret");
@@ -392,6 +533,8 @@
       const cfgUpstreamPassword = el("cfg-upstream-password");
       const cfgUpstreamRole = el("cfg-upstream-role");
       const cfgUpstreamScopes = el("cfg-upstream-scopes");
+      const cfgTelegramBotToken = el("cfg-telegram-bot-token");
+      const cfgTelegramDefaultChatID = el("cfg-telegram-default-chat-id");
       const cfgLLMProvider = el("cfg-llm-provider");
       const cfgLLMBaseURL = el("cfg-llm-base-url");
       const cfgLLMAPIKey = el("cfg-llm-api-key");
@@ -402,6 +545,16 @@
       const storage = {
         url: "openclaw.tvos.admin.url",
         authMode: "openclaw.tvos.admin.authMode",
+      };
+
+      const defaultButtonLabels = {
+        connect: "Connect",
+        disconnect: "Disconnect",
+        load: "Load Config",
+        save: "Save Config",
+        restart: "Restart Runtime",
+        health: "Health",
+        cronList: "List Crons",
       };
 
       function now() {
@@ -420,16 +573,44 @@
 
       function setConnectedUI(connected) {
         state.connected = connected;
-        connectBtn.disabled = connected;
-        disconnectBtn.disabled = !connected;
-        loadBtn.disabled = !connected;
-        saveBtn.disabled = !connected;
-        restartBtn.disabled = !connected;
-        healthBtn.disabled = !connected;
-        monitorToggleBtn.disabled = !connected;
+        const busy = state.actionInProgress;
+        connectBtn.disabled = connected || busy;
+        disconnectBtn.disabled = !connected || busy;
+        loadBtn.disabled = !connected || busy;
+        saveBtn.disabled = !connected || busy;
+        restartBtn.disabled = !connected || busy;
+        healthBtn.disabled = !connected || busy;
+        cronListBtn.disabled = !connected || busy;
+        monitorToggleBtn.disabled = !connected || busy;
+        pairingListBtn.disabled = !connected || busy;
+        pairingApproveBtn.disabled = !connected || busy;
         if (!connected) {
           monitorStatus.textContent = "monitor off";
         }
+        renderPairingPanel();
+      }
+
+      function setActionInProgress(active, title = "") {
+        state.actionInProgress = active;
+        state.activeActionTitle = active ? String(title || "") : "";
+
+        connectBtn.textContent =
+          active && title === "connect" ? "Connecting…" : defaultButtonLabels.connect;
+        disconnectBtn.textContent = defaultButtonLabels.disconnect;
+        loadBtn.textContent = active && title === "config.get" ? "Loading…" : defaultButtonLabels.load;
+        saveBtn.textContent = active && title === "config.set" ? "Saving…" : defaultButtonLabels.save;
+        restartBtn.textContent =
+          active && title === "runtime.restart" ? "Restarting…" : defaultButtonLabels.restart;
+        healthBtn.textContent = active && title === "health" ? "Checking…" : defaultButtonLabels.health;
+        cronListBtn.textContent = active && title === "cron.list" ? "Listing…" : defaultButtonLabels.cronList;
+
+        if (active && title === "monitor.toggle") {
+          monitorToggleBtn.textContent = "Working…";
+        } else {
+          monitorToggleBtn.textContent = state.monitorActive ? "Stop Monitor" : "Start Monitor";
+        }
+
+        setConnectedUI(state.connected);
       }
 
       function setMonitorUI(active) {
@@ -588,11 +769,121 @@
           upstreamPassword: cfgUpstreamPassword.value,
           upstreamRole: cfgUpstreamRole.value || "node",
           upstreamScopesCSV: cfgUpstreamScopes.value,
+          telegramBotToken: cfgTelegramBotToken.value,
+          telegramDefaultChatID: cfgTelegramDefaultChatID.value,
           localLLMProvider: cfgLLMProvider.value,
           localLLMBaseURL: cfgLLMBaseURL.value,
           localLLMAPIKey: cfgLLMAPIKey.value,
           localLLMModel: cfgLLMModel.value,
         };
+      }
+
+      function buildConfigSetPayload(settings) {
+        return {
+          settings,
+          config: {
+            gatewayTVOS: settings,
+          },
+          auth: {
+            mode: settings.authMode,
+            token: settings.authToken,
+            password: settings.authPassword,
+          },
+          upstream: {
+            url: settings.upstreamURL,
+            token: settings.upstreamToken,
+            password: settings.upstreamPassword,
+            role: settings.upstreamRole,
+            scopes: settings.upstreamScopesCSV,
+          },
+          localLLM: {
+            provider: settings.localLLMProvider,
+            baseURL: settings.localLLMBaseURL,
+            apiKey: settings.localLLMAPIKey,
+            model: settings.localLLMModel,
+          },
+          telegram: {
+            botToken: settings.telegramBotToken,
+            defaultChatID: settings.telegramDefaultChatID,
+          },
+        };
+      }
+
+      function normalizedSettingsForCompare(settings) {
+        const trim = (value) => String(value ?? "").trim();
+        const normalized = {
+          authMode: trim(settings.authMode || "none").toLowerCase(),
+          authToken: trim(settings.authToken),
+          authPassword: trim(settings.authPassword),
+          upstreamURL: trim(settings.upstreamURL),
+          upstreamToken: trim(settings.upstreamToken),
+          upstreamPassword: trim(settings.upstreamPassword),
+          upstreamRole: trim(settings.upstreamRole || "node") || "node",
+          upstreamScopesCSV: trim(settings.upstreamScopesCSV),
+          telegramBotToken: trim(settings.telegramBotToken),
+          telegramDefaultChatID: trim(settings.telegramDefaultChatID),
+          localLLMProvider: trim(settings.localLLMProvider || "disabled"),
+          localLLMBaseURL: trim(settings.localLLMBaseURL),
+          localLLMAPIKey: trim(settings.localLLMAPIKey),
+          localLLMModel: trim(settings.localLLMModel),
+        };
+
+        if (normalized.authMode === "token") {
+          if (!normalized.authToken) {
+            normalized.authMode = "none";
+          }
+          normalized.authPassword = "";
+        } else if (normalized.authMode === "password") {
+          if (!normalized.authPassword) {
+            normalized.authMode = "none";
+          }
+          normalized.authToken = "";
+        } else {
+          normalized.authMode = "none";
+          normalized.authToken = "";
+          normalized.authPassword = "";
+        }
+
+        return normalized;
+      }
+
+      function redactedPresence(value) {
+        return String(value ?? "").trim().isEmpty ? "missing" : "present";
+      }
+
+      function collectSettingsMismatches(expected, actual) {
+        const keys = [
+          "authMode",
+          "authToken",
+          "authPassword",
+          "upstreamURL",
+          "upstreamToken",
+          "upstreamPassword",
+          "upstreamRole",
+          "upstreamScopesCSV",
+          "telegramBotToken",
+          "telegramDefaultChatID",
+          "localLLMProvider",
+          "localLLMBaseURL",
+          "localLLMAPIKey",
+          "localLLMModel",
+        ];
+        const expectedNormalized = normalizedSettingsForCompare(expected);
+        const actualNormalized = normalizedSettingsForCompare(actual || {});
+        return keys.filter((key) => expectedNormalized[key] !== actualNormalized[key]);
+      }
+
+      function syncConnectAuthFromSettings(settings) {
+        const normalized = normalizedSettingsForCompare(settings || {});
+        const mode = normalized.authMode;
+        connectAuthMode.value = mode;
+        if (mode === "token") {
+          connectSecret.value = String(normalized.authToken || "");
+        } else if (mode === "password") {
+          connectSecret.value = String(normalized.authPassword || "");
+        } else {
+          connectSecret.value = "";
+        }
       }
 
       function extractSettings(payload) {
@@ -622,6 +913,8 @@
         cfgUpstreamPassword.value = settings.upstreamPassword || "";
         cfgUpstreamRole.value = settings.upstreamRole || "node";
         cfgUpstreamScopes.value = settings.upstreamScopesCSV || "";
+        cfgTelegramBotToken.value = settings.telegramBotToken || "";
+        cfgTelegramDefaultChatID.value = settings.telegramDefaultChatID || "";
         cfgLLMProvider.value = settings.localLLMProvider || "disabled";
         cfgLLMBaseURL.value = settings.localLLMBaseURL || "";
         cfgLLMAPIKey.value = settings.localLLMAPIKey || "";
@@ -630,10 +923,130 @@
 
       function applyRuntimeState(payload) {
         if (!payload || typeof payload !== "object") {
+          state.lastRuntimeState = {};
           runtimeState.textContent = "{}";
+          renderPairingPanel();
           return;
         }
-        runtimeState.textContent = jsonSafe(payload.state || {});
+        const runtime = payload.state && typeof payload.state === "object" ? payload.state : {};
+        state.lastRuntimeState = runtime;
+        runtimeState.textContent = jsonSafe(runtime);
+        renderPairingPanel();
+      }
+
+      function buildPairingCommands() {
+        const channel = String(pairingChannel.value || "telegram").trim() || "telegram";
+        const code = String(pairingCode.value || "").trim() || "<CODE>";
+        return {
+          gateway: "openclaw gateway",
+          list: `openclaw pairing list ${channel}`,
+          approve: `openclaw pairing approve ${channel} ${code}`,
+        };
+      }
+
+      function pairingContextText() {
+        if (!state.connected) {
+          return "Connect + Load Config to detect runtime mode.";
+        }
+        if (state.pairingPayload && typeof state.pairingPayload === "object") {
+          const pollingActive = state.pairingPayload.pollingActive === true;
+          const requestCount = Number.isFinite(state.pairingPayload.requestCount)
+            ? Number(state.pairingPayload.requestCount)
+            : 0;
+          const allowCount = Number.isFinite(state.pairingPayload.allowFromCount)
+            ? Number(state.pairingPayload.allowFromCount)
+            : 0;
+          const pollError = typeof state.pairingPayload.pollErrorText === "string"
+            ? state.pairingPayload.pollErrorText
+            : "";
+          const details = [
+            pollingActive ? "polling=active" : "polling=idle",
+            `pending=${requestCount}`,
+            `allowFrom=${allowCount}`,
+          ];
+          if (pollError) {
+            details.push(`lastError=${pollError}`);
+          }
+          return `Local pairing runtime detected (${details.join(" | ")})`;
+        }
+        if (state.lastRuntimeState?.upstreamConfigured === true) {
+          return "Upstream is configured. Run pairing commands on the upstream host terminal.";
+        }
+        return "Upstream is not configured. Load config to check if local pairing RPC is available.";
+      }
+
+      function applyPairingPayload(payload) {
+        const pairing =
+          payload && typeof payload === "object" && payload.pairing && typeof payload.pairing === "object"
+            ? payload.pairing
+            : null;
+        state.pairingPayload = pairing;
+        renderPairingPanel();
+      }
+
+      function renderPairingList() {
+        const pairing = state.pairingPayload;
+        if (!pairing || typeof pairing !== "object") {
+          pairingMeta.textContent = "No pairing data yet.";
+          pairingListContent.textContent = "No pairing data yet.";
+          return;
+        }
+        const requests = Array.isArray(pairing.requests) ? pairing.requests : [];
+        const allowFrom = Array.isArray(pairing.allowFrom) ? pairing.allowFrom : [];
+        const requestCount = Number.isFinite(pairing.requestCount) ? Number(pairing.requestCount) : requests.length;
+        const allowCount = Number.isFinite(pairing.allowFromCount) ? Number(pairing.allowFromCount) : allowFrom.length;
+        const pollSucceeded =
+          pairing.pollSucceeded === true ? "ok" : pairing.pollSucceeded === false ? "failed" : "unknown";
+        const lastUpdateID = Number.isFinite(pairing.lastUpdateID) ? Number(pairing.lastUpdateID) : 0;
+
+        pairingMeta.textContent =
+          `channel=telegram | pending=${requestCount} | allowFrom=${allowCount} | poll=${pollSucceeded} | lastUpdateID=${lastUpdateID}`;
+
+        if (requests.length === 0) {
+          pairingListContent.textContent = "No pending pairing requests.";
+          return;
+        }
+
+        const blocks = requests.map((request, index) => {
+          const id = typeof request?.id === "string" ? request.id : "(unknown)";
+          const code = typeof request?.code === "string" ? request.code : "(none)";
+          const createdAt =
+            typeof request?.createdAt === "string"
+              ? request.createdAt
+              : formatTimeMs(Number(request?.createdAtMs || 0));
+          const lastSeenAt =
+            typeof request?.lastSeenAt === "string"
+              ? request.lastSeenAt
+              : formatTimeMs(Number(request?.lastSeenAtMs || 0));
+          const meta = request?.meta && typeof request.meta === "object" ? request.meta : {};
+          const metaKeys = Object.keys(meta);
+          const metaText =
+            metaKeys.length > 0
+              ? metaKeys.map((key) => `${key}=${String(meta[key])}`).join(", ")
+              : "(none)";
+          return [
+            `${index + 1}. id=${id} code=${code}`,
+            `createdAt=${createdAt}`,
+            `lastSeenAt=${lastSeenAt}`,
+            `meta=${metaText}`,
+          ].join("\n");
+        });
+        pairingListContent.textContent = blocks.join("\n\n---\n\n");
+      }
+
+      function renderPairingPanel() {
+        const commands = buildPairingCommands();
+        pairingContext.textContent = pairingContextText();
+        pairingCommandPreview.value = [commands.gateway, commands.list, commands.approve].join("\n");
+        renderPairingList();
+      }
+
+      async function copyTextToClipboard(text) {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+        return false;
       }
 
       function applyBootstrap(payload) {
@@ -696,6 +1109,71 @@
         renderBootstrapSelection();
       }
 
+      function applySkills(payload) {
+        const skills =
+          payload && typeof payload === "object" && payload.skills && typeof payload.skills === "object"
+            ? payload.skills
+            : null;
+
+        if (!skills) {
+          skillsWorkspace.value = "";
+          skillsRoot.value = "";
+          state.skillFiles = [];
+          state.skillStatus = "";
+          state.skillCollisionSummary = "";
+          skillsFileSelect.innerHTML = "";
+          skillsFileMeta.textContent = "No skills payload.";
+          skillsFileContent.textContent = "No skills payload.";
+          return;
+        }
+
+        skillsWorkspace.value =
+          typeof skills.workspacePath === "string" && skills.workspacePath
+            ? skills.workspacePath
+            : "(none)";
+        skillsRoot.value =
+          typeof skills.skillsRootPath === "string" && skills.skillsRootPath
+            ? skills.skillsRootPath
+            : "(none)";
+
+        const files = Array.isArray(skills.files) ? skills.files : [];
+        const rootExists = skills.skillsRootExists === true;
+        const fileCount = Number.isFinite(skills.fileCount) ? skills.fileCount : files.length;
+        const statusPieces = [rootExists ? "skills root present" : "skills root missing", `${fileCount} file(s)`];
+        const caseCollisionGroups = findCaseCollisionGroups(files);
+        const previousCollisionSummary = state.skillCollisionSummary;
+        state.skillCollisionSummary = caseCollisionGroups
+          .map((group) => group.join(" / "))
+          .join(" ; ");
+        if (caseCollisionGroups.length > 0) {
+          statusPieces.push(`case-collisions=${caseCollisionGroups.length}`);
+          if (state.skillCollisionSummary !== previousCollisionSummary) {
+            log(`skills case-collision detected: ${state.skillCollisionSummary}`, "WARN");
+          }
+        }
+        state.skillStatus = statusPieces.join(" | ");
+        state.skillFiles = files;
+        skillsFileSelect.innerHTML = "";
+
+        if (files.length === 0) {
+          skillsFileMeta.textContent =
+            (state.skillStatus ? `${state.skillStatus}\n` : "") + "No skills files found.";
+          skillsFileContent.textContent = "";
+          return;
+        }
+
+        files.forEach((file, index) => {
+          const option = document.createElement("option");
+          const name = typeof file?.name === "string" ? file.name : `skill-${index + 1}`;
+          option.value = String(index);
+          option.textContent = name;
+          skillsFileSelect.appendChild(option);
+        });
+
+        skillsFileSelect.value = "0";
+        renderSkillsSelection();
+      }
+
       function renderBootstrapSelection() {
         if (!state.bootstrapFiles.length) {
           bootstrapFileMeta.textContent = (state.bootstrapStatus ? `${state.bootstrapStatus}\n` : "") + "No files";
@@ -722,6 +1200,229 @@
           `${name} | ${exists ? "exists" : "missing"} | ${bytes} bytes${truncated ? " | truncated" : ""}\n${path}`;
         bootstrapFileMeta.textContent = state.bootstrapStatus ? `${state.bootstrapStatus}\n${fileMeta}` : fileMeta;
         bootstrapFileContent.textContent = content || "(empty)";
+      }
+
+      function renderSkillsSelection() {
+        if (!state.skillFiles.length) {
+          skillsFileMeta.textContent = (state.skillStatus ? `${state.skillStatus}\n` : "") + "No files";
+          skillsFileContent.textContent = "";
+          return;
+        }
+
+        const index = Number(skillsFileSelect.value || 0);
+        const file = state.skillFiles[index];
+        if (!file || typeof file !== "object") {
+          skillsFileMeta.textContent = "Invalid skills file selection";
+          skillsFileContent.textContent = "";
+          return;
+        }
+
+        const name = typeof file.name === "string" ? file.name : "(unknown)";
+        const path = typeof file.path === "string" ? file.path : "(unknown path)";
+        const exists = file.exists === true;
+        const bytes = Number.isFinite(file.bytes) ? file.bytes : 0;
+        const truncated = file.truncated === true;
+        const content = typeof file.content === "string" ? file.content : "";
+        const createdAt = displayTimestampFromFile(file, "createdAtISO8601", "createdAtMs");
+        const modifiedAt = displayTimestampFromFile(file, "modifiedAtISO8601", "modifiedAtMs");
+
+        const fileMeta =
+          `${name} | ${exists ? "exists" : "missing"} | ${bytes} bytes${truncated ? " | truncated" : ""}\n${path}\ncreated: ${createdAt}\nmodified: ${modifiedAt}`;
+        const collisionNote = state.skillCollisionSummary ? `\n⚠ case-collision: ${state.skillCollisionSummary}` : "";
+        skillsFileMeta.textContent = state.skillStatus
+          ? `${state.skillStatus}\n${fileMeta}${collisionNote}`
+          : `${fileMeta}${collisionNote}`;
+        skillsFileContent.textContent = content || "(empty)";
+      }
+
+      function findCaseCollisionGroups(files) {
+        if (!Array.isArray(files) || files.length === 0) {
+          return [];
+        }
+        const byLower = new Map();
+        for (const file of files) {
+          const name = typeof file?.name === "string" ? file.name.trim() : "";
+          if (!name) continue;
+          const key = name.toLowerCase();
+          if (!byLower.has(key)) {
+            byLower.set(key, []);
+          }
+          byLower.get(key).push(name);
+        }
+        return [...byLower.values()].filter((names) => names.length > 1);
+      }
+
+      function formatTimeMs(ms) {
+        if (!Number.isFinite(ms) || ms <= 0) {
+          return "(none)";
+        }
+        const date = new Date(Number(ms));
+        return Number.isNaN(date.getTime()) ? String(ms) : date.toISOString();
+      }
+
+      function displayTimestampFromFile(file, isoKey, msKey) {
+        const iso = typeof file?.[isoKey] === "string" ? file[isoKey].trim() : "";
+        if (iso) {
+          return iso;
+        }
+        const ms = file?.[msKey];
+        return Number.isFinite(ms) ? formatTimeMs(ms) : "(unknown)";
+      }
+
+      function summarizeCronSchedule(schedule) {
+        if (!schedule || typeof schedule !== "object") {
+          return "(none)";
+        }
+        const kind = typeof schedule.kind === "string" ? schedule.kind : "unknown";
+        if (kind === "every") {
+          const everyMs = Number.isFinite(schedule.everyMs) ? Number(schedule.everyMs) : 0;
+          const seconds = everyMs > 0 ? `${Math.round(everyMs / 1000)}s` : "(invalid)";
+          const anchor = Number.isFinite(schedule.anchorMs) ? `, anchor=${formatTimeMs(Number(schedule.anchorMs))}` : "";
+          return `every ${seconds}${anchor}`;
+        }
+        if (kind === "at") {
+          return `at ${typeof schedule.at === "string" ? schedule.at : "(missing)"}`;
+        }
+        if (kind === "cron") {
+          const expr = typeof schedule.expr === "string" ? schedule.expr : "(missing)";
+          const tz = typeof schedule.tz === "string" && schedule.tz ? ` tz=${schedule.tz}` : "";
+          return `cron ${expr}${tz}`;
+        }
+        return jsonSafe(schedule);
+      }
+
+      function summarizeCronPayload(payload) {
+        if (!payload || typeof payload !== "object") {
+          return "(none)";
+        }
+        const kind = typeof payload.kind === "string" ? payload.kind : "unknown";
+        if (kind === "agentTurn") {
+          const message = typeof payload.message === "string" ? payload.message : "";
+          const text = message || (typeof payload.text === "string" ? payload.text : "");
+          const preview = text ? oneLinePreview(text, 100) : "(empty)";
+          return `agentTurn "${preview}"`;
+        }
+        if (kind === "systemEvent") {
+          const text = typeof payload.text === "string" ? payload.text : "";
+          return text ? `systemEvent "${oneLinePreview(text, 100)}"` : "systemEvent";
+        }
+        return jsonSafe(payload);
+      }
+
+      function renderCronList(payload) {
+        const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+        state.cronJobs = jobs;
+        state.cronStatus = `${jobs.length} job(s)`;
+        cronListMeta.textContent = state.cronStatus;
+
+        if (jobs.length === 0) {
+          cronListContent.textContent = "No cron jobs scheduled.";
+          return;
+        }
+
+        const blocks = jobs.map((job, index) => {
+          const id = typeof job?.id === "string" ? job.id : "(unknown)";
+          const name = typeof job?.name === "string" && job.name ? job.name : "(unnamed)";
+          const enabled = job?.enabled === true ? "enabled" : "disabled";
+          const schedule = summarizeCronSchedule(job?.schedule);
+          const payloadSummary = summarizeCronPayload(job?.payload);
+          const nextRun = formatTimeMs(job?.state?.nextRunAtMs);
+          const lastRun = formatTimeMs(job?.state?.lastRunAtMs);
+          const lastStatus = typeof job?.state?.lastStatus === "string" ? job.state.lastStatus : "(none)";
+          const lastError = typeof job?.state?.lastError === "string" && job.state.lastError
+            ? `\nlastError: ${job.state.lastError}`
+            : "";
+          const sessionTarget = typeof job?.sessionTarget === "string" ? job.sessionTarget : "(unknown)";
+          const wakeMode = typeof job?.wakeMode === "string" ? job.wakeMode : "(unknown)";
+          return [
+            `${index + 1}. ${name} [${enabled}]`,
+            `id: ${id}`,
+            `schedule: ${schedule}`,
+            `payload: ${payloadSummary}`,
+            `route: session=${sessionTarget} wake=${wakeMode}`,
+            `nextRun: ${nextRun}`,
+            `lastRun: ${lastRun}`,
+            `lastStatus: ${lastStatus}${lastError}`,
+          ].join("\n");
+        });
+        cronListContent.textContent = blocks.join("\n\n---\n\n");
+      }
+
+      function renderCronListError(message) {
+        const text = String(message || "unknown error");
+        state.cronJobs = [];
+        state.cronStatus = "unavailable";
+        cronListMeta.textContent = `cron.list unavailable`;
+        cronListContent.textContent = text;
+      }
+
+      async function loadCronList(options = {}) {
+        const quiet = options.quiet === true;
+        const optional = options.optional === true;
+        try {
+          const payload = await request("cron.list", { includeDisabled: true }, { timeoutMs: 20000, quiet });
+          renderResult({ method: "cron.list", payload });
+          renderCronList(payload);
+          if (!quiet) {
+            log(`cron.list ok jobs=${Array.isArray(payload?.jobs) ? payload.jobs.length : 0}`);
+          }
+          return payload;
+        } catch (error) {
+          renderCronListError(error?.message || String(error));
+          if (!quiet) {
+            log(`cron.list failed: ${error?.message || error}`, "WARN");
+          }
+          if (!optional) {
+            throw error;
+          }
+          return null;
+        }
+      }
+
+      async function loadPairingList(options = {}) {
+        const quiet = options.quiet === true;
+        const payload = await request("pairing.list", { channel: pairingChannel.value || "telegram" }, {
+          timeoutMs: 20000,
+          quiet,
+        });
+        renderResult({ method: "pairing.list", payload });
+        applyPairingPayload({ pairing: payload });
+        if (!quiet) {
+          const count = Number.isFinite(payload?.requestCount) ? payload.requestCount : 0;
+          log(`pairing.list ok pending=${count}`);
+        }
+      }
+
+      async function approvePairingCode() {
+        const rawCode = String(pairingCode.value || "").trim();
+        if (!rawCode) {
+          throw new Error("pairing code is required");
+        }
+        const code = rawCode.toUpperCase();
+        if (looksLikeTelegramBotToken(code)) {
+          throw new Error("That looks like a Telegram bot token. Enter the 8-character pairing code.");
+        }
+        if (!/^[A-Z2-9]{8}$/.test(code)) {
+          throw new Error("Pairing code must be exactly 8 chars (A-Z, 2-9).");
+        }
+        pairingCode.value = code;
+        const payload = await request(
+          "pairing.approve",
+          {
+            channel: pairingChannel.value || "telegram",
+            code,
+          },
+          { timeoutMs: 20000 },
+        );
+        renderResult({ method: "pairing.approve", payload });
+        applyPairingPayload(payload);
+        log(`pairing.approve ok code=${code}`);
+        await loadPairingList({ quiet: true });
+      }
+
+      function looksLikeTelegramBotToken(value) {
+        const tokenPattern = /^\d{5,}:[A-Za-z0-9_-]{20,}$/;
+        return tokenPattern.test(String(value || "").trim());
       }
 
       async function connect() {
@@ -793,26 +1494,171 @@
         applySettingsForm(settings);
         applyRuntimeState(payload);
         applyBootstrap(payload);
-        log("config.get ok");
+        applySkills(payload);
+        applyPairingPayload(payload);
+        await loadCronList({ quiet: true, optional: true });
+        const normalized = normalizedSettingsForCompare(settings);
+        log(
+          "config.get ok"
+            + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+            + ` llm.model=${normalized.localLLMModel || "(none)"}`
+            + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
+            + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
+            + ` telegram.chat=${normalized.telegramDefaultChatID || "(none)"}`
+            + ` telegram.token=${redactedPresence(normalized.telegramBotToken)}`,
+        );
       }
 
       async function saveConfig() {
         const settings = readSettingsForm();
-        const payload = await request("config.set", { settings });
-        renderResult({ method: "config.set", payload });
-        const nextSettings = extractSettings(payload);
-        applySettingsForm(nextSettings);
-        applyRuntimeState(payload);
-        applyBootstrap(payload);
-        log("config.set ok");
+        const configSetParams = buildConfigSetPayload(settings);
+        const normalizedBefore = normalizedSettingsForCompare(settings);
+        log(
+          "config.set request"
+            + ` llm.provider=${normalizedBefore.localLLMProvider || "disabled"}`
+            + ` llm.model=${normalizedBefore.localLLMModel || "(none)"}`
+            + ` llm.baseURL=${normalizedBefore.localLLMBaseURL || "(none)"}`
+            + ` llm.apiKey=${redactedPresence(normalizedBefore.localLLMAPIKey)}`
+            + ` telegram.chat=${normalizedBefore.telegramDefaultChatID || "(none)"}`
+            + ` telegram.token=${redactedPresence(normalizedBefore.telegramBotToken)}`,
+        );
+        const monitorWasActive = state.monitorActive;
+        if (monitorWasActive) {
+          stopMonitor();
+          log("monitor paused for config.set");
+        }
+
+        try {
+          const payload = await request("config.set", configSetParams, { timeoutMs: 60000 });
+          renderResult({ method: "config.set", payload });
+          const verifyPayload = await request("config.get", {}, { timeoutMs: 20000 });
+          renderResult({ method: "config.get (verify)", payload: verifyPayload });
+          const persistedSettings = extractSettings(verifyPayload);
+          applySettingsForm(persistedSettings);
+          applyRuntimeState(verifyPayload);
+          applyBootstrap(verifyPayload);
+          applySkills(verifyPayload);
+          applyPairingPayload(verifyPayload);
+          await loadCronList({ quiet: true, optional: true });
+          const mismatches = collectSettingsMismatches(settings, persistedSettings);
+          if (mismatches.length > 0) {
+            throw new Error(`config verification failed; mismatched fields: ${mismatches.join(", ")}`);
+          }
+          const normalized = normalizedSettingsForCompare(persistedSettings);
+          log(
+            "config.set ok"
+              + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.model=${normalized.localLLMModel || "(none)"}`
+              + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
+              + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
+              + ` telegram.chat=${normalized.telegramDefaultChatID || "(none)"}`
+              + ` telegram.token=${redactedPresence(normalized.telegramBotToken)}`,
+          );
+          return;
+        } catch (error) {
+          const message = String(error?.message || error || "unknown error");
+          const maybeTransportDrop =
+            /timeout waiting for config\.set|timeout waiting for config\.get|socket closed|WebSocket is not connected|socket open failed|connect timeout/i.test(
+              message,
+            );
+          if (!maybeTransportDrop) {
+            throw error;
+          }
+
+          log(`config.set response interrupted (${message}); reconnecting + verifying`, "WARN");
+          closeSocket();
+          syncConnectAuthFromSettings(settings);
+          await connect();
+          const verifyPayload = await request("config.get", {}, { timeoutMs: 20000 });
+          renderResult({ method: "config.get (verify)", payload: verifyPayload });
+          const persistedSettings = extractSettings(verifyPayload);
+          applySettingsForm(persistedSettings);
+          applyRuntimeState(verifyPayload);
+          applyBootstrap(verifyPayload);
+          applySkills(verifyPayload);
+          applyPairingPayload(verifyPayload);
+          await loadCronList({ quiet: true, optional: true });
+
+          const mismatches = collectSettingsMismatches(settings, persistedSettings);
+          if (mismatches.length > 0) {
+            throw new Error(`config verification failed; mismatched fields: ${mismatches.join(", ")}`);
+          }
+          const normalized = normalizedSettingsForCompare(persistedSettings);
+          log(
+            "config.set verified after reconnect"
+              + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.model=${normalized.localLLMModel || "(none)"}`
+              + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
+              + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
+              + ` telegram.chat=${normalized.telegramDefaultChatID || "(none)"}`
+              + ` telegram.token=${redactedPresence(normalized.telegramBotToken)}`,
+          );
+          return;
+        } finally {
+          if (monitorWasActive && state.connected) {
+            startMonitor();
+            log("monitor resumed");
+          }
+        }
       }
 
       async function restartRuntime() {
-        const payload = await request("runtime.restart", {});
-        renderResult({ method: "runtime.restart", payload });
-        applyRuntimeState(payload);
-        applyBootstrap(payload);
-        log("runtime.restart ok");
+        const monitorWasActive = state.monitorActive;
+        if (monitorWasActive) {
+          stopMonitor();
+          log("monitor paused for runtime.restart");
+        }
+
+        try {
+          const payload = await request("runtime.restart", {}, { timeoutMs: 30000 });
+          renderResult({ method: "runtime.restart", payload });
+          applyRuntimeState(payload);
+          applyBootstrap(payload);
+          applyPairingPayload(payload);
+          await loadCronList({ quiet: true, optional: true });
+          log("runtime.restart ok");
+          return;
+        } catch (error) {
+          const message = String(error?.message || error || "unknown error");
+          const maybeTransportDrop =
+            /timeout waiting for runtime\.restart|socket closed|WebSocket is not connected|socket open failed|connect timeout/i.test(
+              message,
+            );
+          if (!maybeTransportDrop) {
+            throw error;
+          }
+
+          log(`runtime.restart response interrupted (${message}); reconnecting + verifying`, "WARN");
+          closeSocket();
+          syncConnectAuthFromSettings(readSettingsForm());
+          await connect();
+          const verifyPayload = await request("config.get", {}, { timeoutMs: 20000 });
+          renderResult({ method: "config.get (post-restart verify)", payload: verifyPayload });
+          const persistedSettings = extractSettings(verifyPayload);
+          applySettingsForm(persistedSettings);
+          applyRuntimeState(verifyPayload);
+          applyBootstrap(verifyPayload);
+          applySkills(verifyPayload);
+          applyPairingPayload(verifyPayload);
+          await loadCronList({ quiet: true, optional: true });
+
+          const normalized = normalizedSettingsForCompare(persistedSettings);
+          log(
+            "runtime.restart verified after reconnect"
+              + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.model=${normalized.localLLMModel || "(none)"}`
+              + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
+              + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
+              + ` telegram.chat=${normalized.telegramDefaultChatID || "(none)"}`
+              + ` telegram.token=${redactedPresence(normalized.telegramBotToken)}`,
+          );
+          return;
+        } finally {
+          if (monitorWasActive && state.connected) {
+            startMonitor();
+            log("monitor resumed");
+          }
+        }
       }
 
       async function health() {
@@ -957,6 +1803,14 @@
       }
 
       async function withAction(action, title) {
+        if (state.actionInProgress) {
+          log(
+            `action already in progress (${state.activeActionTitle || "unknown"}); skipping ${title}`,
+            "WARN",
+          );
+          return;
+        }
+        setActionInProgress(true, title);
         try {
           await action();
         } catch (error) {
@@ -965,7 +1819,25 @@
           if (!state.connected) {
             setStatus("err", "disconnected");
           }
+        } finally {
+          setActionInProgress(false);
         }
+      }
+
+      async function copyPairingCommand(kind) {
+        const commands = buildPairingCommands();
+        const text = commands[kind] || "";
+        if (!text) {
+          throw new Error("missing command text");
+        }
+        const copied = await copyTextToClipboard(text);
+        if (copied) {
+          log(`copied pairing command: ${text}`);
+          return;
+        }
+        pairingCommandPreview.focus();
+        pairingCommandPreview.select();
+        log(`clipboard API unavailable; selected command for manual copy: ${text}`, "WARN");
       }
 
       connectBtn.addEventListener("click", () =>
@@ -982,12 +1854,30 @@
       saveBtn.addEventListener("click", () => withAction(saveConfig, "config.set"));
       restartBtn.addEventListener("click", () => withAction(restartRuntime, "runtime.restart"));
       healthBtn.addEventListener("click", () => withAction(health, "health"));
+      cronListBtn.addEventListener("click", () => withAction(() => loadCronList({ optional: false }), "cron.list"));
+      pairingCode.addEventListener("input", () => renderPairingPanel());
+      pairingChannel.addEventListener("change", () => renderPairingPanel());
+      copyPairingGatewayBtn.addEventListener("click", () =>
+        withAction(() => copyPairingCommand("gateway"), "pairing.copy.gateway"));
+      copyPairingListBtn.addEventListener("click", () =>
+        withAction(() => copyPairingCommand("list"), "pairing.copy.list"));
+      copyPairingApproveBtn.addEventListener("click", () =>
+        withAction(() => copyPairingCommand("approve"), "pairing.copy.approve"));
+      pairingListBtn.addEventListener("click", () => withAction(() => loadPairingList(), "pairing.list"));
+      pairingApproveBtn.addEventListener("click", () =>
+        withAction(() => approvePairingCode(), "pairing.approve"));
+      pairingClearCodeBtn.addEventListener("click", () => {
+        pairingCode.value = "";
+        renderPairingPanel();
+      });
       bootstrapFileSelect.addEventListener("change", () => renderBootstrapSelection());
+      skillsFileSelect.addEventListener("change", () => renderSkillsSelection());
 
       gatewayURL.value = localStorage.getItem(storage.url) || gatewayURL.value;
       connectAuthMode.value = localStorage.getItem(storage.authMode) || connectAuthMode.value;
       setConnectedUI(false);
       setStatus("", "disconnected");
+      renderPairingPanel();
       log("ready");
     </script>
   </body>

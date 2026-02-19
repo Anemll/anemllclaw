@@ -123,8 +123,8 @@
       }
 
       textarea {
-        min-height: 84px;
-        max-height: 240px;
+        min-height: 120px;
+        max-height: 60vh;
         resize: vertical;
       }
 
@@ -208,16 +208,34 @@
 
       .chat-tools {
         display: grid;
-        grid-template-columns: repeat(4, minmax(130px, 1fr));
+        grid-template-columns: repeat(5, minmax(130px, 1fr));
         gap: 8px;
         width: min(620px, 100%);
       }
 
       @media (max-width: 900px) {
         .chat-tools {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr 1fr 1fr;
           width: 100%;
         }
+      }
+
+      .toggle-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #0d1422;
+        color: var(--fg);
+        white-space: nowrap;
+      }
+
+      .toggle-chip input {
+        width: auto;
+        margin: 0;
+        accent-color: var(--ok);
       }
 
       #messages {
@@ -336,6 +354,20 @@
         word-break: break-word;
       }
 
+      .tool-trace {
+        margin-top: 6px;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        background: rgba(151, 172, 205, 0.06);
+        padding: 8px;
+      }
+
+      .tool-trace > summary {
+        cursor: pointer;
+        color: var(--muted);
+        user-select: none;
+      }
+
       .composer {
         margin-top: 10px;
         border: 1px solid var(--line);
@@ -352,6 +384,25 @@
         gap: 10px;
       }
 
+      .composer-tools {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+        flex-wrap: wrap;
+      }
+
+      .prompt-lines {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }
+
+      .prompt-lines input {
+        width: 160px;
+      }
+
       .chat-progress {
         margin-top: 8px;
         border: 1px solid var(--line);
@@ -359,6 +410,15 @@
         padding: 8px 10px;
         background: rgba(241, 196, 15, 0.12);
         color: var(--warn);
+      }
+
+      .chat-error {
+        margin-top: 8px;
+        border: 1px solid #7d2530;
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: rgba(231, 76, 60, 0.15);
+        color: #ffb9b9;
       }
 
       .send-wrap {
@@ -373,6 +433,12 @@
 
       .session-field button {
         white-space: nowrap;
+      }
+
+      .session-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
       }
     </style>
   </head>
@@ -420,6 +486,21 @@
               </div>
             </div>
 
+            <div class="row">
+              <label for="session-select">Known Sessions</label>
+              <select id="session-select">
+                <option value="">(not loaded)</option>
+              </select>
+            </div>
+
+            <div class="row">
+              <label>Session Tools</label>
+              <div class="session-actions">
+                <button id="load-sessions-btn" type="button">Load Sessions</button>
+                <button id="latest-session-btn" type="button">Use Latest</button>
+              </div>
+            </div>
+
             <div class="connect-actions">
               <button id="connect-btn">Connect</button>
               <button id="disconnect-btn" disabled>Disconnect</button>
@@ -452,6 +533,10 @@
               <button id="history-btn" disabled>Refresh History</button>
               <button id="health-btn" disabled>Health</button>
               <button id="clear-chat-btn" type="button">Clear Chat</button>
+              <label class="toggle-chip">
+                <input id="auto-collapse-tool-traces" type="checkbox" checked />
+                Auto-collapse tools
+              </label>
               <select id="thinking-level">
                 <option value="low">thinking: low</option>
                 <option value="default">thinking: default</option>
@@ -465,12 +550,20 @@
           <div class="composer">
             <textarea id="prompt" placeholder="Type your message to the agent..."></textarea>
             <div class="composer-actions">
-              <span class="muted">Use Cmd/Ctrl + Enter to send.</span>
+              <div class="composer-tools">
+                <span class="muted">Use Cmd/Ctrl + Enter to send.</span>
+                <label class="prompt-lines" for="prompt-lines">
+                  Prompt lines
+                  <input id="prompt-lines" type="range" min="4" max="30" value="8" />
+                  <span id="prompt-lines-value">8</span>
+                </label>
+              </div>
               <div class="send-wrap">
                 <button id="send-btn" disabled>Send</button>
               </div>
             </div>
             <div id="chat-progress" class="chat-progress" hidden></div>
+            <div id="chat-error" class="chat-error" hidden></div>
           </div>
         </section>
       </div>
@@ -484,6 +577,9 @@
       const authMode = $("auth-mode");
       const authSecret = $("auth-secret");
       const sessionKey = $("session-key");
+      const sessionSelect = $("session-select");
+      const loadSessionsBtn = $("load-sessions-btn");
+      const latestSessionBtn = $("latest-session-btn");
       const connectBtn = $("connect-btn");
       const disconnectBtn = $("disconnect-btn");
       const newThreadBtn = $("new-thread-btn");
@@ -494,9 +590,13 @@
       const healthBtn = $("health-btn");
       const clearChatBtn = $("clear-chat-btn");
       const clearDebugBtn = $("clear-debug-btn");
+      const autoCollapseToolTraces = $("auto-collapse-tool-traces");
       const thinkingLevel = $("thinking-level");
       const prompt = $("prompt");
+      const promptLines = $("prompt-lines");
+      const promptLinesValue = $("prompt-lines-value");
       const chatProgress = $("chat-progress");
+      const chatError = $("chat-error");
       const messages = $("messages");
       const debug = $("debug");
 
@@ -506,9 +606,46 @@
         pending: new Map(),
         chatInFlight: false,
         chatProgressTimer: null,
+        chatLivePollTimer: null,
+        chatLivePollBusy: false,
         chatStartedAtMs: 0,
         lastInboundTrace: "",
+        autoCollapseToolTraces: true,
       };
+
+      function readBoolPref(key, fallback) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw === null) return fallback;
+          return raw === "1";
+        } catch {
+          return fallback;
+        }
+      }
+
+      function writeBoolPref(key, value) {
+        try {
+          localStorage.setItem(key, value ? "1" : "0");
+        } catch {}
+      }
+
+      function readNumberPref(key, fallback, min, max) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw === null) return fallback;
+          const parsed = Number.parseInt(raw, 10);
+          if (!Number.isFinite(parsed)) return fallback;
+          return Math.max(min, Math.min(max, parsed));
+        } catch {
+          return fallback;
+        }
+      }
+
+      function writeNumberPref(key, value) {
+        try {
+          localStorage.setItem(key, String(value));
+        } catch {}
+      }
 
       function nowStamp() {
         return new Date().toISOString().replace("T", " ").replace("Z", "");
@@ -534,6 +671,9 @@
         sendBtn.disabled = !connected || busy;
         prompt.disabled = !connected || busy;
         newThreadBtn.disabled = !connected || busy;
+        sessionSelect.disabled = !connected || busy;
+        loadSessionsBtn.disabled = !connected || busy;
+        latestSessionBtn.disabled = !connected || busy;
         historyBtn.disabled = !connected || busy;
         healthBtn.disabled = !connected;
       }
@@ -550,10 +690,34 @@
           clearInterval(state.chatProgressTimer);
           state.chatProgressTimer = null;
         }
+        if (state.chatLivePollTimer) {
+          clearInterval(state.chatLivePollTimer);
+          state.chatLivePollTimer = null;
+        }
+        state.chatLivePollBusy = false;
         state.chatStartedAtMs = 0;
         state.lastInboundTrace = "";
         chatProgress.hidden = true;
         chatProgress.textContent = "";
+      }
+
+      function setChatError(message) {
+        const text = String(message || "").trim();
+        chatError.hidden = text.length === 0;
+        chatError.textContent = text;
+      }
+
+      function applyPromptLineScale(rawValue, options = {}) {
+        const persist = options.persist !== false;
+        const parsed = Number.parseInt(String(rawValue || ""), 10);
+        const lines = Math.max(4, Math.min(30, Number.isFinite(parsed) ? parsed : 8));
+        prompt.style.height = `${Math.max(120, lines * 24)}px`;
+        prompt.rows = lines;
+        promptLines.value = String(lines);
+        promptLinesValue.textContent = String(lines);
+        if (persist) {
+          writeNumberPref("openclaw.tvos.chat.promptLines", lines);
+        }
       }
 
       function updateChatProgressText() {
@@ -588,6 +752,92 @@
           .slice(0, 14);
         const suffix = Math.random().toString(36).slice(2, 6);
         return `thread-${stamp}-${suffix}`;
+      }
+
+      function normalizedSessionKey(raw) {
+        const trimmed = String(raw || "").trim();
+        return trimmed || "main";
+      }
+
+      function sessionIDFromEntry(entry) {
+        if (!entry || typeof entry !== "object") return "";
+        return normalizedSessionKey(
+          entry.key || entry.sessionKey || entry.sessionId || entry.displayName || "",
+        );
+      }
+
+      function sessionLabelFromEntry(entry) {
+        const id = sessionIDFromEntry(entry);
+        if (!id) return "(unknown)";
+        const display =
+          typeof entry.displayName === "string" && entry.displayName.trim()
+            ? entry.displayName.trim()
+            : id;
+        const updated = formatTimestamp(entry.updatedAt);
+        return updated ? `${display} • ${updated}` : display;
+      }
+
+      function applySessionListToSelect(entries, selectedKey) {
+        sessionSelect.innerHTML = "";
+        if (!Array.isArray(entries) || entries.length === 0) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "(no sessions)";
+          sessionSelect.appendChild(option);
+          sessionSelect.value = "";
+          return;
+        }
+
+        const unique = new Set();
+        for (const entry of entries) {
+          const key = sessionIDFromEntry(entry);
+          if (!key || unique.has(key)) continue;
+          unique.add(key);
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = sessionLabelFromEntry(entry);
+          sessionSelect.appendChild(option);
+        }
+
+        if (selectedKey && unique.has(selectedKey)) {
+          sessionSelect.value = selectedKey;
+          return;
+        }
+        if (!sessionSelect.value && sessionSelect.options.length > 0) {
+          sessionSelect.selectedIndex = 0;
+        }
+      }
+
+      async function refreshSessions(options = {}) {
+        const quiet = options.quiet === true;
+        const preserveCurrent = options.preserveCurrent !== false;
+        const current = normalizedSessionKey(sessionKey.value);
+
+        const payload = await request(
+          "sessions.list",
+          { limit: 200 },
+          { timeoutMs: 20000 },
+        );
+        const sessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+        applySessionListToSelect(sessions, preserveCurrent ? current : "");
+
+        if (!quiet) {
+          writeDebug({ method: "sessions.list", count: sessions.length });
+        }
+        return sessions;
+      }
+
+      async function useLatestSession() {
+        const sessions = await refreshSessions({ quiet: true, preserveCurrent: false });
+        const latest = sessions.length > 0 ? sessionIDFromEntry(sessions[0]) : "";
+        if (!latest) {
+          writeDebug("latest session unavailable");
+          return;
+        }
+        sessionKey.value = latest;
+        sessionSelect.value = latest;
+        writeDebug({ event: "session.latest", sessionKey: latest });
+        await refreshHistory();
       }
 
       function closeSocket() {
@@ -821,6 +1071,44 @@
         messages.scrollTop = messages.scrollHeight;
       }
 
+      function clampText(text, maxChars) {
+        const source = String(text || "");
+        if (source.length <= maxChars) return source;
+        return `${source.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+      }
+
+      function compactText(text) {
+        return String(text || "").replace(/\s+/g, " ").trim();
+      }
+
+      function isToolTraceMessage(role, text) {
+        const normalizedRole = String(role || "").toLowerCase();
+        if (normalizedRole === "tool") {
+          return true;
+        }
+        if (normalizedRole !== "assistant") {
+          return false;
+        }
+        return compactText(text).startsWith("[tool-plan]");
+      }
+
+      function summarizeToolTrace(role, text) {
+        const normalizedRole = String(role || "").toLowerCase();
+        const compact = compactText(text);
+        if (!compact) return `${normalizedRole || "tool"} trace`;
+        if (normalizedRole === "assistant" && compact.startsWith("[tool-plan]")) {
+          const stripped = compact.replace(/^\[tool-plan\]\s*/, "");
+          return stripped ? `tool-plan: ${clampText(stripped, 96)}` : "tool-plan";
+        }
+        if (compact.startsWith("tool.call ")) {
+          return clampText(compact, 120);
+        }
+        if (compact.startsWith("tool.result ")) {
+          return clampText(compact, 120);
+        }
+        return clampText(compact, 120);
+      }
+
       function appendMessage(role, text, timestamp) {
         const el = document.createElement("div");
         el.className = `msg ${role || "system"}`;
@@ -835,20 +1123,40 @@
         const split = splitReasoningBlocks(text || "");
         const visibleText = split.visibleText || "(no text)";
         body.innerHTML = renderSimpleMarkup(visibleText);
+        const reasoning = split.reasoningText
+          ? (() => {
+              const details = document.createElement("details");
+              details.className = "reasoning";
+              const summary = document.createElement("summary");
+              summary.textContent = "Model reasoning";
+              const reasoningBody = document.createElement("pre");
+              reasoningBody.textContent = split.reasoningText;
+              details.appendChild(summary);
+              details.appendChild(reasoningBody);
+              return details;
+            })()
+          : null;
 
         el.appendChild(meta);
-        el.appendChild(body);
 
-        if (split.reasoningText) {
-          const reasoning = document.createElement("details");
-          reasoning.className = "reasoning";
+        const shouldCollapseTrace =
+          state.autoCollapseToolTraces && isToolTraceMessage(role, visibleText);
+        if (shouldCollapseTrace) {
+          const details = document.createElement("details");
+          details.className = "tool-trace";
           const summary = document.createElement("summary");
-          summary.textContent = "Model reasoning";
-          const reasoningBody = document.createElement("pre");
-          reasoningBody.textContent = split.reasoningText;
-          reasoning.appendChild(summary);
-          reasoning.appendChild(reasoningBody);
-          el.appendChild(reasoning);
+          summary.textContent = summarizeToolTrace(role, visibleText);
+          details.appendChild(summary);
+          details.appendChild(body);
+          if (reasoning) {
+            details.appendChild(reasoning);
+          }
+          el.appendChild(details);
+        } else {
+          el.appendChild(body);
+          if (reasoning) {
+            el.appendChild(reasoning);
+          }
         }
 
         messages.appendChild(el);
@@ -889,6 +1197,73 @@
           appendMessage(role, text || "(no text)", timestamp);
         }
         scrollMessagesToBottom();
+      }
+
+      function liveTraceFromMessages(payload) {
+        const list = Array.isArray(payload?.messages) ? payload.messages : [];
+        const ordered = sortHistory(list);
+        const latest = ordered.length > 0 ? ordered[ordered.length - 1] : null;
+        if (!latest || typeof latest !== "object") {
+          return "waiting for assistant";
+        }
+
+        const role = typeof latest.role === "string" ? latest.role : "system";
+        const text = parseTextFromContent(latest.content);
+        const compact = String(text || "").replace(/\s+/g, " ").trim();
+
+        if (role === "tool") {
+          if (compact.startsWith("tool.call ")) {
+            return compact.slice(0, 64);
+          }
+          if (compact.startsWith("tool.result ")) {
+            return compact.slice(0, 64);
+          }
+          return "tool execution update";
+        }
+
+        if (role === "assistant") {
+          if (compact.startsWith("[tool-plan]")) {
+            return "assistant planning tool step";
+          }
+          if (compact) {
+            return "assistant composing reply";
+          }
+          return "assistant active";
+        }
+
+        if (role === "user") {
+          return "request queued";
+        }
+
+        if (compact) {
+          return compact.slice(0, 64);
+        }
+        return `${role} update`;
+      }
+
+      function startLiveHistoryPoll() {
+        if (state.chatLivePollTimer) {
+          clearInterval(state.chatLivePollTimer);
+          state.chatLivePollTimer = null;
+        }
+        state.chatLivePollBusy = false;
+
+        state.chatLivePollTimer = setInterval(async () => {
+          if (!state.chatInFlight || !state.connected || state.chatLivePollBusy) {
+            return;
+          }
+          state.chatLivePollBusy = true;
+          try {
+            await refreshHistory({ quiet: true, markTrace: true });
+          } catch {
+            if (state.chatInFlight) {
+              state.lastInboundTrace = "live trace refresh pending";
+              updateChatProgressText();
+            }
+          } finally {
+            state.chatLivePollBusy = false;
+          }
+        }, 2500);
       }
 
       function connectParams() {
@@ -964,10 +1339,22 @@
         setConnected(true);
         setStatus("ok", "connected");
         writeDebug("connect ok");
+        const initialSessionKey = normalizedSessionKey(sessionKey.value);
+        const sessions = await refreshSessions({ quiet: true, preserveCurrent: true });
+        if ((initialSessionKey === "main" || !initialSessionKey) && sessions.length > 0) {
+          const latest = sessionIDFromEntry(sessions[0]);
+          if (latest) {
+            sessionKey.value = latest;
+            sessionSelect.value = latest;
+            writeDebug({ event: "session.auto.latest", sessionKey: latest });
+          }
+        }
         await refreshHistory();
       }
 
-      async function refreshHistory() {
+      async function refreshHistory(options = {}) {
+        const quiet = options.quiet === true;
+        const markTrace = options.markTrace !== false;
         const key = sessionKey.value.trim() || "main";
         const payload = await request(
           "chat.history",
@@ -975,7 +1362,21 @@
           { timeoutMs: 20000 },
         );
         renderHistory(payload);
-        writeDebug({ method: "chat.history", count: Array.isArray(payload.messages) ? payload.messages.length : 0 });
+        if (state.chatInFlight && markTrace) {
+          state.lastInboundTrace = liveTraceFromMessages(payload);
+          updateChatProgressText();
+        }
+        if (!quiet) {
+          writeDebug({ method: "chat.history", count: Array.isArray(payload.messages) ? payload.messages.length : 0 });
+        }
+        const selected = normalizedSessionKey(sessionKey.value);
+        if (sessionSelect.options.length > 0) {
+          const hasSelected = Array.from(sessionSelect.options).some((option) => option.value === selected);
+          if (hasSelected) {
+            sessionSelect.value = selected;
+          }
+        }
+        return payload;
       }
 
       async function sendMessage() {
@@ -991,6 +1392,7 @@
         state.chatInFlight = true;
         sendBtn.textContent = "Sending...";
         updateInputAvailability();
+        setChatError("");
 
         state.chatStartedAtMs = Date.now();
         state.lastInboundTrace = "waiting for gateway response";
@@ -999,6 +1401,7 @@
         state.chatProgressTimer = setInterval(() => {
           updateChatProgressText();
         }, 1000);
+        startLiveHistoryPoll();
 
         try {
           await request(
@@ -1012,8 +1415,12 @@
             { timeoutMs: Math.max(defaultRequestTimeoutMs(), 120000) },
           );
           prompt.value = "";
+          setChatError("");
           await refreshHistory();
+          await refreshSessions({ quiet: true, preserveCurrent: true });
         } catch (error) {
+          const message = error && error.message ? error.message : String(error);
+          setChatError(`Send failed: ${message}`);
           if (error && /timeout/i.test(error.message || "")) {
             writeDebug("chat.send timed out; waiting 2s then refreshing history");
             await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -1040,6 +1447,16 @@
       async function startNewThread() {
         const key = makeThreadKey();
         sessionKey.value = key;
+        if (sessionSelect.options.length > 0) {
+          const hasKey = Array.from(sessionSelect.options).some((option) => option.value === key);
+          if (!hasKey) {
+            const option = document.createElement("option");
+            option.value = key;
+            option.textContent = key;
+            sessionSelect.insertBefore(option, sessionSelect.firstChild);
+          }
+          sessionSelect.value = key;
+        }
         messages.innerHTML = "";
         writeDebug({ event: "thread.new", sessionKey: key });
         if (state.connected) {
@@ -1062,9 +1479,20 @@
         writeDebug("disconnected");
       });
       newThreadBtn.addEventListener("click", () => run(startNewThread, "thread.new"));
+      loadSessionsBtn.addEventListener("click", () => run(() => refreshSessions(), "sessions.list"));
+      latestSessionBtn.addEventListener("click", () => run(useLatestSession, "session.latest"));
       sendBtn.addEventListener("click", () => run(sendMessage, "chat.send"));
       historyBtn.addEventListener("click", () => run(refreshHistory, "chat.history"));
       healthBtn.addEventListener("click", () => run(health, "health"));
+
+      sessionSelect.addEventListener("change", () => {
+        const selected = normalizedSessionKey(sessionSelect.value);
+        if (!selected) return;
+        sessionKey.value = selected;
+        if (state.connected) {
+          run(refreshHistory, "chat.history");
+        }
+      });
 
       clearChatBtn.addEventListener("click", () => {
         messages.innerHTML = "";
@@ -1082,6 +1510,10 @@
         }
       });
 
+      promptLines.addEventListener("input", () => {
+        applyPromptLineScale(promptLines.value);
+      });
+
       sessionKey.addEventListener("keydown", (event) => {
         if (event.key === "Enter" && state.connected) {
           event.preventDefault();
@@ -1089,8 +1521,29 @@
         }
       });
 
+      autoCollapseToolTraces.checked = readBoolPref(
+        "openclaw.tvos.chat.autoCollapseToolTraces",
+        true,
+      );
+      state.autoCollapseToolTraces = autoCollapseToolTraces.checked;
+      autoCollapseToolTraces.addEventListener("change", () => {
+        state.autoCollapseToolTraces = autoCollapseToolTraces.checked;
+        writeBoolPref(
+          "openclaw.tvos.chat.autoCollapseToolTraces",
+          state.autoCollapseToolTraces,
+        );
+        if (state.connected) {
+          run(refreshHistory, "chat.history");
+        }
+      });
+
       setConnected(false);
       setStatus("", "disconnected");
+      setChatError("");
+      applyPromptLineScale(
+        readNumberPref("openclaw.tvos.chat.promptLines", 8, 4, 30),
+        { persist: false },
+      );
       writeDebug("ready");
     </script>
   </body>

@@ -36,6 +36,30 @@ public struct GatewayMemorySearchHit: Codable, Sendable, Equatable {
     }
 }
 
+public struct GatewayMemoryDocument: Codable, Sendable, Equatable {
+    public let key: String
+    public let sourcePath: String?
+    public let content: String
+    public let updatedMs: Int64
+
+    public init(key: String, sourcePath: String?, content: String, updatedMs: Int64) {
+        self.key = key
+        self.sourcePath = sourcePath
+        self.content = content
+        self.updatedMs = updatedMs
+    }
+}
+
+public struct GatewayMemoryDocumentSearchHit: Codable, Sendable, Equatable {
+    public let document: GatewayMemoryDocument
+    public let score: Double?
+
+    public init(document: GatewayMemoryDocument, score: Double?) {
+        self.document = document
+        self.score = score
+    }
+}
+
 public enum GatewaySQLiteMemoryStoreError: Error, Sendable, Equatable {
     case openFailed(String)
     case statementFailed(String)
@@ -179,6 +203,114 @@ public actor GatewaySQLiteMemoryStore {
         return Self.readTurn(statement)
     }
 
+    public func upsertDocument(
+        key rawKey: String,
+        sourcePath: String?,
+        content: String,
+        updatedMs: Int64 = GatewayCore.currentTimestampMs()) throws
+    {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+
+        let sql = """
+            INSERT INTO workspace_documents (doc_key, source_path, content, updated_ms)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(doc_key) DO UPDATE SET
+                source_path = excluded.source_path,
+                content = excluded.content,
+                updated_ms = excluded.updated_ms
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText(key, at: 1, statement: statement)
+        self.bindText(sourcePath, at: 2, statement: statement)
+        self.bindText(content, at: 3, statement: statement)
+        sqlite3_bind_int64(statement, 4, updatedMs)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+    }
+
+    public func getDocument(key rawKey: String) throws -> GatewayMemoryDocument? {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return nil }
+
+        let sql = """
+            SELECT doc_key, source_path, content, updated_ms
+            FROM workspace_documents
+            WHERE doc_key = ?
+            LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText(key, at: 1, statement: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            return nil
+        }
+        return Self.readDocument(statement)
+    }
+
+    public func searchDocuments(
+        query rawQuery: String,
+        limit: Int = 10) throws -> [GatewayMemoryDocumentSearchHit]
+    {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        let cappedLimit = max(1, min(limit, 500))
+
+        let sql = """
+            SELECT doc_key, source_path, content, updated_ms
+            FROM workspace_documents
+            WHERE content LIKE ? OR doc_key LIKE ?
+            ORDER BY updated_ms DESC
+            LIMIT ?
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText("%\(query)%", at: 1, statement: statement)
+        self.bindText("%\(query)%", at: 2, statement: statement)
+        sqlite3_bind_int64(statement, 3, Int64(cappedLimit))
+
+        let loweredQuery = query.lowercased()
+        var results: [GatewayMemoryDocumentSearchHit] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let document = Self.readDocument(statement)
+            let loweredContent = document.content.lowercased()
+            let loweredKey = document.key.lowercased()
+            let score: Double = if loweredContent.contains(loweredQuery) {
+                1.0
+            } else if loweredKey.contains(loweredQuery) {
+                0.5
+            } else {
+                0.1
+            }
+            results.append(GatewayMemoryDocumentSearchHit(document: document, score: score))
+        }
+        return results
+    }
+
     private static func openDatabase(path: String) throws -> OpaquePointer {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -209,6 +341,18 @@ public actor GatewaySQLiteMemoryStore {
 
         try self.execute(
             "CREATE INDEX IF NOT EXISTS idx_transcript_turns_session_id ON transcript_turns(session_key, id)",
+            database: database)
+
+        try self.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_documents (
+                doc_key TEXT PRIMARY KEY,
+                source_path TEXT,
+                content TEXT NOT NULL,
+                updated_ms INTEGER NOT NULL
+            )
+        """, database: database)
+        try self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_documents_updated ON workspace_documents(updated_ms DESC)",
             database: database)
 
         do {
@@ -380,6 +524,14 @@ public actor GatewaySQLiteMemoryStore {
             text: Self.readText(statement, at: 3),
             timestampMs: sqlite3_column_int64(statement, 4),
             runID: Self.readOptionalText(statement, at: 5))
+    }
+
+    private static func readDocument(_ statement: OpaquePointer?) -> GatewayMemoryDocument {
+        GatewayMemoryDocument(
+            key: Self.readText(statement, at: 0),
+            sourcePath: Self.readOptionalText(statement, at: 1),
+            content: Self.readText(statement, at: 2),
+            updatedMs: sqlite3_column_int64(statement, 3))
     }
 
     private static func readText(_ statement: OpaquePointer?, at index: Int32) -> String {

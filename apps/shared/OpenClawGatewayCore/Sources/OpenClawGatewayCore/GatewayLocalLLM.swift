@@ -235,6 +235,17 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     public let kind: GatewayLocalLLMProviderKind
     public let model: String
 
+    private static let openAIRoleSystem = "system"
+    private static let openAIRoleUser = "user"
+    private static let openAIRoleAssistant = "assistant"
+    private static let openAIRoleTool = "tool"
+    private static let openAISupportedRoles: Set<String> = [
+        openAIRoleSystem,
+        openAIRoleUser,
+        openAIRoleAssistant,
+        openAIRoleTool,
+    ]
+
     private let config: GatewayLocalLLMConfig
     private let endpointURL: URL
     private let session: URLSession
@@ -262,18 +273,14 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !systemPrompt.isEmpty
         {
-            payloadMessages.append([
-                "role": "system",
-                "content": systemPrompt,
-            ])
+            self.appendOpenAIMessage(
+                role: Self.openAIRoleSystem,
+                text: systemPrompt,
+                into: &payloadMessages)
         }
-        payloadMessages.append(
-            contentsOf: request.messages.map {
-                [
-                    "role": $0.role,
-                    "content": $0.text,
-                ]
-            })
+        for message in request.messages {
+            self.appendOpenAIMessage(role: message.role, text: message.text, into: &payloadMessages)
+        }
 
         var body: [String: Any] = [
             "model": self.model,
@@ -341,27 +348,27 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !systemPrompt.isEmpty
         {
-            payloadMessages.append([
-                "role": "system",
-                "content": systemPrompt,
-            ])
+            self.appendOpenAIMessage(
+                role: Self.openAIRoleSystem,
+                text: systemPrompt,
+                into: &payloadMessages)
         }
 
         for message in request.messages {
             switch message.role {
             case .system:
-                payloadMessages.append([
-                    "role": "system",
-                    "content": message.text ?? "",
-                ])
+                self.appendOpenAIMessage(
+                    role: GatewayLocalLLMToolMessageRole.system.rawValue,
+                    text: message.text ?? "",
+                    into: &payloadMessages)
             case .user:
                 payloadMessages.append([
-                    "role": "user",
+                    "role": Self.openAIRoleUser,
                     "content": message.text ?? "",
                 ])
             case .assistant:
                 var item: [String: Any] = [
-                    "role": "assistant",
+                    "role": Self.openAIRoleAssistant,
                 ]
                 item["content"] = message.text ?? ""
                 if !message.toolCalls.isEmpty {
@@ -379,7 +386,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 payloadMessages.append(item)
             case .tool:
                 var item: [String: Any] = [
-                    "role": "tool",
+                    "role": Self.openAIRoleTool,
                     "content": message.text ?? "",
                 ]
                 if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
@@ -459,6 +466,40 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             provider: self.kind,
             usageInputTokens: input,
             usageOutputTokens: output)
+    }
+
+    private var shouldRemapSystemRole: Bool {
+        self.kind == .minimaxCompatible
+    }
+
+    private func appendOpenAIMessage(role rawRole: String, text: String, into payloadMessages: inout [[String: Any]]) {
+        let normalizedRole = self.normalizeOpenAIRole(rawRole)
+        let content = self.normalizeOpenAIContent(rawRole: rawRole, text: text)
+        payloadMessages.append([
+            "role": normalizedRole,
+            "content": content,
+        ])
+    }
+
+    private func normalizeOpenAIRole(_ rawRole: String) -> String {
+        let role = rawRole
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let resolvedRole: String = Self.openAISupportedRoles.contains(role) ? role : Self.openAIRoleUser
+        if self.shouldRemapSystemRole, resolvedRole == Self.openAIRoleSystem {
+            return Self.openAIRoleUser
+        }
+        return resolvedRole
+    }
+
+    private func normalizeOpenAIContent(rawRole: String, text: String) -> String {
+        let role = rawRole
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard self.shouldRemapSystemRole, role == Self.openAIRoleSystem else {
+            return text
+        }
+        return "System instruction:\n\(text)"
     }
 
     private static func defaultEndpointURL(for provider: GatewayLocalLLMProviderKind) -> URL {

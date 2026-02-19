@@ -1,25 +1,94 @@
 import Foundation
 
-public struct GatewayLocalMethodRouterConfig: Sendable, Equatable {
+public protocol GatewayLocalMethodRouterAdminBridge: Sendable {
+    func configGet(nowMs: Int64) async throws -> GatewayJSONValue
+    func configSet(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+    func runtimeRestart(nowMs: Int64) async throws -> GatewayJSONValue
+    func pairingList(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+    func pairingApprove(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+}
+
+public struct GatewayLocalMethodRouterConfig: Sendable {
     public let hostLabel: String
     public let upstreamConfigured: Bool
+    public let upstreamForwarder: (any GatewayUpstreamForwarding)?
     public let llmConfig: GatewayLocalLLMConfig
+    public let telegramConfig: GatewayLocalTelegramConfig
     public let memoryStorePath: URL
+    public let bootstrapConfig: GatewayBootstrapConfig
     public let enableLocalSafeTools: Bool
+    public let enableLocalFileTools: Bool
+    public let enableAutoProfileRewrite: Bool
+    public let adminBridge: (any GatewayLocalMethodRouterAdminBridge)?
 
     public init(
         hostLabel: String = "tvos-local",
         upstreamConfigured: Bool,
+        upstreamForwarder: (any GatewayUpstreamForwarding)? = nil,
         llmConfig: GatewayLocalLLMConfig,
+        telegramConfig: GatewayLocalTelegramConfig = .disabled,
         memoryStorePath: URL,
-        enableLocalSafeTools: Bool = true)
+        bootstrapConfig: GatewayBootstrapConfig = .default,
+        enableLocalSafeTools: Bool = true,
+        enableLocalFileTools: Bool = true,
+        enableAutoProfileRewrite: Bool = false,
+        adminBridge: (any GatewayLocalMethodRouterAdminBridge)? = nil)
     {
         self.hostLabel = hostLabel
         self.upstreamConfigured = upstreamConfigured
+        self.upstreamForwarder = upstreamForwarder
         self.llmConfig = llmConfig
+        self.telegramConfig = telegramConfig
         self.memoryStorePath = memoryStorePath
+        self.bootstrapConfig = bootstrapConfig
         self.enableLocalSafeTools = enableLocalSafeTools
+        self.enableLocalFileTools = enableLocalFileTools
+        self.enableAutoProfileRewrite = enableAutoProfileRewrite
+        self.adminBridge = adminBridge
     }
+}
+
+public struct GatewayBootstrapConfig: Sendable, Equatable {
+    public let enabled: Bool
+    public let workspacePath: String
+    public let fileNames: [String]
+    public let perFileMaxChars: Int
+    public let totalMaxChars: Int
+    public let includeMissingMarkers: Bool
+
+    public init(
+        enabled: Bool,
+        workspacePath: String,
+        fileNames: [String],
+        perFileMaxChars: Int,
+        totalMaxChars: Int,
+        includeMissingMarkers: Bool)
+    {
+        self.enabled = enabled
+        self.workspacePath = workspacePath
+        self.fileNames = fileNames
+        self.perFileMaxChars = perFileMaxChars
+        self.totalMaxChars = totalMaxChars
+        self.includeMissingMarkers = includeMissingMarkers
+    }
+
+    public static let `default` = GatewayBootstrapConfig(
+        enabled: false,
+        workspacePath: "",
+        fileNames: [
+            "AGENTS.md",
+            "SOUL.md",
+            "TOOLS.md",
+            "IDENTITY.md",
+            "USER.md",
+            "HEARTBEAT.md",
+            "BOOTSTRAP.md",
+            "MEMORY.md",
+            "memory.md",
+        ],
+        perFileMaxChars: 5_000,
+        totalMaxChars: 16_000,
+        includeMissingMarkers: false)
 }
 
 public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
@@ -28,6 +97,28 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let message: String
         let thinking: String?
         let idempotencyKey: String?
+        let historyLimit: Int?
+    }
+
+    private struct ParsedChatPrompt {
+        let message: String
+        let thinking: String?
+    }
+
+    private struct ChatToolExecutionAudit: Sendable {
+        let name: String
+        let ok: Bool
+        let details: String
+    }
+
+    private struct ChatExecutionResult: Sendable {
+        let response: GatewayLocalLLMResponse
+        let toolAudits: [ChatToolExecutionAudit]
+    }
+
+    private enum ParsedChatDirective: Sendable {
+        case reasoning(level: String)
+        case unknown(raw: String)
     }
 
     private struct ChatHistoryParams: Codable {
@@ -49,15 +140,187 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let id: GatewayJSONValue
     }
 
+    private struct MemoryAppendParams: Codable {
+        let path: String?
+        let text: String
+        let append: Bool?
+    }
+
+    private struct WorkspaceMemoryReference: Sendable {
+        let relativePath: String
+        let line: Int
+    }
+
+    private struct WorkspaceMemoryHit: Sendable {
+        let id: String
+        let file: String
+        let lineStart: Int
+        let lineEnd: Int
+        let text: String
+        let score: Double
+    }
+
     private struct NodeInvokeParams: Codable {
         let nodeId: String?
         let command: String
         let params: GatewayJSONValue?
     }
 
-    private struct NetworkFetchParams: Codable {
-        let url: String
-        let timeoutMs: Int?
+    private struct AgentsRunParams: Codable {
+        let runId: String?
+        let sessionKey: String?
+        let goal: String?
+        let prompt: String?
+        let maxSteps: Int?
+        let steps: [GatewayAgentRunStep]?
+    }
+
+    private struct AgentsStatusParams: Codable {
+        let runId: String?
+    }
+
+    private struct AgentsAbortParams: Codable {
+        let runId: String?
+    }
+
+    private struct CronListParams: Codable {
+        let includeDisabled: Bool?
+    }
+
+    private struct CronStatusParams: Codable {}
+
+    private struct CronAddParams: Codable {
+        let agentId: String?
+        let name: String
+        let description: String?
+        let enabled: Bool?
+        let deleteAfterRun: Bool?
+        let schedule: LocalCronSchedule
+        let sessionTarget: String?
+        let wakeMode: String?
+        let payload: LocalCronPayload
+        let delivery: LocalCronDelivery?
+    }
+
+    private struct CronUpdateParams: Codable {
+        let id: String?
+        let jobId: String?
+        let patch: LocalCronPatch
+    }
+
+    private struct CronRemoveParams: Codable {
+        let id: String?
+        let jobId: String?
+    }
+
+    private struct CronRunParams: Codable {
+        let id: String?
+        let jobId: String?
+        let mode: String?
+    }
+
+    private struct CronRunsParams: Codable {
+        let id: String?
+        let jobId: String?
+        let limit: Int?
+    }
+
+    private struct LocalCronStore: Codable {
+        let version: Int
+        var jobs: [LocalCronJob]
+    }
+
+    private struct LocalCronSchedule: Codable {
+        enum Kind: String, Codable {
+            case at
+            case every
+            case cron
+        }
+
+        let kind: Kind
+        let at: String?
+        let everyMs: Int64?
+        let anchorMs: Int64?
+        let expr: String?
+        let tz: String?
+    }
+
+    private struct LocalCronPayload: Codable {
+        enum Kind: String, Codable {
+            case systemEvent
+            case agentTurn
+        }
+
+        let kind: Kind
+        let text: String?
+        let message: String?
+        let model: String?
+        let thinking: String?
+        let timeoutSeconds: Int?
+    }
+
+    private struct LocalCronDelivery: Codable {
+        let mode: String?
+        let channel: String?
+        let to: String?
+        let bestEffort: Bool?
+    }
+
+    private struct LocalCronState: Codable {
+        var nextRunAtMs: Int64?
+        var runningAtMs: Int64?
+        var lastRunAtMs: Int64?
+        var lastStatus: String?
+        var lastError: String?
+        var lastDurationMs: Int64?
+        var consecutiveErrors: Int?
+        var scheduleErrorCount: Int?
+    }
+
+    private struct LocalCronJob: Codable {
+        let id: String
+        var agentId: String?
+        var name: String
+        var description: String?
+        var enabled: Bool
+        var deleteAfterRun: Bool?
+        let createdAtMs: Int64
+        var updatedAtMs: Int64
+        var schedule: LocalCronSchedule
+        var sessionTarget: String
+        var wakeMode: String
+        var payload: LocalCronPayload
+        var delivery: LocalCronDelivery?
+        var state: LocalCronState
+    }
+
+    private struct LocalCronPatch: Codable {
+        let agentId: String?
+        let name: String?
+        let description: String?
+        let enabled: Bool?
+        let deleteAfterRun: Bool?
+        let schedule: LocalCronSchedule?
+        let sessionTarget: String?
+        let wakeMode: String?
+        let payload: LocalCronPayload?
+        let delivery: LocalCronDelivery?
+        let state: LocalCronState?
+    }
+
+    private struct LocalCronRunLogEntry: Codable {
+        let ts: Int64
+        let status: String
+        let mode: String
+        let durationMs: Int64?
+        let error: String?
+        let sessionKey: String?
+        let runId: String?
+    }
+
+    private enum LocalCronExecutionResult {
+        case success(GatewayJSONValue?)
+        case failure(String)
     }
 
     private struct MethodCapability: Codable {
@@ -68,6 +331,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
 
     private struct ToolPolicy: Codable {
         let localSafeCommands: [String]
+        let localFileCommands: [String]
         let upstreamOnlyPrefixRules: [String]
     }
 
@@ -82,17 +346,37 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let toolPolicy: ToolPolicy
     }
 
-    private static let safeLocalToolCommands = [
-        "time.now",
-        "device.info",
-        "network.fetch",
-    ]
+    private struct BootstrapProfileFields: Sendable {
+        var assistantName: String?
+        var assistantCreature: String?
+        var assistantVibe: String?
+        var assistantEmoji: String?
+        var userName: String?
+        var userCallName: String?
+        var userTimezone: String?
+
+        var isEmpty: Bool {
+            self.assistantName == nil
+                && self.assistantCreature == nil
+                && self.assistantVibe == nil
+                && self.assistantEmoji == nil
+                && self.userName == nil
+                && self.userCallName == nil
+                && self.userTimezone == nil
+        }
+    }
 
     private let config: GatewayLocalMethodRouterConfig
     private let sessionStore: GatewaySessionStore
     private let memoryStore: GatewaySQLiteMemoryStore
     private let llmProvider: (any GatewayLocalLLMProvider)?
     private let urlSession: URLSession
+    private let agentRuntime: GatewayAgentRuntime
+    private var cronJobsByID: [String: LocalCronJob]
+    private let cronStorePath: URL
+    private let cronRunsDirectoryPath: URL
+    private var cronTickTask: Task<Void, Never>?
+    private var cronRunTaskByJobID: [String: Task<GatewayResponseFrame?, Never>] = [:]
 
     public init(
         config: GatewayLocalMethodRouterConfig,
@@ -105,6 +389,28 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         self.memoryStore = try GatewaySQLiteMemoryStore(path: config.memoryStorePath)
         self.llmProvider = llmProvider ?? GatewayLocalLLMProviderFactory.make(config: config.llmConfig)
         self.urlSession = session
+        self.agentRuntime = GatewayAgentRuntime(
+            sessionStore: sessionStore,
+            memoryStore: self.memoryStore,
+            llmProvider: self.llmProvider,
+            hostLabel: config.hostLabel,
+            enableLocalSafeTools: config.enableLocalSafeTools,
+            enableLocalFileTools: config.enableLocalFileTools,
+            telegramConfig: config.telegramConfig,
+            workspaceRoot: Self.resolveWorkspaceRootURL(config.bootstrapConfig),
+            session: session)
+
+        self.cronStorePath = Self.defaultCronStorePath(memoryStorePath: config.memoryStorePath)
+        self.cronRunsDirectoryPath = self.cronStorePath.deletingLastPathComponent().appendingPathComponent("runs", isDirectory: true)
+        self.cronJobsByID = Self.loadCronJobs(storePath: self.cronStorePath)
+        Task { [weak self] in
+            await self?.startCronSchedulerIfNeeded()
+        }
+    }
+
+    deinit {
+        self.cronTickTask?.cancel()
+        self.cronRunTaskByJobID.values.forEach { $0.cancel() }
     }
 
     public func handle(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame? {
@@ -119,14 +425,62 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleMemorySearch(request)
         case "memory.get":
             return await self.handleMemoryGet(request)
+        case "memory.append", "memory.write":
+            return await self.handleMemoryAppend(request, nowMs: nowMs)
         case "node.invoke":
             return await self.handleNodeInvoke(request)
+        case "agents.run":
+            return await self.handleAgentsRun(request, nowMs: nowMs)
+        case "agents.status":
+            return await self.handleAgentsStatus(request)
+        case "agents.abort":
+            return await self.handleAgentsAbort(request, nowMs: nowMs)
+        case "cron.list":
+            return await self.handleCronList(request)
+        case "cron.status":
+            return await self.handleCronStatus(request, nowMs: nowMs)
+        case "cron.add":
+            return await self.handleCronAdd(request, nowMs: nowMs)
+        case "cron.update":
+            return await self.handleCronUpdate(request, nowMs: nowMs)
+        case "cron.remove":
+            return await self.handleCronRemove(request)
+        case "cron.run":
+            return await self.handleCronRun(request, nowMs: nowMs)
+        case "cron.runs":
+            return await self.handleCronRuns(request)
+        case "config.get":
+            return await self.handleConfigGet(request, nowMs: nowMs)
+        case "config.set":
+            return await self.handleConfigSet(request, nowMs: nowMs)
+        case "runtime.restart":
+            return await self.handleRuntimeRestart(request, nowMs: nowMs)
+        case "pairing.list":
+            return await self.handlePairingList(request, nowMs: nowMs)
+        case "pairing.approve":
+            return await self.handlePairingApprove(request, nowMs: nowMs)
         case "tools.time.now", "time.now":
             return await self.handleDirectSafeTool(request, command: "time.now", params: request.params)
         case "tools.device.info", "device.info":
             return await self.handleDirectSafeTool(request, command: "device.info", params: request.params)
         case "tools.network.fetch", "network.fetch":
             return await self.handleDirectSafeTool(request, command: "network.fetch", params: request.params)
+        case "tools.web.fetch", "web.fetch":
+            return await self.handleDirectSafeTool(request, command: "web.fetch", params: request.params)
+        case "tools.web.render", "web.render":
+            return await self.handleDirectSafeTool(request, command: "web.render", params: request.params)
+        case "tools.web.extract", "web.extract":
+            return await self.handleDirectSafeTool(request, command: "web.extract", params: request.params)
+        case "tools.telegram.send", "telegram.send":
+            return await self.handleDirectSafeTool(request, command: "telegram.send", params: request.params)
+        case "tools.read", "read":
+            return await self.handleDirectSafeTool(request, command: "read", params: request.params)
+        case "tools.write", "write":
+            return await self.handleDirectSafeTool(request, command: "write", params: request.params)
+        case "tools.edit", "edit":
+            return await self.handleDirectSafeTool(request, command: "edit", params: request.params)
+        case "tools.apply_patch", "apply_patch":
+            return await self.handleDirectSafeTool(request, command: "apply_patch", params: request.params)
         case "capabilities.get", "gateway.capabilities", "capability.map":
             return self.handleCapabilitiesGet(request, nowMs: nowMs)
         default:
@@ -149,8 +503,11 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
 
         let sessionKey = Self.normalizedSessionKey(params.sessionKey)
-        let message = params.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else {
+        let parsedPrompt = Self.parseChatPrompt(
+            params.message,
+            requestedThinking: params.thinking)
+        let message = parsedPrompt.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if message.isEmpty {
             return GatewayResponseFrame.failure(
                 id: request.id,
                 code: .invalidRequest,
@@ -167,7 +524,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 hint: "local LLM is not configured")
         }
 
+        let systemPrompt = self.composeBootstrapPrompt()
         let runID = Self.normalizedID(params.idempotencyKey, fallback: request.id)
+        let historyLimit = max(12, min(params.historyLimit ?? 64, 200))
+        let workspaceRoot = self.workspaceRootURL()
+        let bootstrapFields = self.config.enableAutoProfileRewrite
+            ? Self.extractBootstrapProfileFields(from: message)
+            : nil
 
         do {
             let queue = await self.sessionStore.queue(for: sessionKey)
@@ -180,30 +543,61 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     runID: runID)
                 await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: nowMs)
 
-                let history = try await self.memoryStore.history(sessionKey: sessionKey, limit: 24)
-                let llmMessages = history.map { turn in
-                    GatewayLocalLLMMessage(role: turn.role, text: turn.text)
+                if let bootstrapNote = Self.maybeApplyBootstrapProfileUpdate(
+                    fields: bootstrapFields,
+                    workspaceRoot: workspaceRoot)
+                {
+                    let bootstrapNoteTimestamp = GatewayCore.currentTimestampMs()
+                    _ = try await self.memoryStore.appendTurn(
+                        sessionKey: sessionKey,
+                        role: "system",
+                        text: bootstrapNote,
+                        timestampMs: bootstrapNoteTimestamp,
+                        runID: runID)
+                    await self.sessionStore.recordTurn(
+                        sessionKey: sessionKey,
+                        nowMs: bootstrapNoteTimestamp)
                 }
-                let llmResponse = try await provider.complete(
-                    GatewayLocalLLMRequest(messages: llmMessages, thinkingLevel: params.thinking))
+
+                let history = try await self.memoryStore.history(sessionKey: sessionKey, limit: historyLimit)
+                let llmMessages = history.map { turn in GatewayLocalLLMMessage(role: turn.role, text: turn.text) }
+                let chatResult: ChatExecutionResult
+                if let toolProvider = provider as? any GatewayLocalLLMToolCallableProvider {
+                    chatResult = try await self.runToolAwareChat(
+                        provider: toolProvider,
+                        llmMessages: llmMessages,
+                        thinkingLevel: parsedPrompt.thinking,
+                        systemPrompt: systemPrompt,
+                        sessionKey: sessionKey,
+                        runID: runID,
+                        userMessage: message,
+                        workspaceRoot: workspaceRoot)
+                } else {
+                    let llmResponse = try await provider.complete(
+                        GatewayLocalLLMRequest(
+                            messages: llmMessages,
+                            thinkingLevel: parsedPrompt.thinking,
+                            systemPrompt: systemPrompt))
+                    chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                }
 
                 _ = try await self.memoryStore.appendTurn(
                     sessionKey: sessionKey,
                     role: "assistant",
-                    text: llmResponse.text,
+                    text: chatResult.response.text,
                     timestampMs: GatewayCore.currentTimestampMs(),
                     runID: runID)
                 await self.sessionStore.recordTurn(
                     sessionKey: sessionKey,
                     nowMs: GatewayCore.currentTimestampMs())
-                return llmResponse
+                return chatResult
             }
 
             var usageObject: [String: GatewayJSONValue] = [:]
-            if let inputTokens = completion.usageInputTokens {
+            if let inputTokens = completion.response.usageInputTokens {
                 usageObject["input"] = .integer(Int64(inputTokens))
             }
-            if let outputTokens = completion.usageOutputTokens {
+            if let outputTokens = completion.response.usageOutputTokens {
                 usageObject["output"] = .integer(Int64(outputTokens))
             }
 
@@ -211,11 +605,21 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 "runId": .string(runID),
                 "status": .string("completed"),
                 "source": .string("local"),
-                "provider": .string(completion.provider.rawValue),
-                "model": .string(completion.model),
+                "provider": .string(completion.response.provider.rawValue),
+                "model": .string(completion.response.model),
             ]
             if !usageObject.isEmpty {
                 payloadObject["usage"] = .object(usageObject)
+            }
+            if !completion.toolAudits.isEmpty {
+                payloadObject["toolCalls"] = .integer(Int64(completion.toolAudits.count))
+                payloadObject["toolExecutions"] = .array(completion.toolAudits.map { audit in
+                    .object([
+                        "name": .string(audit.name),
+                        "ok": .bool(audit.ok),
+                        "details": .string(audit.details),
+                    ])
+                })
             }
             return GatewayResponseFrame.success(id: request.id, payload: .object(payloadObject))
         } catch let error as GatewayLocalLLMProviderError {
@@ -232,6 +636,496 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 code: .internalError,
                 message: "local chat failed: \(error.localizedDescription)")
         }
+    }
+
+    private func runToolAwareChat(
+        provider: any GatewayLocalLLMToolCallableProvider,
+        llmMessages: [GatewayLocalLLMMessage],
+        thinkingLevel: String?,
+        systemPrompt: String?,
+        sessionKey: String,
+        runID: String,
+        userMessage: String,
+        workspaceRoot: URL?) async throws -> ChatExecutionResult
+    {
+        let toolDefinitions = self.chatToolDefinitions(workspaceRoot: workspaceRoot)
+        if toolDefinitions.isEmpty {
+            let llmResponse = try await provider.complete(
+                GatewayLocalLLMRequest(
+                    messages: llmMessages,
+                    thinkingLevel: thinkingLevel,
+                    systemPrompt: systemPrompt))
+            return ChatExecutionResult(response: llmResponse, toolAudits: [])
+        }
+
+        var conversation = llmMessages.map { message in
+            Self.asToolConversationMessage(historyRole: message.role, text: message.text)
+        }
+        if let newsRoutingNudge = Self.newsWebRoutingNudge(for: userMessage, tools: toolDefinitions) {
+            conversation.append(
+                GatewayLocalLLMToolMessage(
+                    role: .system,
+                    text: newsRoutingNudge))
+        }
+        var toolAudits: [ChatToolExecutionAudit] = []
+        var deferredToolNudgesRemaining = 1
+
+        for _ in 0..<6 {
+            let completion = try await provider.completeWithTools(
+                GatewayLocalLLMToolRequest(
+                    messages: conversation,
+                    tools: toolDefinitions,
+                    thinkingLevel: thinkingLevel,
+                    systemPrompt: systemPrompt))
+
+            let assistantText = completion.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if completion.toolCalls.isEmpty {
+                guard !assistantText.isEmpty else {
+                    throw GatewayLocalLLMProviderError.invalidResponse(
+                        "tool loop ended without assistant text")
+                }
+                if deferredToolNudgesRemaining > 0,
+                   toolAudits.isEmpty,
+                   !toolDefinitions.isEmpty,
+                   Self.looksLikeDeferredToolPlan(assistantText)
+                {
+                    deferredToolNudgesRemaining -= 1
+                    conversation.append(
+                        GatewayLocalLLMToolMessage(
+                            role: .assistant,
+                            text: assistantText))
+                    _ = try await self.memoryStore.appendTurn(
+                        sessionKey: sessionKey,
+                        role: "assistant",
+                        text: "[tool-plan] \(assistantText)",
+                        timestampMs: GatewayCore.currentTimestampMs(),
+                        runID: runID)
+                    await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: GatewayCore.currentTimestampMs())
+                    conversation.append(
+                        GatewayLocalLLMToolMessage(
+                            role: .system,
+                            text: Self.deferredToolExecutionNudge))
+                    continue
+                }
+                let response = GatewayLocalLLMResponse(
+                    text: assistantText,
+                    model: completion.model,
+                    provider: completion.provider,
+                    usageInputTokens: completion.usageInputTokens,
+                    usageOutputTokens: completion.usageOutputTokens)
+                return ChatExecutionResult(response: response, toolAudits: toolAudits)
+            }
+
+            conversation.append(
+                GatewayLocalLLMToolMessage(
+                    role: .assistant,
+                    text: assistantText.isEmpty ? nil : assistantText,
+                    toolCalls: completion.toolCalls))
+
+            if !assistantText.isEmpty {
+                _ = try await self.memoryStore.appendTurn(
+                    sessionKey: sessionKey,
+                    role: "assistant",
+                    text: "[tool-plan] \(assistantText)",
+                    timestampMs: GatewayCore.currentTimestampMs(),
+                    runID: runID)
+                await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: GatewayCore.currentTimestampMs())
+            }
+
+            for toolCall in completion.toolCalls {
+                _ = try await self.memoryStore.appendTurn(
+                    sessionKey: sessionKey,
+                    role: "tool",
+                    text: "tool.call \(toolCall.name) args=\(Self.clampUTF16(toolCall.argumentsJSON, to: 2_000))",
+                    timestampMs: GatewayCore.currentTimestampMs(),
+                    runID: runID)
+                await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: GatewayCore.currentTimestampMs())
+
+                let toolParams = Self.decodeToolArguments(toolCall.argumentsJSON)
+                let result = await GatewayLocalTooling.execute(
+                    command: toolCall.name,
+                    params: toolParams,
+                    hostLabel: self.config.hostLabel,
+                    workspaceRoot: workspaceRoot,
+                    urlSession: self.urlSession,
+                    upstreamForwarder: self.config.upstreamForwarder,
+                    telegramConfig: self.config.telegramConfig,
+                    enableLocalSafeTools: self.config.enableLocalSafeTools,
+                    enableLocalFileTools: self.config.enableLocalFileTools)
+
+                let resultText: String
+                let ok: Bool
+                if let error = result.error {
+                    ok = false
+                    resultText = "error: \(error)"
+                } else {
+                    ok = true
+                    resultText = (try? result.payload.jsonString()) ?? "ok"
+                }
+                let normalizedResultText = Self.clampUTF16(resultText, to: 8_000)
+                toolAudits.append(
+                    ChatToolExecutionAudit(
+                        name: toolCall.name,
+                        ok: ok,
+                        details: normalizedResultText))
+
+                _ = try await self.memoryStore.appendTurn(
+                    sessionKey: sessionKey,
+                    role: "tool",
+                    text: "tool.result \(toolCall.name) \(normalizedResultText)",
+                    timestampMs: GatewayCore.currentTimestampMs(),
+                    runID: runID)
+                await self.sessionStore.recordTurn(sessionKey: sessionKey, nowMs: GatewayCore.currentTimestampMs())
+
+                conversation.append(
+                    GatewayLocalLLMToolMessage(
+                        role: .tool,
+                        text: normalizedResultText,
+                        toolCallID: toolCall.id,
+                        name: toolCall.name))
+            }
+        }
+
+        throw GatewayLocalLLMProviderError.invalidResponse("tool loop exceeded max iterations")
+    }
+
+    private static let deferredToolExecutionNudge =
+        "When tools are available and you state an action like fetching/checking/searching, issue tool calls in this same turn. Do not wait for user confirmation like 'proceed' for safe local tool actions."
+
+    private static let newsWebToolRoutingNudge =
+        "For news or website tasks, prefer web.render first (especially JS-heavy sites). If cleanup/normalization is needed, run web.extract before answering. Avoid raw snippet-only outputs from network.fetch/web.fetch unless no better source is available."
+
+    private static func newsWebRoutingNudge(
+        for userMessage: String,
+        tools: [GatewayLocalLLMToolDefinition]) -> String?
+    {
+        let lowered = userMessage.lowercased()
+        let hasURL = lowered.contains("http://") || lowered.contains("https://")
+        let newsSignals = [
+            "news",
+            "headline",
+            "headlines",
+            "article",
+            "articles",
+            "today",
+            "latest",
+            "breaking",
+            "what's happening",
+            "what is happening",
+        ]
+        let webSignals = [
+            "website",
+            "web site",
+            "webpage",
+            "web page",
+            "site",
+            "url",
+            "link",
+            "apple neural engine",
+        ]
+        let hasSignal = hasURL
+            || newsSignals.contains(where: { lowered.contains($0) })
+            || webSignals.contains(where: { lowered.contains($0) })
+        guard hasSignal else {
+            return nil
+        }
+
+        let availableTools = Set(tools.map(\.name))
+        guard availableTools.contains("web.render") else {
+            return nil
+        }
+        if availableTools.contains("web.extract") {
+            return Self.newsWebToolRoutingNudge
+        }
+        return "For news or website tasks, prefer web.render over raw fetch tools."
+    }
+
+    private static func looksLikeDeferredToolPlan(_ text: String) -> Bool {
+        let lowered = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowered.isEmpty else {
+            return false
+        }
+
+        let progressivePrefixes = [
+            "fetching ",
+            "checking ",
+            "gathering ",
+            "searching ",
+            "looking up ",
+            "running ",
+            "trying ",
+        ]
+        if progressivePrefixes.contains(where: { lowered.hasPrefix($0) }) {
+            return true
+        }
+
+        let intentPhrases = [
+            "let me ",
+            "i'll ",
+            "i will ",
+            "i'm going to ",
+        ]
+        let actionWords = [
+            "fetch",
+            "check",
+            "search",
+            "gather",
+            "look up",
+            "analy",
+            "scan",
+            "test",
+            "crawl",
+            "scrape",
+        ]
+        let hasIntent = intentPhrases.contains(where: { lowered.contains($0) })
+        let hasAction = actionWords.contains(where: { lowered.contains($0) })
+        if hasIntent && hasAction {
+            return true
+        }
+
+        return lowered.contains("now:") && hasAction
+    }
+
+    private func chatToolDefinitions(workspaceRoot: URL?) -> [GatewayLocalLLMToolDefinition] {
+        var tools: [GatewayLocalLLMToolDefinition] = []
+
+        if self.config.enableLocalSafeTools {
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "time.now",
+                    description: "Return current time metadata for this device",
+                    parameters: .object([:])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "device.info",
+                    description: "Return local device metadata",
+                    parameters: .object([:])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "network.fetch",
+                    description: "Perform HTTP GET for APIs/plain endpoints (not ideal for JS-rendered news pages)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "url": .object([
+                                "type": .string("string"),
+                                "description": .string("Absolute URL"),
+                            ]),
+                            "timeoutMs": .object([
+                                "type": .string("integer"),
+                            ]),
+                            "headers": .object([
+                                "type": .string("object"),
+                            ]),
+                        ]),
+                        "required": .array([.string("url")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "web.fetch",
+                    description: "Fetch plain web content (HTTP only, no JS rendering)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "url": .object([
+                                "type": .string("string"),
+                                "description": .string("Absolute URL"),
+                            ]),
+                            "timeoutMs": .object([
+                                "type": .string("integer"),
+                            ]),
+                            "headers": .object([
+                                "type": .string("object"),
+                            ]),
+                            "maxChars": .object([
+                                "type": .string("integer"),
+                            ]),
+                        ]),
+                        "required": .array([.string("url")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "web.extract",
+                    description: "Normalize page content into title/text/links/metadata (use after web.render/web.fetch when needed)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "url": .object([
+                                "type": .string("string"),
+                                "description": .string("URL to fetch before extraction"),
+                            ]),
+                            "html": .object([
+                                "type": .string("string"),
+                                "description": .string("Raw HTML content to normalize"),
+                            ]),
+                            "text": .object([
+                                "type": .string("string"),
+                                "description": .string("Plain text content to normalize"),
+                            ]),
+                            "maxChars": .object([
+                                "type": .string("integer"),
+                            ]),
+                            "includeLinks": .object([
+                                "type": .string("boolean"),
+                            ]),
+                        ]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "web.render",
+                    description: "Primary web tool for JS-heavy pages/news: render + extract text/links; upstream browser when configured",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "url": .object([
+                                "type": .string("string"),
+                                "description": .string("Absolute URL (recommended for live pages)"),
+                            ]),
+                            "html": .object([
+                                "type": .string("string"),
+                                "description": .string("Optional inline HTML source for local rendering"),
+                            ]),
+                            "text": .object([
+                                "type": .string("string"),
+                                "description": .string("Optional plain text source for local normalization"),
+                            ]),
+                            "timeoutMs": .object([
+                                "type": .string("integer"),
+                            ]),
+                            "waitUntil": .object([
+                                "type": .string("string"),
+                            ]),
+                            "maxChars": .object([
+                                "type": .string("integer"),
+                            ]),
+                            "includeLinks": .object([
+                                "type": .string("boolean"),
+                            ]),
+                        ]),
+                    ])))
+            if self.config.telegramConfig.isConfigured {
+                tools.append(
+                    GatewayLocalLLMToolDefinition(
+                        name: "telegram.send",
+                        description: "Send Telegram message (external action). Use only when user/task explicitly requests alerts/notifications.",
+                        parameters: .object([
+                            "type": .string("object"),
+                            "properties": .object([
+                                "chatId": .object([
+                                    "type": .string("string"),
+                                    "description": .string("Optional chat ID. Uses configured default when omitted."),
+                                ]),
+                                "to": .object([
+                                    "type": .string("string"),
+                                    "description": .string("Alias for chatId."),
+                                ]),
+                                "text": .object([
+                                    "type": .string("string"),
+                                    "description": .string("Message text to send."),
+                                ]),
+                                "parseMode": .object([
+                                    "type": .string("string"),
+                                    "description": .string("Optional parse mode (HTML/MarkdownV2/Markdown)."),
+                                ]),
+                                "disableWebPagePreview": .object([
+                                    "type": .string("boolean"),
+                                ]),
+                                "disableNotification": .object([
+                                    "type": .string("boolean"),
+                                ]),
+                            ]),
+                            "required": .array([.string("text")]),
+                        ])))
+            }
+        }
+
+        if self.config.enableLocalFileTools, workspaceRoot != nil {
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "read",
+                    description: "Read a UTF-8 text file from workspace",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object([
+                                "type": .string("string"),
+                                "description": .string("Workspace-relative path"),
+                            ]),
+                            "maxChars": .object([
+                                "type": .string("integer"),
+                            ]),
+                        ]),
+                        "required": .array([.string("path")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "write",
+                    description: "Write full UTF-8 file content in workspace",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object([
+                                "type": .string("string"),
+                            ]),
+                            "content": .object([
+                                "type": .string("string"),
+                            ]),
+                        ]),
+                        "required": .array([.string("path"), .string("content")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "edit",
+                    description: "Replace oldText with newText in a workspace file",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object(["type": .string("string")]),
+                            "oldText": .object(["type": .string("string")]),
+                            "newText": .object(["type": .string("string")]),
+                            "replaceAll": .object(["type": .string("boolean")]),
+                        ]),
+                        "required": .array([.string("path"), .string("oldText"), .string("newText")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "apply_patch",
+                    description: "Apply unified patch format with Begin/End Patch markers",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "input": .object(["type": .string("string")]),
+                        ]),
+                        "required": .array([.string("input")]),
+                    ])))
+        }
+
+        return tools
+    }
+
+    private static func asToolConversationMessage(historyRole rawRole: String, text: String) -> GatewayLocalLLMToolMessage {
+        let role = rawRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch role {
+        case "assistant":
+            return GatewayLocalLLMToolMessage(role: .assistant, text: text)
+        case "system":
+            return GatewayLocalLLMToolMessage(role: .system, text: text)
+        case "tool":
+            return GatewayLocalLLMToolMessage(role: .user, text: "Tool audit: \(text)")
+        default:
+            return GatewayLocalLLMToolMessage(role: .user, text: text)
+        }
+    }
+
+    private static func decodeToolArguments(_ raw: String) -> GatewayJSONValue? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return .object([:])
+        }
+        guard let data = trimmed.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(GatewayJSONValue.self, from: data)
     }
 
     private func handleChatHistory(_ request: GatewayRequestFrame) async -> GatewayResponseFrame? {
@@ -309,17 +1203,18 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
 
         let limit = max(1, min(params.limit ?? 10, 100))
         do {
-            let hits = try await self.memoryStore.search(
+            let transcriptHits = try await self.memoryStore.search(
                 query: query,
                 sessionKey: params.sessionKey,
                 limit: limit)
-            let resultItems = hits.map { hit -> GatewayJSONValue in
+            var resultItems = transcriptHits.map { hit -> GatewayJSONValue in
                 var object: [String: GatewayJSONValue] = [
                     "id": .string("turn:\(hit.turn.id)"),
                     "sessionKey": .string(hit.turn.sessionKey),
                     "role": .string(hit.turn.role),
                     "text": .string(hit.turn.text),
                     "timestampMs": .integer(hit.turn.timestampMs),
+                    "source": .string("transcript"),
                 ]
                 if let score = hit.score {
                     object["score"] = .double(score)
@@ -328,6 +1223,26 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 }
                 return .object(object)
             }
+
+            let remaining = max(0, limit - resultItems.count)
+            if remaining > 0 {
+                let workspaceHits = self.searchWorkspaceMemory(query: query, limit: remaining)
+                resultItems.append(contentsOf: workspaceHits.map { hit in
+                    .object([
+                        "id": .string(hit.id),
+                        "sessionKey": .string("workspace-memory"),
+                        "role": .string("memory"),
+                        "text": .string(hit.text),
+                        "timestampMs": .integer(0),
+                        "score": .double(hit.score),
+                        "source": .string("workspace-memory"),
+                        "file": .string(hit.file),
+                        "lineStart": .integer(Int64(hit.lineStart)),
+                        "lineEnd": .integer(Int64(hit.lineEnd)),
+                    ])
+                })
+            }
+
             let payload: GatewayJSONValue = .object([
                 "query": .string(query),
                 "results": .array(resultItems),
@@ -349,11 +1264,35 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 message: "invalid memory.get params")
         }
 
+        if let rawID = params.id.stringValue,
+           let workspaceReference = Self.parseWorkspaceMemoryID(rawID)
+        {
+            guard let workspaceTurn = self.loadWorkspaceMemory(reference: workspaceReference) else {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: "workspace memory not found: \(rawID)")
+            }
+            let payload: GatewayJSONValue = .object([
+                "id": .string(rawID),
+                "sessionKey": .string("workspace-memory"),
+                "role": .string("memory"),
+                "text": .string(workspaceTurn.text),
+                "timestampMs": .integer(Int64(GatewayCore.currentTimestampMs())),
+                "runId": .null,
+                "source": .string("workspace-memory"),
+                "file": .string(workspaceTurn.file),
+                "lineStart": .integer(Int64(workspaceTurn.lineStart)),
+                "lineEnd": .integer(Int64(workspaceTurn.lineEnd)),
+            ])
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        }
+
         guard let turnID = Self.turnID(from: params.id) else {
             return GatewayResponseFrame.failure(
                 id: request.id,
                 code: .invalidRequest,
-                message: "invalid memory.get params: id must be turn:<id> or integer")
+                message: "invalid memory.get params: id must be turn:<id>, filemem:<id>, or integer")
         }
 
         do {
@@ -369,6 +1308,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 "role": .string(turn.role),
                 "text": .string(turn.text),
                 "timestampMs": .integer(turn.timestampMs),
+                "source": .string("transcript"),
             ]
             if let runID = turn.runID {
                 payloadObject["runId"] = .string(runID)
@@ -381,6 +1321,98 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 id: request.id,
                 code: .internalError,
                 message: "local memory.get failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleMemoryAppend(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame? {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: MemoryAppendParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid memory.append params")
+        }
+
+        let rawText = params.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawText.isEmpty else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid memory.append params: text required")
+        }
+
+        guard let workspaceRoot = self.workspaceRootURL() else {
+            if self.config.upstreamConfigured {
+                return nil
+            }
+            return Self.upstreamRequired(
+                id: request.id,
+                method: request.method,
+                hint: "workspace memory path unavailable")
+        }
+
+        let relativePath = Self.defaultMemoryWritePath(nowMs: nowMs)
+        let requestedPath = params.path?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetPath = (requestedPath?.isEmpty == false ? requestedPath! : relativePath)
+
+        guard Self.isAllowedMemoryWritePath(targetPath) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "memory.append path must be MEMORY.md, memory.md, or memory/*.md")
+        }
+
+        let targetURL = workspaceRoot.appendingPathComponent(targetPath)
+        let rootPath = workspaceRoot.standardizedFileURL.path
+        let filePath = targetURL.standardizedFileURL.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath == rootPath || filePath.hasPrefix(rootPrefix) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "memory.append path escapes workspace root")
+        }
+
+        do {
+            let fileManager = FileManager.default
+            let parent = targetURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+
+            let shouldAppend = params.append ?? true
+            let normalizedText = rawText.replacingOccurrences(of: "\r\n", with: "\n")
+            let finalText: String
+
+            if shouldAppend, let existing = try? String(contentsOf: targetURL, encoding: .utf8) {
+                var next = existing
+                if !next.isEmpty, !next.hasSuffix("\n") {
+                    next += "\n"
+                }
+                if !next.isEmpty {
+                    next += "\n"
+                }
+                next += normalizedText
+                finalText = Self.ensureTrailingNewline(next)
+            } else if shouldAppend {
+                finalText = Self.ensureTrailingNewline(normalizedText)
+            } else {
+                finalText = Self.ensureTrailingNewline(normalizedText)
+            }
+
+            try finalText.write(to: targetURL, atomically: true, encoding: .utf8)
+            let byteCount = (try? Data(contentsOf: targetURL).count) ?? finalText.utf8.count
+
+            return GatewayResponseFrame.success(
+                id: request.id,
+                payload: .object([
+                    "path": .string(targetPath),
+                    "writtenBytes": .integer(Int64(byteCount)),
+                    "append": .bool(shouldAppend),
+                    "source": .string("workspace-memory"),
+                ]))
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "local memory.append failed: \(error.localizedDescription)")
         }
     }
 
@@ -400,7 +1432,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 message: "invalid node.invoke params: command required")
         }
 
-        if Self.safeLocalToolCommands.contains(command) {
+        if GatewayLocalTooling.supports(command) {
             return await self.handleDirectSafeTool(
                 request,
                 command: command,
@@ -421,100 +1453,547 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         command: String,
         params: GatewayJSONValue?) async -> GatewayResponseFrame
     {
-        guard self.config.enableLocalSafeTools else {
-            if self.config.upstreamConfigured {
-                return GatewayResponseFrame.failure(
-                    id: request.id,
-                    code: .unsupportedOnHost,
-                    message: "local safe tools are disabled")
-            }
-            return Self.upstreamRequired(
-                id: request.id,
-                method: request.method,
-                hint: "local safe tools are disabled")
+        let result = await GatewayLocalTooling.execute(
+            command: command,
+            params: params,
+            hostLabel: self.config.hostLabel,
+            workspaceRoot: self.workspaceRootURL(),
+            urlSession: self.urlSession,
+            upstreamForwarder: self.config.upstreamForwarder,
+            telegramConfig: self.config.telegramConfig,
+            enableLocalSafeTools: self.config.enableLocalSafeTools,
+            enableLocalFileTools: self.config.enableLocalFileTools)
+        guard let error = result.error else {
+            return GatewayResponseFrame.success(id: request.id, payload: result.payload)
         }
 
-        switch command {
-        case "time.now":
-            let ts = GatewayCore.currentTimestampMs()
-            let payload: GatewayJSONValue = .object([
-                "ok": .bool(true),
-                "command": .string(command),
-                "ts": .integer(ts),
-                "iso8601": .string(
-                    ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(ts) / 1000.0))),
-                "timezone": .string(TimeZone.current.identifier),
-            ])
-            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        if self.config.upstreamConfigured {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: error)
+        }
+        return Self.upstreamRequired(
+            id: request.id,
+            method: request.method,
+            hint: error)
+    }
 
-        case "device.info":
-            let payload: GatewayJSONValue = .object([
-                "ok": .bool(true),
-                "command": .string(command),
-                "hostLabel": .string(self.config.hostLabel),
-                "operatingSystemVersion": .string(ProcessInfo.processInfo.operatingSystemVersionString),
-                "isLowPowerModeEnabled": .bool(ProcessInfo.processInfo.isLowPowerModeEnabled),
-                "activeProcessorCount": .integer(Int64(ProcessInfo.processInfo.activeProcessorCount)),
-                "physicalMemory": .integer(Int64(ProcessInfo.processInfo.physicalMemory)),
-            ])
-            return GatewayResponseFrame.success(id: request.id, payload: payload)
-
-        case "network.fetch":
-            guard let fetchParams = GatewayPayloadCodec.decode(params, as: NetworkFetchParams.self) else {
-                return GatewayResponseFrame.failure(
-                    id: request.id,
-                    code: .invalidRequest,
-                    message: "invalid network.fetch params")
-            }
-            guard let url = URL(string: fetchParams.url) else {
-                return GatewayResponseFrame.failure(
-                    id: request.id,
-                    code: .invalidRequest,
-                    message: "invalid network.fetch params: malformed url")
-            }
-            do {
-                var urlRequest = URLRequest(url: url)
-                urlRequest.httpMethod = "GET"
-                let timeoutSeconds = max(1.0, Double(fetchParams.timeoutMs ?? 5_000) / 1000.0)
-                urlRequest.timeoutInterval = min(timeoutSeconds, 30.0)
-                let (data, response) = try await self.urlSession.data(for: urlRequest)
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-                let text = String(data: data.prefix(16_384), encoding: .utf8)
-                var payloadObject: [String: GatewayJSONValue] = [
-                    "ok": .bool(true),
-                    "command": .string(command),
-                    "url": .string(url.absoluteString),
-                    "statusCode": .integer(Int64(statusCode)),
-                    "bytes": .integer(Int64(data.count)),
-                ]
-                if let text, !text.isEmpty {
-                    payloadObject["text"] = .string(text)
-                } else {
-                    payloadObject["text"] = .null
-                }
-                return GatewayResponseFrame.success(id: request.id, payload: .object(payloadObject))
-            } catch {
-                return GatewayResponseFrame.failure(
-                    id: request.id,
-                    code: .internalError,
-                    message: "network.fetch failed: \(error.localizedDescription)")
-            }
-
-        default:
+    private func handleConfigGet(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
             if self.config.upstreamConfigured {
                 return GatewayResponseFrame.failure(
                     id: request.id,
                     code: .unsupportedOnHost,
-                    message: "unknown local safe command: \(command)")
+                    message: "config.get is handled by upstream in this host mode")
             }
-            return Self.upstreamRequired(
+            return GatewayResponseFrame.failure(
                 id: request.id,
-                method: request.method,
-                hint: "unknown local safe command: \(command)")
+                code: .unsupportedOnHost,
+                message: "config.get is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.configGet(nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "config.get failed: \(error.localizedDescription)")
         }
     }
 
+    private func handleConfigSet(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            if self.config.upstreamConfigured {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .unsupportedOnHost,
+                    message: "config.set is handled by upstream in this host mode")
+            }
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "config.set is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.configSet(
+                params: request.params ?? .object([:]),
+                nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "config.set failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleRuntimeRestart(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            if self.config.upstreamConfigured {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .unsupportedOnHost,
+                    message: "runtime.restart is handled by upstream in this host mode")
+            }
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "runtime.restart is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.runtimeRestart(nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "runtime.restart failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handlePairingList(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            if self.config.upstreamConfigured {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .unsupportedOnHost,
+                    message: "pairing.list is handled by upstream in this host mode")
+            }
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "pairing.list is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.pairingList(
+                params: request.params ?? .object([:]),
+                nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "pairing.list failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handlePairingApprove(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            if self.config.upstreamConfigured {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .unsupportedOnHost,
+                    message: "pairing.approve is handled by upstream in this host mode")
+            }
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "pairing.approve is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.pairingApprove(
+                params: request.params ?? .object([:]),
+                nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "pairing.approve failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleAgentsRun(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: AgentsRunParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid agents.run params")
+        }
+
+        let goal = Self.trimmedFirstNonEmpty(params.goal, params.prompt)
+        if goal.isEmpty {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid agents.run params: goal required")
+        }
+
+        let snapshot = await self.agentRuntime.startRun(
+            runID: Self.normalizedID(params.runId, fallback: UUID().uuidString),
+            sessionKey: params.sessionKey,
+            goal: goal,
+            maxSteps: params.maxSteps,
+            steps: params.steps,
+            nowMs: nowMs)
+
+        if let payload = GatewayPayloadCodec.encode(snapshot) {
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        }
+        return GatewayResponseFrame.failure(
+            id: request.id,
+            code: .internalError,
+            message: "agents.run snapshot encoding failed")
+    }
+
+    private func handleAgentsStatus(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: AgentsStatusParams.self),
+              let runId = Self.normalizedIDOrNil(params.runId, fallback: nil)
+        else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid agents.status params")
+        }
+
+        guard let snapshot = await self.agentRuntime.runStatus(runId) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .methodNotFound,
+                message: "agent run not found: \(runId)")
+        }
+        guard let payload = GatewayPayloadCodec.encode(snapshot) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "agents.status snapshot encoding failed")
+        }
+        return GatewayResponseFrame.success(id: request.id, payload: payload)
+    }
+
+    private func handleAgentsAbort(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: AgentsAbortParams.self),
+              let runId = Self.normalizedIDOrNil(params.runId, fallback: nil)
+        else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid agents.abort params")
+        }
+        let changed = await self.agentRuntime.abortRun(runId, nowMs: nowMs)
+        if !changed {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .methodNotFound,
+                message: "agent run not found or already finished: \(runId)")
+        }
+        guard let snapshot = await self.agentRuntime.runStatus(runId),
+              let payload = GatewayPayloadCodec.encode(snapshot) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "agents.abort snapshot encoding failed")
+        }
+        return GatewayResponseFrame.success(id: request.id, payload: payload)
+    }
+
+    private func handleCronList(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        let params = GatewayPayloadCodec.decode(request.params, as: CronListParams.self)
+        let includeDisabled = params?.includeDisabled ?? false
+        let jobs = self.cronJobsByID.values
+            .filter { includeDisabled || $0.enabled }
+            .sorted { lhs, rhs in
+                if lhs.createdAtMs == rhs.createdAtMs {
+                    return lhs.id < rhs.id
+                }
+                return lhs.createdAtMs < rhs.createdAtMs
+            }
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: .object([
+                "jobs": GatewayPayloadCodec.encode(jobs) ?? .array([]),
+            ]))
+    }
+
+    private func handleCronStatus(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        _ = GatewayPayloadCodec.decode(request.params, as: CronStatusParams.self)
+        let jobs = self.cronJobsByID.values
+        let enabledJobs = jobs.filter(\.enabled)
+        let nextWake = enabledJobs
+            .compactMap(\.state.nextRunAtMs)
+            .filter { $0 > nowMs }
+            .min()
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: .object([
+                "enabled": .bool(true),
+                "totalJobs": .integer(Int64(jobs.count)),
+                "enabledJobs": .integer(Int64(enabledJobs.count)),
+                "nextWakeAtMs": nextWake.map { .integer($0) } ?? .null,
+            ]))
+    }
+
+    private func handleCronAdd(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: CronAddParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.add params")
+        }
+
+        let name = params.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.add params: name required")
+        }
+        if let validationError = Self.validateCronSchedule(params.schedule) {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: validationError)
+        }
+
+        let defaultSessionTarget: String = params.payload.kind == .systemEvent ? "main" : "isolated"
+        let sessionTarget = (params.sessionTarget?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            .flatMap { normalized in
+                normalized == "main" || normalized == "isolated" ? normalized : nil
+            } ?? defaultSessionTarget
+        let wakeMode = (params.wakeMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            .flatMap { normalized in
+                normalized == "now" || normalized == "next-heartbeat" ? normalized : nil
+            } ?? "now"
+
+        let jobID = UUID().uuidString.lowercased()
+        var job = LocalCronJob(
+            id: jobID,
+            agentId: Self.trimmedStringOrNil(params.agentId),
+            name: name,
+            description: Self.trimmedStringOrNil(params.description),
+            enabled: params.enabled ?? true,
+            deleteAfterRun: params.deleteAfterRun,
+            createdAtMs: nowMs,
+            updatedAtMs: nowMs,
+            schedule: params.schedule,
+            sessionTarget: sessionTarget,
+            wakeMode: wakeMode,
+            payload: params.payload,
+            delivery: params.delivery,
+            state: LocalCronState())
+        let nextRun = Self.nextRunTime(for: job, nowMs: nowMs)
+        job.state.nextRunAtMs = nextRun
+        self.cronJobsByID[jobID] = job
+        self.persistCronJobs()
+
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: GatewayPayloadCodec.encode(job))
+    }
+
+    private func handleCronUpdate(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: CronUpdateParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.update params")
+        }
+
+        let jobID = Self.normalizedIDOrNil(params.id, fallback: params.jobId)
+        guard let jobID, var job = self.cronJobsByID[jobID] else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .methodNotFound,
+                message: "cron job not found: \(params.id ?? params.jobId ?? "(missing)")")
+        }
+
+        let patch = params.patch
+        if let name = patch.name?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if name.isEmpty {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: "invalid cron.update params: name cannot be empty")
+            }
+            job.name = name
+        }
+        if let description = patch.description {
+            job.description = Self.trimmedStringOrNil(description)
+        }
+        if let enabled = patch.enabled {
+            job.enabled = enabled
+        }
+        if let deleteAfterRun = patch.deleteAfterRun {
+            job.deleteAfterRun = deleteAfterRun
+        }
+        if let schedule = patch.schedule {
+            if let validationError = Self.validateCronSchedule(schedule) {
+                return GatewayResponseFrame.failure(
+                    id: request.id,
+                    code: .invalidRequest,
+                    message: validationError)
+            }
+            job.schedule = schedule
+        }
+        if let sessionTarget = patch.sessionTarget?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           sessionTarget == "main" || sessionTarget == "isolated"
+        {
+            job.sessionTarget = sessionTarget
+        }
+        if let wakeMode = patch.wakeMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           wakeMode == "now" || wakeMode == "next-heartbeat"
+        {
+            job.wakeMode = wakeMode
+        }
+        if let payload = patch.payload {
+            job.payload = payload
+        }
+        if let delivery = patch.delivery {
+            job.delivery = delivery
+        }
+        if let statePatch = patch.state {
+            job.state = statePatch
+        }
+        if let agentId = patch.agentId {
+            job.agentId = Self.trimmedStringOrNil(agentId)
+        }
+
+        job.updatedAtMs = nowMs
+        if !job.enabled {
+            job.state.nextRunAtMs = nil
+            if let runningTask = self.cronRunTaskByJobID[jobID] {
+                runningTask.cancel()
+                self.cronRunTaskByJobID[jobID] = nil
+                job.state.runningAtMs = nil
+            }
+        } else if job.state.runningAtMs == nil {
+            job.state.nextRunAtMs = Self.nextRunTime(for: job, nowMs: nowMs)
+        }
+
+        self.cronJobsByID[jobID] = job
+        self.persistCronJobs()
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: GatewayPayloadCodec.encode(job))
+    }
+
+    private func handleCronRemove(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: CronRemoveParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.remove params")
+        }
+        guard let jobID = Self.normalizedIDOrNil(params.id, fallback: params.jobId) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.remove params: missing id")
+        }
+
+        if let task = self.cronRunTaskByJobID[jobID] {
+            task.cancel()
+            self.cronRunTaskByJobID[jobID] = nil
+        }
+        let removed = self.cronJobsByID.removeValue(forKey: jobID) != nil
+        self.persistCronJobs()
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: .object([
+                "ok": .bool(true),
+                "removed": .bool(removed),
+            ]))
+    }
+
+    private func handleCronRun(_ request: GatewayRequestFrame, nowMs: Int64) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: CronRunParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.run params")
+        }
+        guard let jobID = Self.normalizedIDOrNil(params.id, fallback: params.jobId) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.run params: missing id")
+        }
+        guard self.cronJobsByID[jobID] != nil else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .methodNotFound,
+                message: "cron job not found: \(jobID)")
+        }
+
+        let mode = (params.mode?.lowercased() == "due") ? "due" : "force"
+        let result = await self.executeCronJob(jobID: jobID, mode: mode, nowMs: nowMs)
+        switch result {
+        case let .success(payload):
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        case let .failure(message):
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: message)
+        }
+    }
+
+    private func handleCronRuns(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: CronRunsParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.runs params")
+        }
+        guard let jobID = Self.normalizedIDOrNil(params.id, fallback: params.jobId) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid cron.runs params: missing id")
+        }
+
+        let limit = max(1, min(params.limit ?? 50, 500))
+        let entries = self.readCronRunLogEntries(jobID: jobID, limit: limit)
+        return GatewayResponseFrame.success(
+            id: request.id,
+            payload: .object([
+                "id": .string(jobID),
+                "entries": GatewayPayloadCodec.encode(entries) ?? .array([]),
+            ]))
+    }
+
     private func handleCapabilitiesGet(_ request: GatewayRequestFrame, nowMs: Int64) -> GatewayResponseFrame {
+        let adminConfigRoute = self.config.adminBridge == nil
+            ? (self.config.upstreamConfigured ? "upstream" : "unsupported")
+            : "local"
+        let adminConfigDetails = self.config.adminBridge == nil
+            ? (self.config.upstreamConfigured
+                ? "Handled by upstream control plane"
+                : "No local admin bridge configured")
+            : "Get runtime control-plane settings"
+        let adminSetDetails = self.config.adminBridge == nil
+            ? (self.config.upstreamConfigured
+                ? "Handled by upstream control plane"
+                : "No local admin bridge configured")
+            : "Apply runtime control-plane settings"
+        let adminRestartDetails = self.config.adminBridge == nil
+            ? (self.config.upstreamConfigured
+                ? "Handled by upstream control plane"
+                : "No local admin bridge configured")
+            : "Restart local runtime listeners and apply config"
+
         let payload = CapabilityMapPayload(
             host: self.config.hostLabel,
             ts: nowMs,
@@ -550,12 +2029,94 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     route: "local",
                     details: "Served locally from SQLite transcript store"),
                 MethodCapability(
+                    method: "memory.append",
+                    route: "local",
+                    details: "Write-only local memory sink for MEMORY.md and memory/*.md"),
+                MethodCapability(
                     method: "node.invoke",
                     route: "policy",
-                    details: "Safe commands local; unsafe commands upstream-only"),
+                    details: "Safe and workspace file commands local; unsafe commands upstream-only"),
+                MethodCapability(
+                    method: "telegram.send",
+                    route: self.config.telegramConfig.isConfigured ? "local" : "disabled",
+                    details: self.config.telegramConfig.isConfigured
+                        ? "Send Telegram messages via local bot token"
+                        : "Requires local Telegram bot token configuration"),
+                MethodCapability(
+                    method: "agents.run",
+                    route: "local",
+                    details: "Run an agentic workflow with deterministic per-session queuing"),
+                MethodCapability(
+                    method: "agents.status",
+                    route: "local",
+                    details: "Query local agent run status."),
+                MethodCapability(
+                    method: "agents.abort",
+                    route: "local",
+                    details: "Abort a running local agent run."),
+                MethodCapability(
+                    method: "cron.list",
+                    route: "local",
+                    details: "List local scheduled jobs."),
+                MethodCapability(
+                    method: "cron.status",
+                    route: "local",
+                    details: "Summarize local scheduler status."),
+                MethodCapability(
+                    method: "cron.add",
+                    route: "local",
+                    details: "Create a local scheduled job."),
+                MethodCapability(
+                    method: "cron.update",
+                    route: "local",
+                    details: "Update an existing local scheduled job."),
+                MethodCapability(
+                    method: "cron.remove",
+                    route: "local",
+                    details: "Remove a local scheduled job."),
+                MethodCapability(
+                    method: "cron.run",
+                    route: "local",
+                    details: "Force-run a local scheduled job immediately."),
+                MethodCapability(
+                    method: "cron.runs",
+                    route: "local",
+                    details: "Read recent run log entries for a local scheduled job."),
+                MethodCapability(
+                    method: "config.get",
+                    route: adminConfigRoute,
+                    details: adminConfigDetails),
+                MethodCapability(
+                    method: "config.set",
+                    route: adminConfigRoute,
+                    details: adminSetDetails),
+                MethodCapability(
+                    method: "runtime.restart",
+                    route: adminConfigRoute,
+                    details: adminRestartDetails),
+                MethodCapability(
+                    method: "pairing.list",
+                    route: adminConfigRoute,
+                    details: self.config.adminBridge == nil
+                        ? (self.config.upstreamConfigured
+                            ? "Handled by upstream pairing store"
+                            : "No local pairing bridge configured")
+                        : "List local pending pairing requests"),
+                MethodCapability(
+                    method: "pairing.approve",
+                    route: adminConfigRoute,
+                    details: self.config.adminBridge == nil
+                        ? (self.config.upstreamConfigured
+                            ? "Handled by upstream pairing store"
+                            : "No local pairing bridge configured")
+                        : "Approve local pending pairing request by code"),
             ],
             toolPolicy: ToolPolicy(
-                localSafeCommands: Self.safeLocalToolCommands,
+                localSafeCommands: self.config.enableLocalSafeTools
+                    ? GatewayLocalTooling.availableSafeCommands(
+                        upstreamConfigured: self.config.upstreamForwarder != nil)
+                    : [],
+                localFileCommands: self.config.enableLocalFileTools ? GatewayLocalTooling.fileCommands : [],
                 upstreamOnlyPrefixRules: GatewayRoutingPolicy.upstreamOnlyMethodPrefixes))
 
         return GatewayResponseFrame.success(
@@ -577,6 +2138,615 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             message: "upstream required for \(method): \(hint)")
     }
 
+    private func startCronSchedulerIfNeeded() {
+        guard self.cronTickTask == nil else { return }
+        self.reconcileCronSchedule(nowMs: GatewayCore.currentTimestampMs())
+        self.cronTickTask = Task { [self] in
+            await self.runCronSchedulerLoop()
+        }
+    }
+
+    private func runCronSchedulerLoop() async {
+        while !Task.isCancelled {
+            let nowMs = GatewayCore.currentTimestampMs()
+            await self.processDueCronJobs(nowMs: nowMs)
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func processDueCronJobs(nowMs: Int64) async {
+        let dueJobIDs = self.cronJobsByID.values
+            .filter { job in
+                guard job.enabled, job.state.runningAtMs == nil else {
+                    return false
+                }
+                guard let nextRunAtMs = job.state.nextRunAtMs else {
+                    return false
+                }
+                return nextRunAtMs <= nowMs
+            }
+            .sorted { lhs, rhs in
+                let lhsNext = lhs.state.nextRunAtMs ?? Int64.max
+                let rhsNext = rhs.state.nextRunAtMs ?? Int64.max
+                if lhsNext == rhsNext {
+                    return lhs.id < rhs.id
+                }
+                return lhsNext < rhsNext
+            }
+            .map(\.id)
+
+        for jobID in dueJobIDs {
+            _ = await self.executeCronJob(jobID: jobID, mode: "due", nowMs: nowMs)
+        }
+    }
+
+    private func executeCronJob(jobID: String, mode: String, nowMs: Int64) async -> LocalCronExecutionResult {
+        guard var job = self.cronJobsByID[jobID] else {
+            return .failure("cron job not found: \(jobID)")
+        }
+        if job.state.runningAtMs != nil {
+            return .failure("cron job is already running: \(jobID)")
+        }
+        if mode == "due", !job.enabled {
+            return .failure("cron job is disabled: \(jobID)")
+        }
+
+        let promptText: String
+        switch job.payload.kind {
+        case .systemEvent:
+            let text = (job.payload.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                return .failure("cron payload text is required for systemEvent")
+            }
+            promptText = text
+        case .agentTurn:
+            let message = (job.payload.message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else {
+                return .failure("cron payload message is required for agentTurn")
+            }
+            promptText = message
+        }
+
+        let sessionKey = job.sessionTarget == "main" ? "main" : "cron:\(job.id)"
+        let thinkingLevel = Self.trimmedStringOrNil(job.payload.thinking)
+        let runRequest = GatewayRequestFrame(
+            id: "cron-run-\(UUID().uuidString.lowercased())",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string(sessionKey),
+                "message": .string("[cron:\(job.id) \(job.name)] \(promptText)"),
+                "thinking": thinkingLevel.map { .string($0) } ?? .null,
+                "idempotencyKey": .string("cron-\(job.id)-\(UUID().uuidString.lowercased())"),
+            ]))
+
+        job.state.runningAtMs = nowMs
+        job.state.lastError = nil
+        job.updatedAtMs = nowMs
+        self.cronJobsByID[jobID] = job
+        self.persistCronJobs()
+
+        let runTask = Task { [self] in
+            await self.handleChatSend(runRequest, nowMs: GatewayCore.currentTimestampMs())
+        }
+        self.cronRunTaskByJobID[jobID] = runTask
+        let runStartedAtMs = nowMs
+        let response = await runTask.value
+        let finishedAtMs = GatewayCore.currentTimestampMs()
+        self.cronRunTaskByJobID[jobID] = nil
+
+        guard var updatedJob = self.cronJobsByID[jobID] else {
+            return .failure("cron job disappeared during run: \(jobID)")
+        }
+        updatedJob.state.runningAtMs = nil
+        updatedJob.state.lastRunAtMs = finishedAtMs
+        updatedJob.state.lastDurationMs = max(0, finishedAtMs - runStartedAtMs)
+        updatedJob.updatedAtMs = finishedAtMs
+
+        let baseStatus: String
+        let baseErrorText: String?
+        let runID: String?
+        if let response, response.ok {
+            baseStatus = "ok"
+            baseErrorText = nil
+            runID = response.payload?.objectValue?["runId"]?.stringValue
+        } else {
+            baseStatus = "error"
+            baseErrorText = response?.error?.message ?? "cron run failed"
+            runID = nil
+        }
+
+        let deliveryErrorText = await self.deliverCronResultIfConfigured(
+            job: updatedJob,
+            sessionKey: sessionKey,
+            runID: runID,
+            runStatus: baseStatus,
+            runError: baseErrorText)
+        let bestEffortDelivery = updatedJob.delivery?.bestEffort == true
+
+        let status: String
+        let errorText: String?
+        if let deliveryErrorText, !bestEffortDelivery, baseStatus == "ok" {
+            status = "error"
+            errorText = "cron delivery failed: \(deliveryErrorText)"
+        } else {
+            status = baseStatus
+            errorText = baseErrorText
+        }
+
+        if status == "ok" {
+            updatedJob.state.consecutiveErrors = 0
+        } else {
+            let nextErrorCount = (updatedJob.state.consecutiveErrors ?? 0) + 1
+            updatedJob.state.consecutiveErrors = nextErrorCount
+        }
+        updatedJob.state.lastStatus = status
+        updatedJob.state.lastError = errorText
+
+        if updatedJob.deleteAfterRun == true,
+           updatedJob.schedule.kind == .at
+        {
+            self.cronJobsByID.removeValue(forKey: jobID)
+        } else {
+            if updatedJob.enabled {
+                updatedJob.state.nextRunAtMs = Self.nextRunTime(for: updatedJob, nowMs: finishedAtMs)
+            } else {
+                updatedJob.state.nextRunAtMs = nil
+            }
+            self.cronJobsByID[jobID] = updatedJob
+        }
+        self.persistCronJobs()
+
+        let logErrorText: String?
+        if let errorText {
+            logErrorText = errorText
+        } else if let deliveryErrorText {
+            logErrorText = bestEffortDelivery
+                ? "delivery warning (best-effort): \(deliveryErrorText)"
+                : "delivery error: \(deliveryErrorText)"
+        } else {
+            logErrorText = nil
+        }
+
+        self.appendCronRunLogEntry(
+            jobID: jobID,
+            entry: LocalCronRunLogEntry(
+                ts: finishedAtMs,
+                status: status,
+                mode: mode,
+                durationMs: max(0, finishedAtMs - runStartedAtMs),
+                error: logErrorText,
+                sessionKey: sessionKey,
+                runId: runID))
+
+        return .success(.object([
+            "ok": .bool(status == "ok"),
+            "id": .string(jobID),
+            "status": .string(status),
+            "mode": .string(mode),
+            "durationMs": .integer(max(0, finishedAtMs - runStartedAtMs)),
+            "error": errorText.map { .string($0) } ?? .null,
+            "runId": runID.map { .string($0) } ?? .null,
+            "deliveryError": deliveryErrorText.map { .string($0) } ?? .null,
+        ]))
+    }
+
+    private func deliverCronResultIfConfigured(
+        job: LocalCronJob,
+        sessionKey: String,
+        runID: String?,
+        runStatus: String,
+        runError: String?) async -> String?
+    {
+        guard let delivery = job.delivery else {
+            return nil
+        }
+        let channel = (
+            Self.trimmedStringOrNil(delivery.channel)
+                ?? Self.trimmedStringOrNil(delivery.mode)
+                ?? ""
+        ).lowercased()
+        guard !channel.isEmpty else {
+            return nil
+        }
+        guard channel == "telegram" || channel == "tg" else {
+            return "unsupported cron delivery channel: \(channel)"
+        }
+
+        var messageLines: [String] = [
+            "[OpenClaw cron] \(job.name) | \(runStatus.uppercased())",
+            "job=\(job.id)",
+        ]
+        if let runID {
+            messageLines.append("runId=\(runID)")
+        }
+
+        if runStatus == "ok" {
+            if let output = await self.latestAssistantOutputForCronSession(sessionKey: sessionKey, runID: runID) {
+                messageLines.append(Self.clampUTF16(output, to: 3_200))
+            } else {
+                messageLines.append("(no assistant output captured)")
+            }
+        } else if let runError {
+            messageLines.append("error: \(runError)")
+        }
+
+        var toolParams: [String: GatewayJSONValue] = [
+            "text": .string(messageLines.joined(separator: "\n")),
+        ]
+        if let targetChat = Self.trimmedStringOrNil(delivery.to) {
+            toolParams["chatId"] = .string(targetChat)
+        }
+
+        let result = await GatewayLocalTooling.execute(
+            command: "telegram.send",
+            params: .object(toolParams),
+            hostLabel: self.config.hostLabel,
+            workspaceRoot: self.workspaceRootURL(),
+            urlSession: self.urlSession,
+            upstreamForwarder: self.config.upstreamForwarder,
+            telegramConfig: self.config.telegramConfig,
+            enableLocalSafeTools: self.config.enableLocalSafeTools,
+            enableLocalFileTools: self.config.enableLocalFileTools)
+        return result.error
+    }
+
+    private func latestAssistantOutputForCronSession(sessionKey: String, runID: String?) async -> String? {
+        guard let turns = try? await self.memoryStore.history(sessionKey: sessionKey, limit: 48),
+              !turns.isEmpty
+        else {
+            return nil
+        }
+
+        if let runID {
+            for turn in turns.reversed() where turn.role == "assistant" && turn.runID == runID {
+                let text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return text
+                }
+            }
+        }
+
+        for turn in turns.reversed() where turn.role == "assistant" {
+            let text = turn.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func reconcileCronSchedule(nowMs: Int64) {
+        var changed = false
+        var nextJobs: [String: LocalCronJob] = self.cronJobsByID
+        for (jobID, var job) in nextJobs {
+            if job.state.runningAtMs != nil {
+                job.state.runningAtMs = nil
+                changed = true
+            }
+            let nextRunAtMs = job.enabled ? Self.nextRunTime(for: job, nowMs: nowMs) : nil
+            if job.state.nextRunAtMs != nextRunAtMs {
+                job.state.nextRunAtMs = nextRunAtMs
+                changed = true
+            }
+            nextJobs[jobID] = job
+        }
+        if changed {
+            self.cronJobsByID = nextJobs
+            self.persistCronJobs()
+        }
+    }
+
+    private static func defaultCronStorePath(memoryStorePath: URL) -> URL {
+        memoryStorePath
+            .deletingLastPathComponent()
+            .appendingPathComponent("cron", isDirectory: true)
+            .appendingPathComponent("jobs.json", isDirectory: false)
+    }
+
+    private static func loadCronJobs(storePath: URL) -> [String: LocalCronJob] {
+        guard let data = try? Data(contentsOf: storePath) else {
+            return [:]
+        }
+        guard let store = try? JSONDecoder().decode(LocalCronStore.self, from: data),
+              store.version == 1
+        else {
+            return [:]
+        }
+        var jobMap: [String: LocalCronJob] = [:]
+        for job in store.jobs {
+            jobMap[job.id] = job
+        }
+        return jobMap
+    }
+
+    private func persistCronJobs() {
+        let storeDirectory = self.cronStorePath.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
+            let jobs = self.cronJobsByID.values.sorted { lhs, rhs in
+                if lhs.createdAtMs == rhs.createdAtMs {
+                    return lhs.id < rhs.id
+                }
+                return lhs.createdAtMs < rhs.createdAtMs
+            }
+            let store = LocalCronStore(version: 1, jobs: jobs)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(store)
+            try data.write(to: self.cronStorePath, options: .atomic)
+        } catch {
+            // Best-effort persistence; scheduler continues in-memory.
+        }
+    }
+
+    private func appendCronRunLogEntry(jobID: String, entry: LocalCronRunLogEntry) {
+        let logPath = self.cronRunsDirectoryPath.appendingPathComponent("\(jobID).jsonl", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(
+                at: self.cronRunsDirectoryPath,
+                withIntermediateDirectories: true)
+            let lineData = try JSONEncoder().encode(entry)
+            if FileManager.default.fileExists(atPath: logPath.path) {
+                let handle = try FileHandle(forWritingTo: logPath)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: lineData)
+                try handle.write(contentsOf: Data("\n".utf8))
+            } else {
+                var payload = Data()
+                payload.append(lineData)
+                payload.append(Data("\n".utf8))
+                try payload.write(to: logPath, options: .atomic)
+            }
+        } catch {
+            // Best-effort log write.
+        }
+    }
+
+    private func readCronRunLogEntries(jobID: String, limit: Int) -> [LocalCronRunLogEntry] {
+        let logPath = self.cronRunsDirectoryPath.appendingPathComponent("\(jobID).jsonl", isDirectory: false)
+        guard let data = try? Data(contentsOf: logPath),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        var entries: [LocalCronRunLogEntry] = []
+        entries.reserveCapacity(min(limit, 128))
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let lineData = String(line).data(using: .utf8),
+                  let entry = try? decoder.decode(LocalCronRunLogEntry.self, from: lineData)
+            else {
+                continue
+            }
+            entries.append(entry)
+        }
+        if entries.count <= limit {
+            return entries
+        }
+        return Array(entries.suffix(limit))
+    }
+
+    private static func validateCronSchedule(_ schedule: LocalCronSchedule) -> String? {
+        switch schedule.kind {
+        case .at:
+            guard let atText = Self.trimmedStringOrNil(schedule.at),
+                  Self.parseISO8601Millis(atText) != nil
+            else {
+                return "invalid cron schedule: at timestamp required"
+            }
+            return nil
+        case .every:
+            guard let everyMs = schedule.everyMs, everyMs > 0 else {
+                return "invalid cron schedule: everyMs must be > 0"
+            }
+            return nil
+        case .cron:
+            guard let expression = Self.trimmedStringOrNil(schedule.expr),
+                  Self.parseCronExpression(expression) != nil
+            else {
+                return "invalid cron schedule: unsupported cron expression"
+            }
+            return nil
+        }
+    }
+
+    private static func nextRunTime(for job: LocalCronJob, nowMs: Int64) -> Int64? {
+        let schedule = job.schedule
+        switch schedule.kind {
+        case .at:
+            guard let atText = Self.trimmedStringOrNil(schedule.at),
+                  let atMs = Self.parseISO8601Millis(atText)
+            else {
+                return nil
+            }
+            return atMs > nowMs ? atMs : nil
+        case .every:
+            guard let everyMs = schedule.everyMs, everyMs > 0 else {
+                return nil
+            }
+            let anchor = schedule.anchorMs ?? job.createdAtMs
+            if nowMs < anchor {
+                return anchor
+            }
+            let elapsed = nowMs - anchor
+            let steps = elapsed / everyMs + 1
+            return anchor + steps * everyMs
+        case .cron:
+            guard let expression = Self.trimmedStringOrNil(schedule.expr) else {
+                return nil
+            }
+            return Self.nextCronRunTime(afterMs: nowMs, expression: expression, timeZoneID: schedule.tz)
+        }
+    }
+
+    private static func parseISO8601Millis(_ text: String) -> Int64? {
+        if let date = ISO8601DateFormatter().date(from: text) {
+            return Int64(date.timeIntervalSince1970 * 1_000)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+        if let date = formatter.date(from: text) {
+            return Int64(date.timeIntervalSince1970 * 1_000)
+        }
+        return nil
+    }
+
+    private static func nextCronRunTime(afterMs: Int64, expression: String, timeZoneID: String?) -> Int64? {
+        guard let parsed = Self.parseCronExpression(expression) else {
+            return nil
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: Self.trimmedStringOrNil(timeZoneID) ?? "")
+            ?? TimeZone.current
+
+        var candidate = Date(timeIntervalSince1970: Double(afterMs) / 1_000.0)
+        candidate = Date(timeIntervalSince1970: floor(candidate.timeIntervalSince1970 / 60.0) * 60.0 + 60.0)
+        for _ in 0..<527_040 {
+            let components = calendar.dateComponents([.minute, .hour, .day, .month, .weekday], from: candidate)
+            guard let minute = components.minute,
+                  let hour = components.hour,
+                  let day = components.day,
+                  let month = components.month,
+                  let weekdayRaw = components.weekday
+            else {
+                candidate.addTimeInterval(60)
+                continue
+            }
+            let weekday = (weekdayRaw + 6) % 7
+            if parsed.minute.contains(minute),
+               parsed.hour.contains(hour),
+               parsed.day.contains(day),
+               parsed.month.contains(month),
+               parsed.weekday.contains(weekday)
+            {
+                return Int64(candidate.timeIntervalSince1970 * 1_000)
+            }
+            candidate.addTimeInterval(60)
+        }
+        return nil
+    }
+
+    private static func parseCronExpression(_ expression: String) -> (
+        minute: Set<Int>,
+        hour: Set<Int>,
+        day: Set<Int>,
+        month: Set<Int>,
+        weekday: Set<Int>
+    )? {
+        let parts = expression
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .map(String.init)
+        guard parts.count == 5 else {
+            return nil
+        }
+        guard let minute = Self.parseCronField(parts[0], range: 0...59, mapWeekday: false),
+              let hour = Self.parseCronField(parts[1], range: 0...23, mapWeekday: false),
+              let day = Self.parseCronField(parts[2], range: 1...31, mapWeekday: false),
+              let month = Self.parseCronField(parts[3], range: 1...12, mapWeekday: false),
+              let weekday = Self.parseCronField(parts[4], range: 0...7, mapWeekday: true)
+        else {
+            return nil
+        }
+        return (minute: minute, hour: hour, day: day, month: month, weekday: weekday)
+    }
+
+    private static func parseCronField(
+        _ raw: String,
+        range: ClosedRange<Int>,
+        mapWeekday: Bool
+    ) -> Set<Int>? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text == "*" || text == "?" {
+            return Set(range)
+        }
+        var values = Set<Int>()
+        for token in text.split(separator: ",") {
+            let part = token.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !part.isEmpty,
+                  let partValues = Self.parseCronFieldPart(
+                      part,
+                      range: range,
+                      mapWeekday: mapWeekday)
+            else {
+                return nil
+            }
+            values.formUnion(partValues)
+        }
+        return values.isEmpty ? nil : values
+    }
+
+    private static func parseCronFieldPart(
+        _ part: String,
+        range: ClosedRange<Int>,
+        mapWeekday: Bool
+    ) -> Set<Int>? {
+        if let slashIndex = part.firstIndex(of: "/") {
+            let baseText = String(part[..<slashIndex])
+            let stepText = String(part[part.index(after: slashIndex)...])
+            guard let step = Int(stepText), step > 0 else {
+                return nil
+            }
+            let baseRange: ClosedRange<Int>
+            if baseText.isEmpty || baseText == "*" {
+                baseRange = range
+            } else if let dashIndex = baseText.firstIndex(of: "-") {
+                guard let lower = Int(baseText[..<dashIndex]),
+                      let upper = Int(baseText[baseText.index(after: dashIndex)...]),
+                      lower <= upper
+                else {
+                    return nil
+                }
+                baseRange = lower...upper
+            } else if let single = Int(baseText) {
+                baseRange = single...range.upperBound
+            } else {
+                return nil
+            }
+
+            var values = Set<Int>()
+            var current = baseRange.lowerBound
+            while current <= baseRange.upperBound {
+                if range.contains(current) {
+                    values.insert(mapWeekday && current == 7 ? 0 : current)
+                }
+                current += step
+            }
+            return values.isEmpty ? nil : values
+        }
+
+        if let dashIndex = part.firstIndex(of: "-") {
+            guard let lower = Int(part[..<dashIndex]),
+                  let upper = Int(part[part.index(after: dashIndex)...]),
+                  lower <= upper
+            else {
+                return nil
+            }
+            var values = Set<Int>()
+            for value in lower...upper where range.contains(value) {
+                values.insert(mapWeekday && value == 7 ? 0 : value)
+            }
+            return values.isEmpty ? nil : values
+        }
+
+        guard let value = Int(part), range.contains(value) else {
+            return nil
+        }
+        return [mapWeekday && value == 7 ? 0 : value]
+    }
+
+    private static func trimmedStringOrNil(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func normalizedSessionKey(_ raw: String?) -> String {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "main" : trimmed
@@ -585,6 +2755,55 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     private static func normalizedID(_ raw: String?, fallback: String) -> String {
         let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private static func normalizedIDOrNil(_ raw: String?, fallback: String?) -> String? {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private static func trimmedFirstNonEmpty(_ first: String?, _ second: String?) -> String {
+        let firstValue = first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !firstValue.isEmpty { return firstValue }
+        return second?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func defaultMemoryWritePath(nowMs: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(nowMs) / 1_000.0)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "memory/\(formatter.string(from: date)).md"
+    }
+
+    private static func prioritizedBootstrapFileNames(_ fileNames: [String]) -> [String] {
+        let priority = ["IDENTITY.md", "USER.md", "SOUL.md", "AGENTS.md", "MEMORY.md", "memory.md"]
+        var seen = Set<String>()
+        var ordered: [String] = []
+
+        for name in priority where fileNames.contains(name) {
+            if seen.insert(name).inserted {
+                ordered.append(name)
+            }
+        }
+        for name in fileNames where seen.insert(name).inserted {
+            ordered.append(name)
+        }
+        return ordered
+    }
+
+    private static func isAllowedMemoryWritePath(_ rawPath: String) -> Bool {
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return false }
+        if path.hasPrefix("/") || path.contains("..") { return false }
+        if path == "MEMORY.md" || path == "memory.md" {
+            return true
+        }
+        guard path.hasPrefix("memory/"), path.hasSuffix(".md") else {
+            return false
+        }
+        return true
     }
 
     private static func asChatHistoryMessage(_ turn: GatewayMemoryTurn) -> GatewayJSONValue {
@@ -618,5 +2837,856 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return suffix
         }
         return nil
+    }
+
+    private static func parseChatPrompt(
+        _ rawMessage: String,
+        requestedThinking: String?) -> ParsedChatPrompt
+    {
+        var messageLines = rawMessage.split(whereSeparator: \.isNewline).map(String.init)
+        var resolvedThinking = Self.normalizedThinkingLevel(requestedThinking)
+
+        while let first = messageLines.first {
+            let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("/") else {
+                break
+            }
+            guard let directive = Self.parseChatDirective(from: trimmed) else {
+                break
+            }
+            messageLines.removeFirst()
+
+            if case let .reasoning(level) = directive {
+                resolvedThinking = Self.normalizedThinkingLevel(level)
+            }
+        }
+
+        let message = messageLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalThinking = resolvedThinking
+        return ParsedChatPrompt(message: message, thinking: finalThinking)
+    }
+
+    private static func parseChatDirective(from trimmedLine: String) -> ParsedChatDirective? {
+        let content = trimmedLine.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            return .unknown(raw: trimmedLine)
+        }
+
+        let parts = content.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard parts.count >= 1 else {
+            return .unknown(raw: trimmedLine)
+        }
+        let command = parts[0].lowercased()
+        guard command == "reasoning" || command == "think" || command == "thinking" else {
+            return .unknown(raw: trimmedLine)
+        }
+        guard parts.count >= 2 else {
+            return .unknown(raw: trimmedLine)
+        }
+        return .reasoning(level: parts[1])
+    }
+
+    private static func maybeApplyBootstrapProfileUpdate(
+        fields: BootstrapProfileFields?,
+        workspaceRoot: URL?) -> String?
+    {
+        guard let workspaceRoot, let fields, !fields.isEmpty else {
+            return nil
+        }
+
+        do {
+            let summary = try Self.applyBootstrapProfileFields(fields, workspaceRoot: workspaceRoot)
+            guard !summary.isEmpty else {
+                return nil
+            }
+            return "workspace profile updated: " + summary.joined(separator: "; ")
+        } catch {
+            return "workspace profile update failed: \(error.localizedDescription)"
+        }
+    }
+
+    private static func extractBootstrapProfileFields(from message: String) -> BootstrapProfileFields? {
+        let normalizedMessage = message.replacingOccurrences(of: "\r\n", with: "\n")
+        var fields = BootstrapProfileFields()
+        var section: BootstrapProfileSection = .unknown
+
+        for rawLine in normalizedMessage.split(whereSeparator: \.isNewline) {
+            var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let hintedSection = Self.profileSectionHint(from: line) {
+                section = hintedSection
+            }
+            while line.hasPrefix("-") || line.hasPrefix("*") {
+                line.removeFirst()
+                line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard let separator = line.firstIndex(of: ":") else {
+                continue
+            }
+            let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let normalizedValue = Self.normalizedProfileValue(String(value), maxLength: 120) else {
+                continue
+            }
+            _ = Self.assignLabeledProfileField(
+                key: String(key),
+                value: normalizedValue,
+                section: section,
+                fields: &fields)
+        }
+
+        if fields.userName == nil,
+           let userName = Self.firstCapture(
+               in: normalizedMessage,
+               pattern: #"(?i)\bmy name(?:\s+is)?\s*[:\-]?\s*([^\n,.;]+)"#)
+        {
+            fields.userName = userName
+        }
+        if fields.userCallName == nil,
+           let callName = Self.firstCapture(
+               in: normalizedMessage,
+               pattern: #"(?i)\bcall me\s+([^\n,.;]+)"#)
+        {
+            fields.userCallName = callName
+        }
+        if fields.assistantName == nil,
+           let assistantName = Self.firstCapture(
+               in: normalizedMessage,
+               pattern: #"(?i)\byour name(?:\s+is)?\s*[:\-]?\s*([^\n,.;]+)"#)
+        {
+            fields.assistantName = assistantName
+        }
+        if fields.userTimezone == nil,
+           let timezone = Self.firstCapture(
+               in: normalizedMessage,
+               pattern: #"(?i)\btime\s*zone(?:\s+is)?\s*[:\-]?\s*([A-Za-z0-9_+/\- ]{2,40})"#)
+                ?? Self.firstCapture(
+                    in: normalizedMessage,
+                    pattern: #"(?i)\btimezone(?:\s+is)?\s*[:\-]?\s*([A-Za-z0-9_+/\- ]{2,40})"#)
+        {
+            fields.userTimezone = timezone
+        }
+
+        if fields.userCallName == nil, let userName = fields.userName {
+            fields.userCallName = userName
+        }
+        return fields.isEmpty ? nil : fields
+    }
+
+    private static func assignLabeledProfileField(
+        key: String,
+        value: String,
+        section: BootstrapProfileSection,
+        fields: inout BootstrapProfileFields) -> Bool
+    {
+        let normalizedKey = key
+            .lowercased()
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalizedKey.contains("your name")
+            || normalizedKey.contains("assistant name")
+            || normalizedKey.contains("agent name")
+            || normalizedKey.contains("ai name")
+        {
+            fields.assistantName = value
+            return true
+        }
+        if normalizedKey.contains("my name")
+            || normalizedKey.contains("user name")
+            || normalizedKey.contains("human name")
+        {
+            fields.userName = value
+            if fields.userCallName == nil {
+                fields.userCallName = value
+            }
+            return true
+        }
+        if normalizedKey.contains("what to call")
+            || normalizedKey.contains("call me")
+            || normalizedKey.contains("nickname")
+        {
+            fields.userCallName = value
+            return true
+        }
+        if normalizedKey.contains("time zone") || normalizedKey.contains("timezone") {
+            fields.userTimezone = value
+            return true
+        }
+        if normalizedKey.contains("creature") {
+            fields.assistantCreature = value
+            return true
+        }
+        if normalizedKey == "name" {
+            switch section {
+            case .identity:
+                fields.assistantName = value
+                return true
+            case .user:
+                fields.userName = value
+                if fields.userCallName == nil {
+                    fields.userCallName = value
+                }
+                return true
+            case .unknown:
+                return false
+            }
+        }
+        if normalizedKey.contains("vibe")
+            || normalizedKey.contains("tone")
+            || normalizedKey.contains("style")
+        {
+            fields.assistantVibe = value
+            return true
+        }
+        if normalizedKey.contains("emoji") {
+            fields.assistantEmoji = value
+            return true
+        }
+        return false
+    }
+
+    private enum BootstrapProfileSection {
+        case unknown
+        case identity
+        case user
+    }
+
+    private static func profileSectionHint(from line: String) -> BootstrapProfileSection? {
+        let normalized = line
+            .lowercased()
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if normalized.contains("identity.md") || normalized.contains("who am i") {
+            return .identity
+        }
+        if normalized.contains("user.md") || normalized.contains("about your human") {
+            return .user
+        }
+        return nil
+    }
+
+    private static func firstCapture(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
+            return nil
+        }
+        guard match.numberOfRanges >= 2,
+              let captureRange = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+        return Self.normalizedProfileValue(String(text[captureRange]), maxLength: 120)
+    }
+
+    private static func normalizedProfileValue(_ raw: String, maxLength: Int) -> String? {
+        var value = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+        if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
+            value = String(value.dropFirst().dropLast())
+        }
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: ".,;"))
+        guard !value.isEmpty else {
+            return nil
+        }
+        if value.lowercased().hasPrefix("_("), value.hasSuffix(")_") {
+            return nil
+        }
+        if value.count > maxLength {
+            value = String(value.prefix(maxLength)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return value.isEmpty ? nil : value
+    }
+
+    private static func applyBootstrapProfileFields(
+        _ fields: BootstrapProfileFields,
+        workspaceRoot: URL) throws -> [String]
+    {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+
+        let identityURL = workspaceRoot.appendingPathComponent("IDENTITY.md", isDirectory: false)
+        let userURL = workspaceRoot.appendingPathComponent("USER.md", isDirectory: false)
+
+        var summary: [String] = []
+
+        var identityContent = (try? String(contentsOf: identityURL, encoding: .utf8))
+            ?? Self.defaultIdentityMarkdown
+        var identityChanged = false
+        if let value = fields.assistantName {
+            let update = Self.upsertMarkdownField(in: identityContent, label: "Name", value: value)
+            identityContent = update.content
+            identityChanged = identityChanged || update.changed
+            if update.changed {
+                summary.append("IDENTITY.md Name=\"\(value)\"")
+            }
+        }
+        if let value = fields.assistantCreature {
+            let update = Self.upsertMarkdownField(in: identityContent, label: "Creature", value: value)
+            identityContent = update.content
+            identityChanged = identityChanged || update.changed
+            if update.changed {
+                summary.append("IDENTITY.md Creature=\"\(value)\"")
+            }
+        }
+        if let value = fields.assistantVibe {
+            let update = Self.upsertMarkdownField(in: identityContent, label: "Vibe", value: value)
+            identityContent = update.content
+            identityChanged = identityChanged || update.changed
+            if update.changed {
+                summary.append("IDENTITY.md Vibe=\"\(value)\"")
+            }
+        }
+        if let value = fields.assistantEmoji {
+            let update = Self.upsertMarkdownField(in: identityContent, label: "Emoji", value: value)
+            identityContent = update.content
+            identityChanged = identityChanged || update.changed
+            if update.changed {
+                summary.append("IDENTITY.md Emoji=\"\(value)\"")
+            }
+        }
+        if identityChanged {
+            try Self.ensureTrailingNewline(identityContent).write(to: identityURL, atomically: true, encoding: .utf8)
+        }
+
+        var userContent = (try? String(contentsOf: userURL, encoding: .utf8))
+            ?? Self.defaultUserMarkdown
+        var userChanged = false
+        if let value = fields.userName {
+            let update = Self.upsertMarkdownField(in: userContent, label: "Name", value: value)
+            userContent = update.content
+            userChanged = userChanged || update.changed
+            if update.changed {
+                summary.append("USER.md Name=\"\(value)\"")
+            }
+        }
+        if let value = fields.userCallName ?? fields.userName {
+            let update = Self.upsertMarkdownField(
+                in: userContent,
+                label: "What to call them",
+                value: value)
+            userContent = update.content
+            userChanged = userChanged || update.changed
+            if update.changed {
+                summary.append("USER.md What to call them=\"\(value)\"")
+            }
+        }
+        if let value = fields.userTimezone {
+            let update = Self.upsertMarkdownField(in: userContent, label: "Timezone", value: value)
+            userContent = update.content
+            userChanged = userChanged || update.changed
+            if update.changed {
+                summary.append("USER.md Timezone=\"\(value)\"")
+            }
+        }
+        if userChanged {
+            try Self.ensureTrailingNewline(userContent).write(to: userURL, atomically: true, encoding: .utf8)
+        }
+
+        return summary
+    }
+
+    private static func upsertMarkdownField(
+        in content: String,
+        label: String,
+        value: String) -> (content: String, changed: Bool)
+    {
+        let fieldPrefix = "- **\(label):**"
+        let replacementLine = "\(fieldPrefix) \(value)"
+        var lines = content.replacingOccurrences(of: "\r\n", with: "\n").split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map(String.init)
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix(fieldPrefix) else {
+                continue
+            }
+            var changed = lines[index] != replacementLine
+            lines[index] = replacementLine
+            if index + 1 < lines.count,
+               Self.looksLikePlaceholderLine(lines[index + 1])
+            {
+                lines.remove(at: index + 1)
+                changed = true
+            }
+            return (lines.joined(separator: "\n"), changed)
+        }
+
+        let insertionIndex: Int
+        if let firstHeading = lines.firstIndex(where: { $0.hasPrefix("#") }) {
+            insertionIndex = min(lines.count, firstHeading + 2)
+        } else {
+            insertionIndex = min(lines.count, 1)
+        }
+        lines.insert(replacementLine, at: insertionIndex)
+        return (lines.joined(separator: "\n"), true)
+    }
+
+    private static func looksLikePlaceholderLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("_(") && trimmed.hasSuffix(")_")
+    }
+
+    private static func ensureTrailingNewline(_ text: String) -> String {
+        text.hasSuffix("\n") ? text : text + "\n"
+    }
+
+    private static let defaultIdentityMarkdown = """
+    # IDENTITY.md - Who Am I?
+
+    - **Name:**
+    - **Creature:**
+    - **Vibe:**
+    - **Emoji:**
+    - **Avatar:**
+    """
+
+    private static let defaultUserMarkdown = """
+    # USER.md - About Your Human
+
+    - **Name:**
+    - **What to call them:**
+    - **Pronouns:** (optional)
+    - **Timezone:**
+    - **Notes:**
+    """
+
+    private func composeBootstrapPrompt() -> String? {
+        guard self.config.bootstrapConfig.enabled else {
+            return nil
+        }
+
+        let workspacePath = self.config.bootstrapConfig.workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspacePath.isEmpty else {
+            return nil
+        }
+
+        let workspaceURL = URL(fileURLWithPath: workspacePath)
+        let prioritizedFileNames = Self.prioritizedBootstrapFileNames(self.config.bootstrapConfig.fileNames)
+        let manifestFileNames = Array(prioritizedFileNames.prefix(24))
+        var manifestLines: [String] = []
+        var bootstrapIsPresent = false
+        var bootstrapHasContent = false
+        manifestLines.reserveCapacity(manifestFileNames.count + 1)
+
+        for fileName in manifestFileNames {
+            let fileURL = workspaceURL.appendingPathComponent(fileName)
+            let exists = FileManager.default.fileExists(atPath: fileURL.path)
+            manifestLines.append("- \(fileName): \(exists ? "present" : "missing")")
+
+            if fileName == "BOOTSTRAP.md", exists {
+                bootstrapIsPresent = true
+                if let rawBootstrap = try? String(contentsOf: fileURL, encoding: .utf8),
+                   !rawBootstrap.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    bootstrapHasContent = true
+                }
+            }
+        }
+        if prioritizedFileNames.count > manifestFileNames.count {
+            manifestLines.append(
+                "- ... \(prioritizedFileNames.count - manifestFileNames.count) additional file(s) omitted")
+        }
+
+        let onboardingState = bootstrapIsPresent && bootstrapHasContent ? "pending" : "completed"
+        var remainingBudget = max(0, self.config.bootstrapConfig.totalMaxChars)
+        if remainingBudget <= 0 {
+            return nil
+        }
+
+        var sections: [String] = [
+            "Gateway Runtime Constraints",
+            "- Local chat cannot perform arbitrary file writes.",
+            "- IDENTITY.md/USER.md auto-updates happen only when explicit profile fields are provided.",
+            "- Never claim files were updated unless a system message in chat confirms it.",
+            "- Do not claim you inspected directories/files directly; use only injected context.",
+            "- When tools are available and needed, execute tool calls in the same turn; do not wait for user to say proceed.",
+            "- The injected file manifest below is authoritative for this turn.",
+            "- Never say BOOTSTRAP.md is missing if the manifest marks it present.",
+            "- Do not claim file updates unless tool.result for that update exists in this same run.",
+            "- If BOOTSTRAP.md is present and non-empty, onboarding is pending and should be completed explicitly.",
+            "",
+            "Injected File Manifest",
+            "- onboardingState: \(onboardingState)",
+            manifestLines.joined(separator: "\n"),
+            "",
+            "Onboarding Contract",
+            "1. If onboardingState is pending, read BOOTSTRAP.md plus IDENTITY.md and USER.md before answering.",
+            "2. Collect missing identity/profile fields from user.",
+            "3. Use file tools (read/write/edit/apply_patch) to update IDENTITY.md and USER.md.",
+            "4. Remove or empty BOOTSTRAP.md only after identity bootstrap is complete.",
+            "5. Report completion only with explicit tool.result evidence.",
+            "",
+            "Project Context",
+        ]
+        for filename in prioritizedFileNames {
+            if remainingBudget <= 0 {
+                break
+            }
+
+            let filePath = workspaceURL.appendingPathComponent(filename).path
+            if FileManager.default.fileExists(atPath: filePath) {
+                guard let rawContent = try? String(contentsOfFile: filePath, encoding: .utf8) else {
+                    continue
+                }
+                let perFileBudget = min(self.config.bootstrapConfig.perFileMaxChars, remainingBudget)
+                let injected = self.clampBootstrapText(Self.truncateBootstrapContent(
+                    rawContent,
+                    fileName: filename,
+                    maxChars: perFileBudget),
+                    budget: remainingBudget)
+
+                if injected.isEmpty {
+                    continue
+                }
+                let section = [
+                    "-- \(filename)",
+                    injected,
+                ].joined(separator: "\n\n")
+                let sectionBudget = section.utf16.count
+                if sectionBudget > remainingBudget {
+                    continue
+                }
+                sections.append(section)
+                remainingBudget -= sectionBudget
+            } else if self.config.bootstrapConfig.includeMissingMarkers {
+                let marker = "[MISSING] expected at: \(filePath)"
+                let injected = self.clampBootstrapText(marker, budget: remainingBudget)
+                if injected.isEmpty {
+                    break
+                }
+                let section = "-- \(filename)\n\(injected)"
+                let sectionBudget = section.utf16.count
+                if sectionBudget > remainingBudget {
+                    continue
+                }
+                sections.append(section)
+                remainingBudget -= sectionBudget
+            }
+        }
+
+        if sections.count <= 1 {
+            return nil
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func searchWorkspaceMemory(query: String, limit: Int) -> [WorkspaceMemoryHit] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty, limit > 0 else {
+            return []
+        }
+        guard let workspaceRoot = self.workspaceRootURL() else {
+            return []
+        }
+
+        let loweredQuery = trimmedQuery.lowercased()
+        let candidateFiles = self.workspaceMemoryFileURLs(workspaceRoot: workspaceRoot)
+        if candidateFiles.isEmpty {
+            return []
+        }
+
+        var hits: [WorkspaceMemoryHit] = []
+        let hardLimit = max(limit * 4, limit)
+
+        for fileURL in candidateFiles {
+            guard let raw = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                continue
+            }
+            let lines = raw.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+            if lines.isEmpty {
+                continue
+            }
+            let relativePath = self.relativeWorkspacePath(fileURL: fileURL, workspaceRoot: workspaceRoot)
+
+            for (index, rawLine) in lines.enumerated() {
+                let loweredLine = rawLine.lowercased()
+                guard loweredLine.contains(loweredQuery) else {
+                    continue
+                }
+
+                let lineNumber = index + 1
+                let lineStart = max(1, lineNumber - 1)
+                let lineEnd = min(lines.count, lineNumber + 1)
+                let context = lines[(lineStart - 1)...(lineEnd - 1)].joined(separator: "\n")
+                let snippet = Self.clampUTF16(
+                    context.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
+                    to: 900)
+                let score: Double = loweredLine == loweredQuery ? 2.0 : 1.0
+
+                hits.append(
+                    WorkspaceMemoryHit(
+                        id: Self.workspaceMemoryID(relativePath: relativePath, line: lineNumber),
+                        file: relativePath,
+                        lineStart: lineStart,
+                        lineEnd: lineEnd,
+                        text: snippet,
+                        score: score))
+
+                if hits.count >= hardLimit {
+                    break
+                }
+            }
+
+            if hits.count >= hardLimit {
+                break
+            }
+        }
+
+        if hits.isEmpty {
+            return []
+        }
+        return hits.sorted {
+            if $0.score == $1.score {
+                if $0.file == $1.file {
+                    return $0.lineStart < $1.lineStart
+                }
+                return $0.file < $1.file
+            }
+            return $0.score > $1.score
+        }.prefix(limit).map { $0 }
+    }
+
+    private func loadWorkspaceMemory(reference: WorkspaceMemoryReference) -> WorkspaceMemoryHit? {
+        guard let workspaceRoot = self.workspaceRootURL() else {
+            return nil
+        }
+        let relativePath = reference.relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relativePath.isEmpty else {
+            return nil
+        }
+
+        let fileURL = workspaceRoot.appendingPathComponent(relativePath)
+        let standardizedRoot = workspaceRoot.standardizedFileURL.path
+        let standardizedFile = fileURL.standardizedFileURL.path
+        let expectedPrefix = standardizedRoot.hasSuffix("/") ? standardizedRoot : standardizedRoot + "/"
+        guard standardizedFile == standardizedRoot || standardizedFile.hasPrefix(expectedPrefix) else {
+            return nil
+        }
+
+        guard let raw = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            return nil
+        }
+        let lines = raw.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        guard !lines.isEmpty else {
+            return WorkspaceMemoryHit(
+                id: Self.workspaceMemoryID(relativePath: relativePath, line: 1),
+                file: relativePath,
+                lineStart: 1,
+                lineEnd: 1,
+                text: "",
+                score: 1.0)
+        }
+
+        let lineNumber = min(max(reference.line, 1), lines.count)
+        let lineStart = max(1, lineNumber - 1)
+        let lineEnd = min(lines.count, lineNumber + 1)
+        let snippet = lines[(lineStart - 1)...(lineEnd - 1)].joined(separator: "\n")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        return WorkspaceMemoryHit(
+            id: Self.workspaceMemoryID(relativePath: relativePath, line: lineNumber),
+            file: relativePath,
+            lineStart: lineStart,
+            lineEnd: lineEnd,
+            text: Self.clampUTF16(snippet, to: 900),
+            score: 1.0)
+    }
+
+    private static func resolveWorkspaceRootURL(_ bootstrapConfig: GatewayBootstrapConfig) -> URL? {
+        let workspacePath = bootstrapConfig.workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspacePath.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: workspacePath, isDirectory: true)
+    }
+
+    private func workspaceRootURL() -> URL? {
+        Self.resolveWorkspaceRootURL(self.config.bootstrapConfig)
+    }
+
+    private func workspaceMemoryFileURLs(workspaceRoot: URL) -> [URL] {
+        let fileManager = FileManager.default
+        var files: [URL] = []
+
+        for filename in ["MEMORY.md", "memory.md"] {
+            let fileURL = workspaceRoot.appendingPathComponent(filename)
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: fileURL.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                files.append(fileURL)
+            }
+        }
+
+        let memoryDirectory = workspaceRoot.appendingPathComponent("memory", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: memoryDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue,
+           let enumerator = fileManager.enumerator(
+               at: memoryDirectory,
+               includingPropertiesForKeys: [.isRegularFileKey],
+               options: [.skipsHiddenFiles])
+        {
+            for case let fileURL as URL in enumerator {
+                guard fileURL.pathExtension.lowercased() == "md" else {
+                    continue
+                }
+                if (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                    files.append(fileURL)
+                }
+            }
+        }
+
+        return files.sorted { $0.path < $1.path }
+    }
+
+    private func relativeWorkspacePath(fileURL: URL, workspaceRoot: URL) -> String {
+        let rootPath = workspaceRoot.standardizedFileURL.path
+        let filePath = fileURL.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        if filePath.hasPrefix(prefix) {
+            return String(filePath.dropFirst(prefix.count))
+        }
+        return fileURL.lastPathComponent
+    }
+
+    private static func workspaceMemoryID(relativePath: String, line: Int) -> String {
+        let encodedPath = self.base64URLEncode(relativePath)
+        return "filemem:\(encodedPath):\(max(1, line))"
+    }
+
+    private static func parseWorkspaceMemoryID(_ raw: String) -> WorkspaceMemoryReference? {
+        guard raw.hasPrefix("filemem:") else {
+            return nil
+        }
+        let tail = String(raw.dropFirst("filemem:".count))
+        guard let splitIndex = tail.lastIndex(of: ":") else {
+            return nil
+        }
+        let encodedPath = String(tail[..<splitIndex])
+        let lineText = String(tail[tail.index(after: splitIndex)...])
+        guard let line = Int(lineText), line > 0 else {
+            return nil
+        }
+        let decodedPath =
+            self.base64URLDecode(encodedPath)
+            ?? encodedPath.removingPercentEncoding
+            ?? encodedPath
+        guard !decodedPath.isEmpty else {
+            return nil
+        }
+        return WorkspaceMemoryReference(relativePath: decodedPath, line: line)
+    }
+
+    private static func base64URLEncode(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func base64URLDecode(_ value: String) -> String? {
+        var base64 = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padding = base64.count % 4
+        if padding != 0 {
+            base64 += String(repeating: "=", count: 4 - padding)
+        }
+        guard let data = Data(base64Encoded: base64),
+              let decoded = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        return decoded
+    }
+
+    private static func normalizedThinkingLevel(_ raw: String?) -> String? {
+        let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let value = normalized, !value.isEmpty else {
+            return nil
+        }
+        switch value {
+        case "off", "disable", "disabled", "none":
+            return "off"
+        case "low", "minimal", "default":
+            return "low"
+        case "medium", "mid":
+            return "medium"
+        case "high", "on", "true":
+            return "high"
+        default:
+            return value
+        }
+    }
+
+    private static func truncateBootstrapContent(
+        _ raw: String,
+        fileName: String,
+        maxChars: Int) -> String
+    {
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.utf16.count <= maxChars {
+            return content
+        }
+
+        let safeMax = max(1, maxChars)
+        let headChars = Int(Double(safeMax) * 0.7)
+        let tailChars = Int(Double(safeMax) * 0.2)
+
+        if safeMax <= headChars + tailChars + 20 {
+            return Self.clampUTF16(content, to: safeMax)
+        }
+
+        let head = Self.prefixByUTF16(content, headChars)
+        let tail = Self.suffixByUTF16(content, tailChars)
+        let marker = "[...truncated, read \(fileName) for full content...]"
+        let body = [head, "", marker, "", tail].joined(separator: "\n")
+        return Self.clampUTF16(body, to: safeMax)
+    }
+
+    private func clampBootstrapText(_ text: String, budget: Int) -> String {
+        return Self.clampUTF16(text, to: max(0, budget))
+    }
+
+    private static func clampUTF16(_ text: String, to maxChars: Int) -> String {
+        guard maxChars > 0 else {
+            return ""
+        }
+        let safeLimit = max(0, maxChars)
+        let utf16Count = text.utf16.count
+        if utf16Count <= safeLimit {
+            return text
+        }
+        if safeLimit <= 1 {
+            return String(decoding: text.utf16.prefix(safeLimit), as: UTF16.self)
+        }
+        return String(decoding: text.utf16.prefix(safeLimit - 1), as: UTF16.self) + "…"
+    }
+
+    private static func prefixByUTF16(_ text: String, _ maxChars: Int) -> String {
+        let limited = max(0, maxChars)
+        return String(decoding: text.utf16.prefix(limited), as: UTF16.self)
+    }
+
+    private static func suffixByUTF16(_ text: String, _ maxChars: Int) -> String {
+        let limited = max(0, maxChars)
+        let value = text.utf16
+        if limited == 0 || value.count == 0 {
+            return ""
+        }
+        if value.count <= limited {
+            return text
+        }
+        let suffixStart = value.index(value.endIndex, offsetBy: -limited)
+        let suffixSlice = value[suffixStart..<value.endIndex]
+        return String(decoding: suffixSlice, as: UTF16.self)
     }
 }

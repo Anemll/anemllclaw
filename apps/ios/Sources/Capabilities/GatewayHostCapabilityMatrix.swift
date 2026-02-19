@@ -44,10 +44,15 @@ enum GatewayHostCapabilityMatrix {
             support: .remoteOnly,
             details: "Session and pairing workflows still require a remote full gateway host."),
         GatewayHostCapability(
+            id: "gateway.channel.telegram.outbound",
+            title: "Telegram outbound notifications",
+            support: .supported,
+            details: "Local Telegram send + cron delivery supported with bot token configuration."),
+        GatewayHostCapability(
             id: "gateway.channel.integrations",
             title: "Messaging channel integrations",
             support: .remoteOnly,
-            details: "Telegram/Discord/Slack/Signal/WhatsApp remain remote-host features."),
+            details: "Inbound channel adapters still require a remote full gateway host."),
         GatewayHostCapability(
             id: "gateway.hooks.external",
             title: "Hooks and external command execution",

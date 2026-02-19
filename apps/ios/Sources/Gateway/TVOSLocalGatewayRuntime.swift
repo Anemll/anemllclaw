@@ -70,6 +70,9 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
     var localLLMAPIKey: String
     var localLLMModel: String
 
+    var telegramBotToken: String
+    var telegramDefaultChatID: String
+
     static let `default` = TVOSGatewayControlPlaneSettings(
         authMode: .none,
         authToken: "",
@@ -82,7 +85,40 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMProvider: .disabled,
         localLLMBaseURL: "",
         localLLMAPIKey: "",
-        localLLMModel: "")
+        localLLMModel: "",
+        telegramBotToken: "",
+        telegramDefaultChatID: "")
+}
+
+private struct TVOSTelegramPairingRequest: Codable, Sendable, Equatable {
+    var id: String
+    var code: String
+    var createdAtMs: Int64
+    var lastSeenAtMs: Int64
+    var meta: [String: String]
+}
+
+private struct TVOSTelegramPairingStore: Codable, Sendable, Equatable {
+    var version: Int
+    var lastUpdateID: Int64
+    var allowFrom: [String]
+    var requests: [TVOSTelegramPairingRequest]
+
+    static let empty = TVOSTelegramPairingStore(
+        version: 1,
+        lastUpdateID: 0,
+        allowFrom: [],
+        requests: [])
+}
+
+private struct TVOSTelegramInboundUpdate: Sendable {
+    let updateID: Int64
+    let chatID: String
+    let senderID: String
+    let username: String?
+    let firstName: String?
+    let chatType: String?
+    let text: String?
 }
 
 private enum TVOSRuntimeAdminBridgeError: LocalizedError {
@@ -125,6 +161,20 @@ private actor TVOSRuntimeAdminBridge: GatewayLocalMethodRouterAdminBridge {
             throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
         }
         return await runtime.adminRuntimeRestart(nowMs: nowMs)
+    }
+
+    func pairingList(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return try await runtime.adminPairingList(params: params, nowMs: nowMs)
+    }
+
+    func pairingApprove(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return try await runtime.adminPairingApprove(params: params, nowMs: nowMs)
     }
 }
 
@@ -217,15 +267,29 @@ final class TVOSLocalGatewayRuntime {
     private var webSocketRetryTask: Task<Void, Never>?
     private var tcpRetryTask: Task<Void, Never>?
     private var chatHistoryPollTask: Task<Void, Never>?
+    private var telegramPairingPollTask: Task<Void, Never>?
     private var chatSendStartedAt: Date?
     private var runtimeTransitionTask: Task<Void, Never> = Task {}
     private var runtimeTransitionInProgress = false
+    private var telegramPairingStorePath: URL
+    private var telegramPairingStore: TVOSTelegramPairingStore
+    private(set) var lastTelegramPairingPollSucceeded: Bool?
+    private(set) var lastTelegramPairingPollErrorText: String?
 
     private static let maxDiagnosticsLogEntries = 150
     private static let listenerRestartQuiesceDurationNanoseconds: UInt64 = 120_000_000
     private static let defaultChatSessionKey = "main"
     private static let defaultChatHistoryLimit = 240
     private static let chatProgressPollIntervalNanoseconds: UInt64 = 700_000_000
+    private static let telegramPairingPollIntervalNanoseconds: UInt64 = 3_000_000_000
+    private static let telegramPairingCodeLength = 8
+    private static let telegramPairingCodeAlphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+    private static let telegramPairingPendingTTLms: Int64 = 60 * 60 * 1000
+    private static let telegramPairingPendingMax = 5
+    private static let telegramChatHistoryLimit = 16
+    private static let telegramReplyMaxChars = 3_800
+    private static let telegramReplyPollAttempts = 16
+    private static let telegramReplyPollDelayNanoseconds: UInt64 = 750_000_000
 
     init(
         exposeTCPListener: Bool = true,
@@ -296,7 +360,13 @@ final class TVOSLocalGatewayRuntime {
         self.webSocketRetryTask = nil
         self.tcpRetryTask = nil
         self.chatHistoryPollTask = nil
+        self.telegramPairingPollTask = nil
         self.chatSendStartedAt = nil
+        let initialTelegramPairingStorePath = Self.defaultTelegramPairingStorePath()
+        self.telegramPairingStorePath = initialTelegramPairingStorePath
+        self.telegramPairingStore = Self.loadTelegramPairingStore(at: initialTelegramPairingStorePath)
+        self.lastTelegramPairingPollSucceeded = nil
+        self.lastTelegramPairingPollErrorText = nil
 
         self.rebuildGatewayStack()
         self.refreshLocalNetworkAddresses()
@@ -381,6 +451,7 @@ final class TVOSLocalGatewayRuntime {
             await self.startTCPListenerIfNeeded()
         }
         self.state = .running
+        self.startTelegramPairingPollingIfNeeded()
         await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
         self.appendLog(
             "runtime running ws=\(self.listenerState.rawValue) tcp=\(self.tcpListenerState.rawValue)")
@@ -438,6 +509,7 @@ final class TVOSLocalGatewayRuntime {
         self.tcpRetryTask = nil
         self.tcpRetryAttempt = 0
         self.tcpRetryDelaySeconds = nil
+        self.stopTelegramPairingPolling()
 
         if self.exposeTCPListener {
             await self.stopTCPListener()
@@ -472,6 +544,8 @@ final class TVOSLocalGatewayRuntime {
         self.lastAgentAbortProbeErrorText = nil
         self.lastAgentAbortProbeResponseText = nil
         self.lastAgentRunID = nil
+        self.lastTelegramPairingPollSucceeded = nil
+        self.lastTelegramPairingPollErrorText = nil
         self.chatSendInProgress = false
         self.chatProgressText = nil
         self.chatLastErrorText = nil
@@ -499,6 +573,8 @@ final class TVOSLocalGatewayRuntime {
         self.lastAgentStatusProbeResponseText = nil
         self.lastAgentAbortProbeErrorText = nil
         self.lastAgentAbortProbeResponseText = nil
+        self.lastTelegramPairingPollErrorText = nil
+        self.lastTelegramPairingPollSucceeded = nil
         self.chatLastErrorText = nil
         self.webSocketRetryAttempt = 0
         self.webSocketRetryDelaySeconds = nil
@@ -533,7 +609,8 @@ final class TVOSLocalGatewayRuntime {
             self.appendLog(
                 "control plane settings applied auth=\(normalized.authMode.rawValue)"
                     + " upstream=\(Self.trimmed(normalized.upstreamURL) ?? "(none)")"
-                    + " llm=\(normalized.localLLMProvider.rawValue)")
+                    + " llm=\(normalized.localLLMProvider.rawValue)"
+                    + " telegram=\(Self.presenceState(normalized.telegramBotToken))")
 
             if wasRunning {
                 if self.exposeTCPListener {
@@ -1330,6 +1407,7 @@ final class TVOSLocalGatewayRuntime {
         self.upstreamClient = upstreamLoad.config.map { GatewayUpstreamWebSocketClient(config: $0) }
 
         let localLLMConfig = Self.makeLocalLLMConfig(from: self.controlPlaneSettings)
+        let localTelegramConfig = Self.makeLocalTelegramConfig(from: self.controlPlaneSettings)
         self.localLLMConfigured = localLLMConfig.isConfigured
         self.localLLMProviderLabel = Self.localLLMProviderDisplayName(localLLMConfig.provider)
         self.localLLMConfigErrorText = nil
@@ -1402,6 +1480,7 @@ final class TVOSLocalGatewayRuntime {
                         upstreamConfigured: self.upstreamConfigured,
                         upstreamForwarder: self.upstreamClient,
                         llmConfig: localLLMConfig,
+                        telegramConfig: localTelegramConfig,
                         memoryStorePath: primaryMemoryStorePath,
                         bootstrapConfig: bootstrapConfig,
                         enableLocalSafeTools: true,
@@ -1425,6 +1504,7 @@ final class TVOSLocalGatewayRuntime {
                                 upstreamConfigured: self.upstreamConfigured,
                                 upstreamForwarder: self.upstreamClient,
                                 llmConfig: localLLMConfig,
+                                telegramConfig: localTelegramConfig,
                                 memoryStorePath: fallbackMemoryStorePath,
                                 bootstrapConfig: bootstrapConfig,
                                 enableLocalSafeTools: true,
@@ -1457,12 +1537,14 @@ final class TVOSLocalGatewayRuntime {
     }
 
     fileprivate func adminConfigSnapshot(nowMs: Int64) -> GatewayJSONValue {
+        _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
         let settingsPayload = self.adminSettingsPayload(self.controlPlaneSettings)
         var payload = settingsPayload
         payload["settings"] = .object(settingsPayload)
         payload["state"] = self.adminRuntimeStatePayload(nowMs: nowMs)
         payload["bootstrap"] = self.adminBootstrapPayload()
         payload["skills"] = self.adminSkillsPayload()
+        payload["pairing"] = self.adminPairingPayload(nowMs: nowMs)
         payload["config"] = .object([
             "gatewayTVOS": .object(settingsPayload),
             "session": .object([
@@ -1475,6 +1557,7 @@ final class TVOSLocalGatewayRuntime {
     }
 
     fileprivate func adminConfigSet(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        self.logAdminConfigSetInputSummary(params: params)
         let nextSettings = try self.adminSettingsFromParams(params)
         let wasRunning = self.state == .running
         await self.applyControlPlaneSettings(nextSettings)
@@ -1486,9 +1569,53 @@ final class TVOSLocalGatewayRuntime {
             "state": self.adminRuntimeStatePayload(nowMs: nowMs),
             "bootstrap": self.adminBootstrapPayload(),
             "skills": self.adminSkillsPayload(),
+            "pairing": self.adminPairingPayload(nowMs: nowMs),
             "wasRunning": .bool(wasRunning),
             "ts": .integer(nowMs),
         ])
+    }
+
+    private func logAdminConfigSetInputSummary(params: GatewayJSONValue) {
+        guard let root = params.objectValue else {
+            self.appendLog("admin config.set request params: non-object", level: .warning)
+            return
+        }
+        let source: [String: GatewayJSONValue]
+        if let settings = root["settings"]?.objectValue {
+            source = settings
+        } else if let configObject = root["config"]?.objectValue,
+                  let gatewayTVOS = configObject["gatewayTVOS"]?.objectValue
+        {
+            source = gatewayTVOS
+        } else if let configObject = root["config"]?.objectValue {
+            source = configObject
+        } else {
+            source = root
+        }
+
+        let sourceTelegram = source["telegram"]?.objectValue
+        let rootTelegram = root["telegram"]?.objectValue
+
+        let sourceDirectToken = source["telegramBotToken"]?.stringValue
+        let rootDirectToken = root["telegramBotToken"]?.stringValue
+        let directToken = sourceDirectToken ?? rootDirectToken
+
+        let sourceNestedToken = sourceTelegram?["botToken"]?.stringValue ?? sourceTelegram?["token"]?.stringValue
+        let rootNestedToken = rootTelegram?["botToken"]?.stringValue ?? rootTelegram?["token"]?.stringValue
+        let nestedToken = sourceNestedToken ?? rootNestedToken
+
+        let sourceChatID = source["telegramDefaultChatID"]?.stringValue
+            ?? sourceTelegram?["defaultChatID"]?.stringValue
+            ?? sourceTelegram?["chatId"]?.stringValue
+        let rootChatID = root["telegramDefaultChatID"]?.stringValue
+            ?? rootTelegram?["defaultChatID"]?.stringValue
+            ?? rootTelegram?["chatId"]?.stringValue
+        let chatID = sourceChatID ?? rootChatID
+
+        self.appendLog(
+            "admin config.set request telegram.direct=\(Self.presenceState(directToken ?? ""))"
+                + " telegram.nested=\(Self.presenceState(nestedToken ?? ""))"
+                + " telegram.chat=\(Self.trimmed(chatID) ?? "(none)")")
     }
 
     fileprivate func adminRuntimeRestart(nowMs: Int64) async -> GatewayJSONValue {
@@ -1500,6 +1627,7 @@ final class TVOSLocalGatewayRuntime {
             "state": self.adminRuntimeStatePayload(nowMs: nowMs),
             "bootstrap": self.adminBootstrapPayload(),
             "skills": self.adminSkillsPayload(),
+            "pairing": self.adminPairingPayload(nowMs: nowMs),
             "wasRunning": .bool(wasRunning),
             "ts": .integer(nowMs),
         ])
@@ -1527,6 +1655,9 @@ final class TVOSLocalGatewayRuntime {
         let authObject = Self.firstObject(in: source, keys: ["auth", "listenerAuth"])
         let upstreamObject = Self.firstObject(in: source, keys: ["upstream", "gateway"])
         let localLLMObject = Self.firstObject(in: source, keys: ["localLLM", "localLlm", "llm"])
+        let sourceTelegramObject = Self.firstObject(in: source, keys: ["telegram"])
+        let rootTelegramObject = Self.firstObject(in: root, keys: ["telegram"])
+        let telegramObject = sourceTelegramObject ?? rootTelegramObject
 
         let authModeRaw =
             Self.firstString(in: source, keys: ["authMode", "auth_mode"])
@@ -1619,6 +1750,25 @@ final class TVOSLocalGatewayRuntime {
             next.localLLMModel = model
         }
 
+        if let telegramBotToken =
+            Self.firstString(in: source, keys: ["telegramBotToken", "telegramToken", "telegram.token"])
+            ?? Self.firstString(in: root, keys: ["telegramBotToken", "telegramToken", "telegram.token"])
+            ?? telegramObject?["botToken"]?.stringValue
+            ?? telegramObject?["token"]?.stringValue
+        {
+            next.telegramBotToken = telegramBotToken
+        }
+
+        if let telegramDefaultChatID =
+            Self.firstString(in: source, keys: ["telegramDefaultChatID", "telegramChatID", "telegram.chatId"])
+            ?? Self.firstString(in: root, keys: ["telegramDefaultChatID", "telegramChatID", "telegram.chatId"])
+            ?? telegramObject?["defaultChatID"]?.stringValue
+            ?? telegramObject?["chatId"]?.stringValue
+            ?? telegramObject?["to"]?.stringValue
+        {
+            next.telegramDefaultChatID = telegramDefaultChatID
+        }
+
         return Self.normalizedSettings(next)
     }
 
@@ -1636,6 +1786,12 @@ final class TVOSLocalGatewayRuntime {
             "localLLMBaseURL": .string(settings.localLLMBaseURL),
             "localLLMAPIKey": .string(settings.localLLMAPIKey),
             "localLLMModel": .string(settings.localLLMModel),
+            "telegramBotToken": .string(settings.telegramBotToken),
+            "telegramDefaultChatID": .string(settings.telegramDefaultChatID),
+            "telegram": .object([
+                "botToken": .string(settings.telegramBotToken),
+                "defaultChatID": .string(settings.telegramDefaultChatID),
+            ]),
         ]
     }
 
@@ -1648,6 +1804,13 @@ final class TVOSLocalGatewayRuntime {
             "tcpDebugPort": self.tcpListenerPort.map { .integer(Int64($0)) } ?? .null,
             "upstreamConfigured": .bool(self.upstreamConfigured),
             "localLLMConfigured": .bool(self.localLLMConfigured),
+            "telegramConfigured": .bool(Self.trimmed(self.controlPlaneSettings.telegramBotToken) != nil),
+            "telegramDefaultChatID": .string(self.controlPlaneSettings.telegramDefaultChatID),
+            "pairingPendingCount": .integer(Int64(self.telegramPairingStore.requests.count)),
+            "pairingAllowCount": .integer(Int64(self.telegramPairingStore.allowFrom.count)),
+            "pairingLastUpdateID": .integer(self.telegramPairingStore.lastUpdateID),
+            "pairingPollSucceeded": self.lastTelegramPairingPollSucceeded.map { .bool($0) } ?? .null,
+            "pairingPollErrorText": self.lastTelegramPairingPollErrorText.map { .string($0) } ?? .null,
             "ts": .integer(nowMs),
         ])
     }
@@ -1760,6 +1923,16 @@ final class TVOSLocalGatewayRuntime {
                 "path": .string(fileURL.path),
                 "exists": .bool(true),
             ]
+            if let resourceValues = try? fileURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey]) {
+                if let createdAt = resourceValues.creationDate {
+                    entry["createdAtMs"] = .integer(Self.epochMilliseconds(for: createdAt))
+                    entry["createdAtISO8601"] = .string(Self.iso8601String(from: createdAt))
+                }
+                if let modifiedAt = resourceValues.contentModificationDate {
+                    entry["modifiedAtMs"] = .integer(Self.epochMilliseconds(for: modifiedAt))
+                    entry["modifiedAtISO8601"] = .string(Self.iso8601String(from: modifiedAt))
+                }
+            }
             if let data = try? Data(contentsOf: fileURL) {
                 entry["bytes"] = .integer(Int64(data.count))
                 if let text = String(data: data, encoding: .utf8) {
@@ -1786,6 +1959,117 @@ final class TVOSLocalGatewayRuntime {
             "fileCount": .integer(Int64(fileEntries.count)),
             "files": .array(fileEntries),
         ])
+    }
+
+    fileprivate func adminPairingList(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        let source = params.objectValue ?? [:]
+        let channelRaw = Self.firstString(in: source, keys: ["channel"]) ?? "telegram"
+        let channel = channelRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard channel == "telegram" || channel == "tg" else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                "unsupported pairing channel: \(channelRaw)")
+        }
+
+        _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
+        return self.adminPairingPayload(nowMs: nowMs)
+    }
+
+    fileprivate func adminPairingApprove(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let source = params.objectValue else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("pairing.approve params must be an object")
+        }
+
+        let channelRaw = Self.firstString(in: source, keys: ["channel"]) ?? "telegram"
+        let channel = channelRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard channel == "telegram" || channel == "tg" else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                "unsupported pairing channel: \(channelRaw)")
+        }
+
+        guard let code = Self.trimmed(Self.firstString(in: source, keys: ["code"]))?.uppercased() else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("pairing.approve requires code")
+        }
+        if Self.looksLikeTelegramBotToken(code) {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                "pairing.approve expects 8-character pairing code, not bot token")
+        }
+        guard Self.isValidTelegramPairingCode(code) else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                "pairing.approve code must be 8 chars (A-Z, 2-9)")
+        }
+
+        _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
+        guard let approved = self.consumeTelegramPairingCode(code: code, nowMs: nowMs) else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("no pending pairing request found for code: \(code)")
+        }
+        self.persistTelegramPairingStore()
+
+        let sendResult = await self.sendTelegramMessage(
+            chatID: approved.id,
+            text: "OpenClaw tvOS pairing approved. You are now linked.")
+        if let sendError = sendResult {
+            self.appendLog("telegram pairing approval notice failed: \(sendError)", level: .warning)
+        }
+
+        self.appendLog("telegram pairing approved id=\(approved.id) code=\(code)")
+
+        return .object([
+            "approved": .bool(true),
+            "channel": .string("telegram"),
+            "id": .string(approved.id),
+            "code": .string(code),
+            "state": self.adminRuntimeStatePayload(nowMs: nowMs),
+            "pairing": self.adminPairingPayload(nowMs: nowMs),
+            "ts": .integer(nowMs),
+        ])
+    }
+
+    private func adminPairingPayload(nowMs: Int64) -> GatewayJSONValue {
+        _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
+
+        let requests: [GatewayJSONValue] = self.telegramPairingStore.requests.map { request in
+            var object: [String: GatewayJSONValue] = [
+                "id": .string(request.id),
+                "code": .string(request.code),
+                "createdAtMs": .integer(request.createdAtMs),
+                "lastSeenAtMs": .integer(request.lastSeenAtMs),
+                "createdAt": .string(Self.iso8601String(from: Self.date(fromMs: request.createdAtMs))),
+                "lastSeenAt": .string(Self.iso8601String(from: Self.date(fromMs: request.lastSeenAtMs))),
+            ]
+            let meta = request.meta
+            if meta.isEmpty {
+                object["meta"] = .object([:])
+            } else {
+                object["meta"] = .object(meta.mapValues { .string($0) })
+            }
+            return .object(object)
+        }
+
+        return .object([
+            "channel": .string("telegram"),
+            "enabled": .bool(Self.trimmed(self.controlPlaneSettings.telegramBotToken) != nil),
+            "requestCount": .integer(Int64(requests.count)),
+            "allowFromCount": .integer(Int64(self.telegramPairingStore.allowFrom.count)),
+            "allowFrom": .array(self.telegramPairingStore.allowFrom.map { .string($0) }),
+            "lastUpdateID": .integer(self.telegramPairingStore.lastUpdateID),
+            "pollingActive": .bool(self.telegramPairingPollTask != nil),
+            "pollSucceeded": self.lastTelegramPairingPollSucceeded.map { .bool($0) } ?? .null,
+            "pollErrorText": self.lastTelegramPairingPollErrorText.map { .string($0) } ?? .null,
+            "requests": .array(requests),
+            "ts": .integer(nowMs),
+        ])
+    }
+
+    private static func epochMilliseconds(for date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1000.0).rounded())
+    }
+
+    private static func iso8601String(from date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static func date(fromMs timestampMs: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(timestampMs) / 1000.0)
     }
 
     private static func collectSkillFileURLs(rootURL: URL, fileManager: FileManager) -> [URL] {
@@ -2037,6 +2321,34 @@ final class TVOSLocalGatewayRuntime {
             }
         }
         return nil
+    }
+
+    private static func assistantTurnCount(from payload: GatewayJSONValue?) -> Int {
+        Self.decodeChatTurns(from: payload).reduce(into: 0) { count, turn in
+            if turn.role == "assistant" {
+                count += 1
+            }
+        }
+    }
+
+    private static func sanitizeTelegramReplyText(_ rawText: String) -> String {
+        let withoutThinkBlocks = rawText.replacingOccurrences(
+            of: "(?is)<think>.*?</think>",
+            with: "",
+            options: .regularExpression)
+        let normalized = withoutThinkBlocks.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalized.isEmpty {
+            return normalized
+        }
+        return rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func clampTelegramReply(_ text: String, maxChars: Int) -> String {
+        guard maxChars > 0 else { return "" }
+        guard text.count > maxChars else { return text }
+        guard maxChars > 1 else { return "…" }
+        let prefix = text.prefix(maxChars - 1)
+        return String(prefix) + "…"
     }
 
     static func localLLMProviderDisplayName(_ provider: GatewayLocalLLMProviderKind) -> String {
@@ -2356,6 +2668,12 @@ final class TVOSLocalGatewayRuntime {
         settings.localLLMModel =
             Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
             ?? ""
+        settings.telegramBotToken =
+            Self.trimmed(defaults.string(forKey: "gateway.tvos.telegram.botToken"))
+            ?? ""
+        settings.telegramDefaultChatID =
+            Self.trimmed(defaults.string(forKey: "gateway.tvos.telegram.defaultChatID"))
+            ?? ""
 
         return Self.normalizedSettings(settings)
     }
@@ -2388,6 +2706,10 @@ final class TVOSLocalGatewayRuntime {
         defaults.set(Self.trimmed(settings.localLLMBaseURL), forKey: "gateway.tvos.localLLM.baseURL")
         defaults.set(Self.trimmed(settings.localLLMAPIKey), forKey: "gateway.tvos.localLLM.apiKey")
         defaults.set(Self.trimmed(settings.localLLMModel), forKey: "gateway.tvos.localLLM.model")
+        defaults.set(Self.trimmed(settings.telegramBotToken), forKey: "gateway.tvos.telegram.botToken")
+        defaults.set(
+            Self.trimmed(settings.telegramDefaultChatID),
+            forKey: "gateway.tvos.telegram.defaultChatID")
     }
 
     private func verifyPersistedControlPlaneSettings(_ expected: TVOSGatewayControlPlaneSettings) {
@@ -2413,6 +2735,11 @@ final class TVOSLocalGatewayRuntime {
         markIfDifferent("localLLMBaseURL", expected.localLLMBaseURL, persisted.localLLMBaseURL)
         markIfDifferent("localLLMAPIKey", expected.localLLMAPIKey, persisted.localLLMAPIKey)
         markIfDifferent("localLLMModel", expected.localLLMModel, persisted.localLLMModel)
+        markIfDifferent("telegramBotToken", expected.telegramBotToken, persisted.telegramBotToken)
+        markIfDifferent(
+            "telegramDefaultChatID",
+            expected.telegramDefaultChatID,
+            persisted.telegramDefaultChatID)
 
         self.appendLog(
             "settings persistence mismatch fields=\(mismatches.joined(separator: ","))"
@@ -2421,8 +2748,628 @@ final class TVOSLocalGatewayRuntime {
                 + " runtime.upstream=\(Self.trimmed(expected.upstreamURL) ?? "(none)") role=\(Self.trimmed(expected.upstreamRole) ?? "node") scopes=\(Self.trimmed(expected.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(expected.upstreamToken)) password=\(Self.presenceState(expected.upstreamPassword))"
                 + " persisted.upstream=\(Self.trimmed(persisted.upstreamURL) ?? "(none)") role=\(Self.trimmed(persisted.upstreamRole) ?? "node") scopes=\(Self.trimmed(persisted.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(persisted.upstreamToken)) password=\(Self.presenceState(persisted.upstreamPassword))"
                 + " runtime.llm=\(expected.localLLMProvider.rawValue) baseURL=\(Self.trimmed(expected.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(expected.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(expected.localLLMAPIKey))"
-                + " persisted.llm=\(persisted.localLLMProvider.rawValue) baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(persisted.localLLMAPIKey))",
+                + " persisted.llm=\(persisted.localLLMProvider.rawValue) baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(persisted.localLLMAPIKey))"
+                + " runtime.telegram.chat=\(Self.trimmed(expected.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(expected.telegramBotToken))"
+                + " persisted.telegram.chat=\(Self.trimmed(persisted.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(persisted.telegramBotToken))",
             level: .warning)
+    }
+
+    private func startTelegramPairingPollingIfNeeded() {
+        self.stopTelegramPairingPolling()
+
+        guard Self.trimmed(self.controlPlaneSettings.telegramBotToken) != nil else {
+            self.appendLog("telegram pairing polling disabled: bot token missing")
+            return
+        }
+
+        self.telegramPairingPollTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, self.state == .running {
+                await self.pollTelegramPairingOnce()
+                try? await Task.sleep(nanoseconds: Self.telegramPairingPollIntervalNanoseconds)
+            }
+        }
+        self.appendLog("telegram pairing polling started")
+    }
+
+    private func stopTelegramPairingPolling() {
+        guard let task = self.telegramPairingPollTask else { return }
+        task.cancel()
+        self.telegramPairingPollTask = nil
+        self.appendLog("telegram pairing polling stopped")
+    }
+
+    private func pollTelegramPairingOnce() async {
+        guard let botToken = Self.trimmed(self.controlPlaneSettings.telegramBotToken) else { return }
+
+        let offset = self.telegramPairingStore.lastUpdateID > 0
+            ? self.telegramPairingStore.lastUpdateID + 1
+            : nil
+        do {
+            let updates = try await self.fetchTelegramUpdates(botToken: botToken, offset: offset)
+            if !updates.isEmpty {
+                let offsetText = offset.map(String.init) ?? "(none)"
+                self.appendLog(
+                    "telegram poll received updates=\(updates.count) offset=\(offsetText)")
+            }
+            let nowMs = GatewayCore.currentTimestampMs()
+            var maxUpdateID = self.telegramPairingStore.lastUpdateID
+            var changed = false
+
+            for update in updates {
+                maxUpdateID = max(maxUpdateID, update.updateID)
+                changed = await self.handleTelegramInboundUpdate(update, nowMs: nowMs) || changed
+            }
+
+            if maxUpdateID != self.telegramPairingStore.lastUpdateID {
+                self.telegramPairingStore.lastUpdateID = maxUpdateID
+                changed = true
+            }
+
+            changed = self.pruneTelegramPairingRequests(nowMs: nowMs) || changed
+            if changed {
+                self.persistTelegramPairingStore()
+            }
+
+            self.lastTelegramPairingPollSucceeded = true
+            self.lastTelegramPairingPollErrorText = nil
+        } catch {
+            self.lastTelegramPairingPollSucceeded = false
+            let nextError = error.localizedDescription
+            if self.lastTelegramPairingPollErrorText != nextError {
+                self.lastTelegramPairingPollErrorText = nextError
+                self.appendLog("telegram pairing poll failed: \(nextError)", level: .warning)
+            }
+        }
+    }
+
+    private func handleTelegramInboundUpdate(_ update: TVOSTelegramInboundUpdate, nowMs: Int64) async -> Bool {
+        let senderID = update.senderID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !senderID.isEmpty else {
+            self.appendLog("telegram update ignored: missing sender id", level: .warning)
+            return false
+        }
+
+        let chatType = update.chatType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "private"
+        let isAllowedSender = self.telegramPairingStore.allowFrom.contains(senderID)
+        guard chatType == "private" else {
+            if isAllowedSender {
+                let sendError = await self.sendTelegramMessage(
+                    chatID: update.chatID,
+                    text: "OpenClaw tvOS currently supports Telegram replies in private chats only.")
+                if let sendError {
+                    self.appendLog("telegram non-private notice failed: \(sendError)", level: .warning)
+                }
+                self.appendLog(
+                    "telegram update ignored: non-private chat type=\(chatType) sender=\(senderID)",
+                    level: .warning)
+                return true
+            }
+            return false
+        }
+
+        if isAllowedSender {
+            return await self.handleTelegramInboundChat(update, senderID: senderID, nowMs: nowMs)
+        }
+
+        if let pairCode = Self.extractPairCode(from: update.text) {
+            if let approved = self.consumeTelegramPairingCodeForSender(
+                code: pairCode,
+                senderID: senderID,
+                nowMs: nowMs)
+            {
+                let sendError = await self.sendTelegramMessage(
+                    chatID: approved.id,
+                    text: "OpenClaw tvOS pairing approved. You are now linked.")
+                if let sendError {
+                    self.appendLog("telegram /pair reply failed: \(sendError)", level: .warning)
+                }
+                self.appendLog("telegram pairing self-approved sender=\(senderID) code=\(pairCode)")
+                return true
+            }
+
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "Pairing code not found. Request a new code by sending any message.")
+            if let sendError {
+                self.appendLog("telegram /pair invalid reply failed: \(sendError)", level: .warning)
+            }
+            return false
+        }
+
+        if let existingIndex = self.telegramPairingStore.requests.firstIndex(where: { $0.id == senderID }) {
+            self.telegramPairingStore.requests[existingIndex].lastSeenAtMs = nowMs
+            return true
+        }
+
+        let code = self.generateUniqueTelegramPairingCode()
+        var meta: [String: String] = [:]
+        if let username = Self.trimmed(update.username) {
+            meta["username"] = username
+        }
+        if let firstName = Self.trimmed(update.firstName) {
+            meta["firstName"] = firstName
+        }
+        meta["chatId"] = update.chatID
+
+        let request = TVOSTelegramPairingRequest(
+            id: senderID,
+            code: code,
+            createdAtMs: nowMs,
+            lastSeenAtMs: nowMs,
+            meta: meta)
+        self.telegramPairingStore.requests.append(request)
+        _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
+
+        let message = """
+        OpenClaw tvOS pairing request
+        Your Telegram user id: \(senderID)
+        Pairing code: \(code)
+        Approve in tvOS admin panel (Pairing List + Approve).
+        """
+        let sendError = await self.sendTelegramMessage(chatID: update.chatID, text: message)
+        if let sendError {
+            self.appendLog("telegram pairing code send failed: \(sendError)", level: .warning)
+        }
+        self.appendLog("telegram pairing request queued sender=\(senderID) code=\(code)")
+        return true
+    }
+
+    private func handleTelegramInboundChat(
+        _ update: TVOSTelegramInboundUpdate,
+        senderID: String,
+        nowMs: Int64) async -> Bool
+    {
+        guard let messageText = Self.trimmed(update.text) else {
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "Please send a text message.")
+            if let sendError {
+                self.appendLog("telegram non-text reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+
+        if messageText.hasPrefix("/pair") {
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "This account is already paired. Send a normal message to chat.")
+            if let sendError {
+                self.appendLog("telegram already-paired reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+
+        if messageText == "/start" {
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "OpenClaw tvOS is linked. Send a message and I will reply.")
+            if let sendError {
+                self.appendLog("telegram start reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+
+        guard self.state == .running else {
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "OpenClaw tvOS runtime is not running.")
+            if let sendError {
+                self.appendLog("telegram runtime-not-running reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+        guard let host = self.host else {
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "OpenClaw tvOS runtime host is unavailable.")
+            if let sendError {
+                self.appendLog("telegram host-unavailable reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+
+        let sessionKey = "telegram:\(senderID)"
+        self.appendLog("telegram chat inbound sender=\(senderID) chars=\(messageText.count)")
+
+        do {
+            func historyRequest() -> GatewayRequestFrame {
+                GatewayRequestFrame(
+                    id: UUID().uuidString,
+                    method: "chat.history",
+                    params: .object([
+                        "sessionKey": .string(sessionKey),
+                        "limit": .integer(Int64(Self.telegramChatHistoryLimit)),
+                    ]))
+            }
+
+            var baselineAssistantReply: String?
+            var baselineAssistantCount = 0
+            if let baselineResponse = try? await host.invoke(historyRequest()), baselineResponse.ok {
+                baselineAssistantReply = Self.latestAssistantReplyText(from: baselineResponse.payload)
+                baselineAssistantCount = Self.assistantTurnCount(from: baselineResponse.payload)
+            }
+
+            let sendRequest = GatewayRequestFrame(
+                id: UUID().uuidString,
+                method: "chat.send",
+                params: .object([
+                    "sessionKey": .string(sessionKey),
+                    "message": .string(messageText),
+                    "thinking": .string("low"),
+                    "idempotencyKey": .string(UUID().uuidString),
+                ]))
+            let sendResponse = try await host.invoke(sendRequest)
+            guard sendResponse.ok else {
+                let code = sendResponse.error?.code ?? "UNKNOWN"
+                let message = sendResponse.error?.message ?? "chat.send failed"
+                self.appendLog(
+                    "telegram chat.send failed sender=\(senderID) code=\(code) message=\(message)",
+                    level: .error)
+                let sendError = await self.sendTelegramMessage(
+                    chatID: update.chatID,
+                    text: "Chat request failed (\(code)): \(message)")
+                if let sendError {
+                    self.appendLog("telegram chat.send-failure reply failed: \(sendError)", level: .warning)
+                }
+                return true
+            }
+
+            var finalHistoryPayload: GatewayJSONValue?
+            for attempt in 0..<Self.telegramReplyPollAttempts {
+                let historyResponse = try await host.invoke(historyRequest())
+                guard historyResponse.ok else {
+                    let code = historyResponse.error?.code ?? "UNKNOWN"
+                    let message = historyResponse.error?.message ?? "chat.history failed"
+                    self.appendLog(
+                        "telegram chat.history failed sender=\(senderID) code=\(code) message=\(message)",
+                        level: .error)
+                    let sendError = await self.sendTelegramMessage(
+                        chatID: update.chatID,
+                        text: "I processed your message, but failed to fetch the reply (\(code)).")
+                    if let sendError {
+                        self.appendLog("telegram history-failure reply failed: \(sendError)", level: .warning)
+                    }
+                    return true
+                }
+
+                finalHistoryPayload = historyResponse.payload
+                let assistantReply = Self.latestAssistantReplyText(from: historyResponse.payload)
+                let assistantCount = Self.assistantTurnCount(from: historyResponse.payload)
+                let hasFreshReply =
+                    (assistantReply != nil)
+                    && (assistantCount > baselineAssistantCount
+                        || assistantReply != baselineAssistantReply)
+                let isLastAttempt = attempt == (Self.telegramReplyPollAttempts - 1)
+                if hasFreshReply || isLastAttempt {
+                    break
+                }
+
+                if attempt == 0 {
+                    self.appendLog("telegram reply pending sender=\(senderID) waiting for assistant output")
+                }
+                try? await Task.sleep(nanoseconds: Self.telegramReplyPollDelayNanoseconds)
+            }
+
+            guard let historyPayload = finalHistoryPayload,
+                  let assistantReplyRaw = Self.latestAssistantReplyText(from: historyPayload)
+            else {
+                self.appendLog("telegram reply missing from chat.history sender=\(senderID)", level: .warning)
+                let sendError = await self.sendTelegramMessage(
+                    chatID: update.chatID,
+                    text: "I processed your message, but no assistant reply was found.")
+                if let sendError {
+                    self.appendLog("telegram empty-reply notice failed: \(sendError)", level: .warning)
+                }
+                return true
+            }
+
+            let sanitizedReply = Self.sanitizeTelegramReplyText(assistantReplyRaw)
+            let clampedReply = Self.clampTelegramReply(sanitizedReply, maxChars: Self.telegramReplyMaxChars)
+            let sendError = await self.sendTelegramMessage(chatID: update.chatID, text: clampedReply)
+            if let sendError {
+                self.appendLog("telegram reply send failed sender=\(senderID): \(sendError)", level: .warning)
+            } else {
+                self.appendLog("telegram chat reply sent sender=\(senderID) chars=\(clampedReply.count)")
+            }
+            return true
+        } catch {
+            self.appendLog("telegram chat route threw sender=\(senderID): \(error.localizedDescription)", level: .error)
+            let sendError = await self.sendTelegramMessage(
+                chatID: update.chatID,
+                text: "Internal error while processing your message.")
+            if let sendError {
+                self.appendLog("telegram thrown-error reply failed: \(sendError)", level: .warning)
+            }
+            return true
+        }
+    }
+
+    private func fetchTelegramUpdates(
+        botToken: String,
+        offset: Int64?) async throws -> [TVOSTelegramInboundUpdate]
+    {
+        guard let endpointURL = URL(string: "https://api.telegram.org/bot\(botToken)/getUpdates") else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("malformed telegram bot token")
+        }
+
+        var payloadObject: [String: Any] = [
+            "timeout": 10,
+            "limit": 50,
+            "allowed_updates": ["message"],
+        ]
+        if let offset {
+            payloadObject["offset"] = offset
+        }
+
+        let payloadData = try JSONSerialization.data(withJSONObject: payloadObject, options: [])
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20.0
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = payloadData
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+        guard let root = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("telegram getUpdates invalid response")
+        }
+        let okFlag = (root["ok"] as? Bool) ?? false
+        guard statusCode >= 200, statusCode < 300, okFlag else {
+            let description =
+                (root["description"] as? String)
+                ?? String(data: data, encoding: .utf8)
+                ?? "unknown Telegram API error"
+            throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                "telegram getUpdates failed: status \(statusCode) \(description)")
+        }
+
+        guard let result = root["result"] as? [[String: Any]] else {
+            return []
+        }
+
+        var updates: [TVOSTelegramInboundUpdate] = []
+        updates.reserveCapacity(result.count)
+        for item in result {
+            guard let updateID = Self.anyInt64(item["update_id"]),
+                  let message = item["message"] as? [String: Any],
+                  let chat = message["chat"] as? [String: Any]
+            else {
+                continue
+            }
+            guard let chatIDRaw = Self.anyString(chat["id"]),
+                  let senderIDRaw =
+                    Self.anyString((message["from"] as? [String: Any])?["id"])
+                    ?? Self.anyString(chat["id"])
+            else {
+                continue
+            }
+            let from = message["from"] as? [String: Any]
+            let update = TVOSTelegramInboundUpdate(
+                updateID: updateID,
+                chatID: chatIDRaw,
+                senderID: senderIDRaw,
+                username: Self.anyString(from?["username"]),
+                firstName: Self.anyString(from?["first_name"]),
+                chatType: chat["type"] as? String,
+                text: message["text"] as? String)
+            updates.append(update)
+        }
+        return updates
+    }
+
+    private func sendTelegramMessage(chatID: String, text: String) async -> String? {
+        guard let botToken = Self.trimmed(self.controlPlaneSettings.telegramBotToken) else {
+            return "telegram bot token missing"
+        }
+        guard let endpointURL = URL(string: "https://api.telegram.org/bot\(botToken)/sendMessage") else {
+            return "malformed telegram bot token"
+        }
+        let trimmedChatID = chatID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedChatID.isEmpty else {
+            return "chat id missing"
+        }
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            return "text missing"
+        }
+
+        let bodyObject: [String: Any] = [
+            "chat_id": trimmedChatID,
+            "text": trimmedText,
+        ]
+        let payloadData: Data
+        do {
+            payloadData = try JSONSerialization.data(withJSONObject: bodyObject, options: [])
+        } catch {
+            return "invalid telegram message payload"
+        }
+
+        do {
+            var request = URLRequest(url: endpointURL)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 20.0
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = payloadData
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let decoded = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any]
+            let okFlag = (decoded?["ok"] as? Bool) ?? false
+            guard statusCode >= 200, statusCode < 300, okFlag else {
+                let description =
+                    (decoded?["description"] as? String)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? "unknown Telegram API error"
+                return "telegram send failed: status \(statusCode) \(description)"
+            }
+            return nil
+        } catch {
+            return "telegram send failed: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    private func pruneTelegramPairingRequests(nowMs: Int64) -> Bool {
+        let previousRequests = self.telegramPairingStore.requests
+        let cutoff = nowMs - Self.telegramPairingPendingTTLms
+        self.telegramPairingStore.requests = self.telegramPairingStore.requests.filter { request in
+            request.createdAtMs >= cutoff
+        }
+        if self.telegramPairingStore.requests.count > Self.telegramPairingPendingMax {
+            self.telegramPairingStore.requests.sort { lhs, rhs in
+                lhs.lastSeenAtMs > rhs.lastSeenAtMs
+            }
+            self.telegramPairingStore.requests = Array(
+                self.telegramPairingStore.requests.prefix(Self.telegramPairingPendingMax))
+        }
+        return previousRequests != self.telegramPairingStore.requests
+    }
+
+    private func consumeTelegramPairingCode(code: String, nowMs: Int64) -> TVOSTelegramPairingRequest? {
+        guard let index = self.telegramPairingStore.requests.firstIndex(where: {
+            $0.code.caseInsensitiveCompare(code) == .orderedSame
+        }) else {
+            return nil
+        }
+        return self.approveTelegramPairingRequest(at: index, nowMs: nowMs)
+    }
+
+    private func consumeTelegramPairingCodeForSender(
+        code: String,
+        senderID: String,
+        nowMs: Int64) -> TVOSTelegramPairingRequest?
+    {
+        guard let index = self.telegramPairingStore.requests.firstIndex(where: {
+            $0.id == senderID && $0.code.caseInsensitiveCompare(code) == .orderedSame
+        }) else {
+            return nil
+        }
+        return self.approveTelegramPairingRequest(at: index, nowMs: nowMs)
+    }
+
+    private func approveTelegramPairingRequest(
+        at index: Int,
+        nowMs: Int64) -> TVOSTelegramPairingRequest?
+    {
+        guard self.telegramPairingStore.requests.indices.contains(index) else {
+            return nil
+        }
+        var request = self.telegramPairingStore.requests[index]
+        request.lastSeenAtMs = nowMs
+        self.telegramPairingStore.requests.remove(at: index)
+        if !self.telegramPairingStore.allowFrom.contains(request.id) {
+            self.telegramPairingStore.allowFrom.append(request.id)
+        }
+        return request
+    }
+
+    private func persistTelegramPairingStore() {
+        do {
+            try FileManager.default.createDirectory(
+                at: self.telegramPairingStorePath.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(self.telegramPairingStore)
+            try data.write(to: self.telegramPairingStorePath, options: .atomic)
+        } catch {
+            self.appendLog("telegram pairing store persist failed: \(error.localizedDescription)", level: .warning)
+        }
+    }
+
+    private func generateUniqueTelegramPairingCode() -> String {
+        let existing = Set(self.telegramPairingStore.requests.map(\.code))
+        for _ in 0..<500 {
+            let code = Self.randomTelegramPairingCode()
+            if !existing.contains(code) {
+                return code
+            }
+        }
+        return Self.randomTelegramPairingCode()
+    }
+
+    private static func randomTelegramPairingCode() -> String {
+        var output = ""
+        output.reserveCapacity(Self.telegramPairingCodeLength)
+        for _ in 0..<Self.telegramPairingCodeLength {
+            if let random = Self.telegramPairingCodeAlphabet.randomElement() {
+                output.append(random)
+            }
+        }
+        return output
+    }
+
+    private static func isValidTelegramPairingCode(_ value: String) -> Bool {
+        guard value.count == Self.telegramPairingCodeLength else {
+            return false
+        }
+        for scalar in value.unicodeScalars {
+            let character = Character(scalar)
+            if !Self.telegramPairingCodeAlphabet.contains(character) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func looksLikeTelegramBotToken(_ value: String) -> Bool {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            return false
+        }
+        let prefix = String(parts[0])
+        let suffix = String(parts[1])
+        guard !prefix.isEmpty, !suffix.isEmpty else {
+            return false
+        }
+        guard prefix.allSatisfy({ $0.isNumber }) else {
+            return false
+        }
+        return suffix.allSatisfy { character in
+            character.isLetter || character.isNumber || character == "_" || character == "-"
+        }
+    }
+
+    private static func extractPairCode(from rawText: String?) -> String? {
+        guard let rawText else { return nil }
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let prefix = "/pair "
+        if trimmed.lowercased().hasPrefix(prefix) {
+            let code = String(trimmed.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            return code.isEmpty ? nil : code
+        }
+        return nil
+    }
+
+    private static func anyInt64(_ value: Any?) -> Int64? {
+        switch value {
+        case let number as NSNumber:
+            return number.int64Value
+        case let string as String:
+            return Int64(string.trimmingCharacters(in: .whitespacesAndNewlines))
+        case let int as Int:
+            return Int64(int)
+        case let int64 as Int64:
+            return int64
+        default:
+            return nil
+        }
+    }
+
+    private static func anyString(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
     }
 
     private static func presenceState(_ value: String) -> String {
@@ -2462,7 +3409,9 @@ final class TVOSLocalGatewayRuntime {
             localLLMProvider: settings.localLLMProvider,
             localLLMBaseURL: Self.trimmed(settings.localLLMBaseURL) ?? "",
             localLLMAPIKey: Self.trimmed(settings.localLLMAPIKey) ?? "",
-            localLLMModel: Self.trimmed(settings.localLLMModel) ?? "")
+            localLLMModel: Self.trimmed(settings.localLLMModel) ?? "",
+            telegramBotToken: Self.trimmed(settings.telegramBotToken) ?? "",
+            telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "")
     }
 
     private static func makeAuthConfig(from settings: TVOSGatewayControlPlaneSettings) -> GatewayCoreAuthConfig {
@@ -2510,6 +3459,11 @@ final class TVOSLocalGatewayRuntime {
         let localModel = Self.trimmed(self.controlPlaneSettings.localLLMModel) ?? "(none)"
         let localBaseURL =
             Self.trimmed(self.controlPlaneSettings.localLLMBaseURL) ?? "(none)"
+        let telegramDefaultChatID =
+            Self.trimmed(self.controlPlaneSettings.telegramDefaultChatID) ?? "(none)"
+        let telegramTokenState = self.controlPlaneSettings.telegramBotToken.isEmpty
+            ? "(missing)"
+            : Self.redacted(self.controlPlaneSettings.telegramBotToken)
         let bootstrapPath = Self.defaultBootstrapWorkspacePath()
         let bootstrapState = bootstrapPath.isEmpty ? "(none)" : bootstrapPath
         let authTokenState = self.controlPlaneSettings.authToken.isEmpty
@@ -2528,6 +3482,8 @@ final class TVOSLocalGatewayRuntime {
                 + " llm=\(self.controlPlaneSettings.localLLMProvider.rawValue)"
                 + " model=\(localModel)"
                 + " baseURL=\(localBaseURL)"
+                + " telegramChat=\(telegramDefaultChatID)"
+                + " telegramToken=\(telegramTokenState)"
                 + " bootstrapPath=\(bootstrapState)")
     }
 
@@ -2577,6 +3533,46 @@ final class TVOSLocalGatewayRuntime {
             baseURL: baseURL,
             apiKey: Self.trimmed(settings.localLLMAPIKey),
             model: Self.trimmed(settings.localLLMModel))
+    }
+
+    private static func makeLocalTelegramConfig(
+        from settings: TVOSGatewayControlPlaneSettings) -> GatewayLocalTelegramConfig
+    {
+        GatewayLocalTelegramConfig(
+            botToken: Self.trimmed(settings.telegramBotToken) ?? "",
+            defaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "")
+    }
+
+    private static func defaultTelegramPairingStorePath() -> URL {
+        let fileManager = FileManager.default
+        if let cachesBase = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let preferredDirectory = cachesBase.appendingPathComponent("OpenClawTV", isDirectory: true)
+            if self.isWritableDirectory(preferredDirectory) {
+                return preferredDirectory.appendingPathComponent("TelegramPairing.json", isDirectory: false)
+            }
+            if self.isWritableDirectory(cachesBase) {
+                return cachesBase.appendingPathComponent("TelegramPairing.json", isDirectory: false)
+            }
+        }
+        return fileManager.temporaryDirectory
+            .appendingPathComponent("TelegramPairing.json", isDirectory: false)
+    }
+
+    private static func loadTelegramPairingStore(at path: URL) -> TVOSTelegramPairingStore {
+        guard let data = try? Data(contentsOf: path),
+              let store = try? JSONDecoder().decode(TVOSTelegramPairingStore.self, from: data)
+        else {
+            return .empty
+        }
+        return TVOSTelegramPairingStore(
+            version: store.version == 0 ? 1 : store.version,
+            lastUpdateID: max(0, store.lastUpdateID),
+            allowFrom: Array(
+                Set(
+                    store.allowFrom
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty })).sorted(),
+            requests: store.requests)
     }
 
     private static func defaultMemoryStorePath() -> URL {
