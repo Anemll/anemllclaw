@@ -6,6 +6,14 @@ public protocol GatewayLocalMethodRouterAdminBridge: Sendable {
     func runtimeRestart(nowMs: Int64) async throws -> GatewayJSONValue
     func pairingList(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
     func pairingApprove(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+    func backupExport(nowMs: Int64) async throws -> GatewayJSONValue
+    func backupImport(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+}
+
+public enum GatewayLocalLLMToolCallingMode: String, Codable, Sendable, Equatable {
+    case auto
+    case on
+    case off
 }
 
 public struct GatewayLocalMethodRouterConfig: Sendable {
@@ -18,6 +26,7 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
     public let bootstrapConfig: GatewayBootstrapConfig
     public let enableLocalSafeTools: Bool
     public let enableLocalFileTools: Bool
+    public let llmToolCallingMode: GatewayLocalLLMToolCallingMode
     public let enableAutoProfileRewrite: Bool
     public let adminBridge: (any GatewayLocalMethodRouterAdminBridge)?
 
@@ -31,6 +40,7 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         bootstrapConfig: GatewayBootstrapConfig = .default,
         enableLocalSafeTools: Bool = true,
         enableLocalFileTools: Bool = true,
+        llmToolCallingMode: GatewayLocalLLMToolCallingMode = .auto,
         enableAutoProfileRewrite: Bool = false,
         adminBridge: (any GatewayLocalMethodRouterAdminBridge)? = nil)
     {
@@ -43,6 +53,7 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         self.bootstrapConfig = bootstrapConfig
         self.enableLocalSafeTools = enableLocalSafeTools
         self.enableLocalFileTools = enableLocalFileTools
+        self.llmToolCallingMode = llmToolCallingMode
         self.enableAutoProfileRewrite = enableAutoProfileRewrite
         self.adminBridge = adminBridge
     }
@@ -98,6 +109,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let thinking: String?
         let idempotencyKey: String?
         let historyLimit: Int?
+        let skipPreamble: Bool?
+        let disableTools: Bool?
     }
 
     private struct ParsedChatPrompt {
@@ -128,6 +141,11 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
 
     private struct SessionsListParams: Codable {
         let limit: Int?
+    }
+
+    private struct SessionsDeleteParams: Codable {
+        let key: String
+        let deleteTranscript: Bool?
     }
 
     private struct MemorySearchParams: Codable {
@@ -421,6 +439,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleChatHistory(request)
         case "sessions.list":
             return await self.handleSessionsList(request)
+        case "sessions.delete":
+            return await self.handleSessionsDelete(request)
         case "memory.search":
             return await self.handleMemorySearch(request)
         case "memory.get":
@@ -459,6 +479,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handlePairingList(request, nowMs: nowMs)
         case "pairing.approve":
             return await self.handlePairingApprove(request, nowMs: nowMs)
+        case "backup.export":
+            return await self.handleBackupExport(request, nowMs: nowMs)
+        case "backup.import":
+            return await self.handleBackupImport(request, nowMs: nowMs)
         case "tools.time.now", "time.now":
             return await self.handleDirectSafeTool(request, command: "time.now", params: request.params)
         case "tools.device.info", "device.info":
@@ -524,13 +548,15 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 hint: "local LLM is not configured")
         }
 
-        let systemPrompt = self.composeBootstrapPrompt()
+        let systemPrompt = params.skipPreamble == true ? nil : self.composeBootstrapPrompt()
+        let disableTools = params.disableTools == true
         let runID = Self.normalizedID(params.idempotencyKey, fallback: request.id)
         let historyLimit = max(12, min(params.historyLimit ?? 64, 200))
         let workspaceRoot = self.workspaceRootURL()
         let bootstrapFields = self.config.enableAutoProfileRewrite
             ? Self.extractBootstrapProfileFields(from: message)
             : nil
+        let toolCallingMode = self.config.llmToolCallingMode
 
         do {
             let queue = await self.sessionStore.queue(for: sessionKey)
@@ -565,16 +591,59 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 let history = try await self.memoryStore.history(sessionKey: sessionKey, limit: historyLimit)
                 let llmMessages = history.map { turn in GatewayLocalLLMMessage(role: turn.role, text: turn.text) }
                 let chatResult: ChatExecutionResult
-                if let toolProvider = provider as? any GatewayLocalLLMToolCallableProvider {
-                    chatResult = try await self.runToolAwareChat(
-                        provider: toolProvider,
-                        llmMessages: llmMessages,
-                        thinkingLevel: parsedPrompt.thinking,
-                        systemPrompt: systemPrompt,
-                        sessionKey: sessionKey,
-                        runID: runID,
-                        userMessage: message,
-                        workspaceRoot: workspaceRoot)
+                let shouldAttemptToolCalling = !disableTools && toolCallingMode != .off
+                if shouldAttemptToolCalling {
+                    if let toolProvider = provider as? any GatewayLocalLLMToolCallableProvider {
+                        do {
+                            chatResult = try await self.runToolAwareChat(
+                                provider: toolProvider,
+                                llmMessages: llmMessages,
+                                thinkingLevel: parsedPrompt.thinking,
+                                systemPrompt: systemPrompt,
+                                sessionKey: sessionKey,
+                                runID: runID,
+                                userMessage: message,
+                                workspaceRoot: workspaceRoot)
+                        } catch let error as GatewayLocalLLMProviderError
+                            where toolCallingMode == .auto && Self.shouldFallbackToPlainCompletion(error)
+                        {
+                            let llmResponse = try await provider.complete(
+                                GatewayLocalLLMRequest(
+                                    messages: llmMessages,
+                                    thinkingLevel: parsedPrompt.thinking,
+                                    systemPrompt: systemPrompt))
+                            chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                            _ = try await self.memoryStore.appendTurn(
+                                sessionKey: sessionKey,
+                                role: "system",
+                                text: "[tool-mode] auto fallback: tool-calling API rejected by provider",
+                                timestampMs: GatewayCore.currentTimestampMs(),
+                                runID: runID)
+                            await self.sessionStore.recordTurn(
+                                sessionKey: sessionKey,
+                                nowMs: GatewayCore.currentTimestampMs())
+                        }
+                    } else {
+                        if toolCallingMode == .on {
+                            throw GatewayLocalLLMProviderError.invalidRequest(
+                                "tool calls are forced on, but provider does not support tool-calling")
+                        }
+                        let llmResponse = try await provider.complete(
+                            GatewayLocalLLMRequest(
+                                messages: llmMessages,
+                                thinkingLevel: parsedPrompt.thinking,
+                                systemPrompt: systemPrompt))
+                        chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                        _ = try await self.memoryStore.appendTurn(
+                            sessionKey: sessionKey,
+                            role: "system",
+                            text: "[tool-mode] auto fallback: provider does not expose tool-calling",
+                            timestampMs: GatewayCore.currentTimestampMs(),
+                            runID: runID)
+                        await self.sessionStore.recordTurn(
+                            sessionKey: sessionKey,
+                            nowMs: GatewayCore.currentTimestampMs())
+                    }
                 } else {
                     let llmResponse = try await provider.complete(
                         GatewayLocalLLMRequest(
@@ -887,6 +956,41 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
 
         return lowered.contains("now:") && hasAction
+    }
+
+    private static func shouldFallbackToPlainCompletion(_ error: GatewayLocalLLMProviderError) -> Bool {
+        func looksToolUnsupported(_ text: String) -> Bool {
+            let lowered = text.lowercased()
+            let mentionsToolSurface =
+                lowered.contains("tool")
+                || lowered.contains("\"tools\"")
+                || lowered.contains("'tools'")
+                || lowered.contains("tool_choice")
+                || lowered.contains("tool_use")
+            guard mentionsToolSurface else {
+                return false
+            }
+            return lowered.contains("unsupported")
+                || lowered.contains("not support")
+                || lowered.contains("not supported")
+                || lowered.contains("unrecognized")
+                || lowered.contains("unknown parameter")
+                || lowered.contains("unknown field")
+                || lowered.contains("invalid")
+                || lowered.contains("does not support")
+        }
+
+        switch error {
+        case let .httpError(status, message):
+            guard [400, 404, 405, 415, 422, 501].contains(status) else {
+                return false
+            }
+            return looksToolUnsupported(message)
+        case let .invalidResponse(message):
+            return looksToolUnsupported(message)
+        case .invalidRequest, .notConfigured:
+            return false
+        }
     }
 
     private func chatToolDefinitions(workspaceRoot: URL?) -> [GatewayLocalLLMToolDefinition] {
@@ -1223,6 +1327,51 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             "ts": .double(Double(GatewayCore.currentTimestampMs())),
             "count": .integer(Int64(sessions.count)),
             "sessions": .array(sessions),
+        ])
+        return GatewayResponseFrame.success(id: request.id, payload: payload)
+    }
+
+    private func handleSessionsDelete(_ request: GatewayRequestFrame) async -> GatewayResponseFrame? {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: SessionsDeleteParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid sessions.delete params: key required")
+        }
+
+        let key = params.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "sessions.delete: key must not be empty")
+        }
+
+        if key == "main" {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "Cannot delete the main session.")
+        }
+
+        let deleteTranscript = params.deleteTranscript ?? true
+
+        // Remove from in-memory session store.
+        await self.sessionStore.removeSession(sessionKey: key)
+
+        // Delete persisted transcripts if requested.
+        if deleteTranscript {
+            do {
+                _ = try await self.memoryStore.deleteTranscripts(sessionKey: key)
+            } catch {
+                // Best-effort: session is removed from store even if transcript cleanup fails.
+            }
+        }
+
+        let payload: GatewayJSONValue = .object([
+            "ok": .bool(true),
+            "key": .string(key),
+            "deleted": .bool(true),
         ])
         return GatewayResponseFrame.success(id: request.id, payload: payload)
     }
@@ -1664,6 +1813,52 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 id: request.id,
                 code: .internalError,
                 message: "pairing.approve failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleBackupExport(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "backup.export is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.backupExport(nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "backup.export failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleBackupImport(
+        _ request: GatewayRequestFrame,
+        nowMs: Int64) async -> GatewayResponseFrame
+    {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "backup.import is not available on this host")
+        }
+
+        do {
+            let payload = try await adminBridge.backupImport(
+                params: request.params ?? .object([:]),
+                nowMs: nowMs)
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "backup.import failed: \(error.localizedDescription)")
         }
     }
 
@@ -2152,6 +2347,18 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                             ? "Handled by upstream pairing store"
                             : "No local pairing bridge configured")
                         : "Approve local pending pairing request by code"),
+                MethodCapability(
+                    method: "backup.export",
+                    route: adminConfigRoute,
+                    details: self.config.adminBridge == nil
+                        ? "No local admin bridge configured"
+                        : "Export backup as base64-encoded archive"),
+                MethodCapability(
+                    method: "backup.import",
+                    route: adminConfigRoute,
+                    details: self.config.adminBridge == nil
+                        ? "No local admin bridge configured"
+                        : "Import backup from base64-encoded archive data"),
             ],
             toolPolicy: ToolPolicy(
                 localSafeCommands: self.config.enableLocalSafeTools

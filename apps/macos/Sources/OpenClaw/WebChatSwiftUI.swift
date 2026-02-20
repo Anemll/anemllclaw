@@ -10,10 +10,46 @@ import SwiftUI
 private let webChatSwiftLogger = Logger(subsystem: "ai.openclaw", category: "WebChatSwiftUI")
 
 private enum WebChatSwiftUILayout {
-    static let windowSize = NSSize(width: 500, height: 840)
-    static let panelSize = NSSize(width: 480, height: 640)
-    static let windowMinSize = NSSize(width: 480, height: 360)
+    static let windowFallbackSize = NSSize(width: 980, height: 860)
+    static let panelFallbackSize = NSSize(width: 620, height: 760)
+    static let windowMinSize = NSSize(width: 560, height: 420)
+    static let panelMinSize = NSSize(width: 520, height: 420)
     static let anchorPadding: CGFloat = 8
+
+    static func windowSize(for screen: NSScreen?) -> NSSize {
+        self.scaledSize(
+            fallback: self.windowFallbackSize,
+            minSize: self.windowMinSize,
+            screen: screen,
+            widthRatio: 0.84,
+            heightRatio: 0.9)
+    }
+
+    static func panelSize(for screen: NSScreen?) -> NSSize {
+        self.scaledSize(
+            fallback: self.panelFallbackSize,
+            minSize: self.panelMinSize,
+            screen: screen,
+            widthRatio: 0.74,
+            heightRatio: 0.82)
+    }
+
+    private static func scaledSize(
+        fallback: NSSize,
+        minSize: NSSize,
+        screen: NSScreen?,
+        widthRatio: CGFloat,
+        heightRatio: CGFloat) -> NSSize
+    {
+        let bounds = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        guard let bounds, bounds.width > 0, bounds.height > 0 else {
+            return fallback
+        }
+
+        let width = min(max(minSize.width, round(bounds.width * widthRatio)), bounds.width)
+        let height = min(max(minSize.height, round(bounds.height * heightRatio)), bounds.height)
+        return NSSize(width: width, height: height)
+    }
 }
 
 struct MacGatewayChatTransport: OpenClawChatTransport, Sendable {
@@ -44,6 +80,16 @@ struct MacGatewayChatTransport: OpenClawChatTransport, Sendable {
             params: params,
             timeoutMs: 15000)
         return try JSONDecoder().decode(OpenClawChatSessionsListResponse.self, from: data)
+    }
+
+    func deleteSession(sessionKey: String) async throws {
+        _ = try await GatewayConnection.shared.request(
+            method: "sessions.delete",
+            params: [
+                "key": AnyCodable(sessionKey),
+                "deleteTranscript": AnyCodable(true),
+            ],
+            timeoutMs: 10000)
     }
 
     func sendMessage(
@@ -135,14 +181,35 @@ struct MacGatewayChatTransport: OpenClawChatTransport, Sendable {
     }
 }
 
+private struct MacChatRootView: View {
+    @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
+    private var chatTextScaleLevelRaw: String = OpenClawChatTextScaleLevel.defaultLevel.rawValue
+
+    let viewModel: OpenClawChatViewModel
+    let userAccent: Color?
+
+    var body: some View {
+        OpenClawChatView(
+            viewModel: self.viewModel,
+            showsSessionSwitcher: true,
+            userAccent: self.userAccent,
+            textScale: self.chatTextScaleLevel.textScale)
+    }
+
+    private var chatTextScaleLevel: OpenClawChatTextScaleLevel {
+        OpenClawChatTextScaleLevel(rawValue: self.chatTextScaleLevelRaw) ?? .defaultLevel
+    }
+}
+
 // MARK: - Window controller
 
 @MainActor
 final class WebChatSwiftUIWindowController {
     private let presentation: WebChatPresentation
     private let sessionKey: String
-    private let hosting: NSHostingController<OpenClawChatView>
+    private let hosting: NSHostingController<MacChatRootView>
     private let contentController: NSViewController
+    private var panelChromeContainer: HoverChromeContainerView?
     private var window: NSWindow?
     private var dismissMonitor: Any?
     var onClosed: (() -> Void)?
@@ -157,12 +224,14 @@ final class WebChatSwiftUIWindowController {
         self.presentation = presentation
         let vm = OpenClawChatViewModel(sessionKey: sessionKey, transport: transport)
         let accent = Self.color(fromHex: AppStateStore.shared.seamColorHex)
-        self.hosting = NSHostingController(rootView: OpenClawChatView(
-            viewModel: vm,
-            showsSessionSwitcher: true,
-            userAccent: accent))
-        self.contentController = Self.makeContentController(for: presentation, hosting: self.hosting)
+        self.hosting = NSHostingController(rootView: MacChatRootView(viewModel: vm, userAccent: accent))
+        let content = Self.makeContentController(for: presentation, hosting: self.hosting)
+        self.contentController = content.controller
+        self.panelChromeContainer = content.panelChromeContainer
         self.window = Self.makeWindow(for: presentation, contentViewController: self.contentController)
+        self.panelChromeContainer?.onClose = { [weak self] in
+            self?.close()
+        }
     }
 
     deinit {}
@@ -214,9 +283,14 @@ final class WebChatSwiftUIWindowController {
     @discardableResult
     private func reposition(using anchorProvider: () -> NSRect?) -> NSRect {
         guard let window else { return .zero }
+        let current = window.frame.size
+        let dynamicPanelSize = WebChatSwiftUILayout.panelSize(for: window.screen ?? NSScreen.main)
+        let panelSize = NSSize(
+            width: max(WebChatSwiftUILayout.panelMinSize.width, current.width > 1 ? current.width : dynamicPanelSize.width),
+            height: max(WebChatSwiftUILayout.panelMinSize.height, current.height > 1 ? current.height : dynamicPanelSize.height))
         guard let anchor = anchorProvider() else {
             let frame = WindowPlacement.topRightFrame(
-                size: WebChatSwiftUILayout.panelSize,
+                size: panelSize,
                 padding: WebChatSwiftUILayout.anchorPadding)
             window.setFrame(frame, display: false)
             return frame
@@ -228,7 +302,7 @@ final class WebChatSwiftUIWindowController {
             dx: WebChatSwiftUILayout.anchorPadding,
             dy: WebChatSwiftUILayout.anchorPadding)
         let frame = WindowPlacement.anchoredBelowFrame(
-            size: WebChatSwiftUILayout.panelSize,
+            size: panelSize,
             anchor: anchor,
             padding: WebChatSwiftUILayout.anchorPadding,
             in: bounds)
@@ -263,8 +337,9 @@ final class WebChatSwiftUIWindowController {
     {
         switch presentation {
         case .window:
+            let defaultSize = WebChatSwiftUILayout.windowSize(for: NSScreen.main)
             let window = NSWindow(
-                contentRect: NSRect(origin: .zero, size: WebChatSwiftUILayout.windowSize),
+                contentRect: NSRect(origin: .zero, size: defaultSize),
                 styleMask: [.titled, .closable, .resizable, .miniaturizable],
                 backing: .buffered,
                 defer: false)
@@ -276,21 +351,23 @@ final class WebChatSwiftUIWindowController {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.center()
-            WindowPlacement.ensureOnScreen(window: window, defaultSize: WebChatSwiftUILayout.windowSize)
+            WindowPlacement.ensureOnScreen(window: window, defaultSize: defaultSize)
             window.minSize = WebChatSwiftUILayout.windowMinSize
             window.contentView?.wantsLayer = true
             window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             return window
         case .panel:
+            let defaultSize = WebChatSwiftUILayout.panelSize(for: NSScreen.main)
             let panel = WebChatPanel(
-                contentRect: NSRect(origin: .zero, size: WebChatSwiftUILayout.panelSize),
-                styleMask: [.borderless],
+                contentRect: NSRect(origin: .zero, size: defaultSize),
+                styleMask: [.borderless, .resizable],
                 backing: .buffered,
                 defer: false)
             panel.level = .statusBar
             panel.hidesOnDeactivate = true
             panel.hasShadow = true
             panel.isMovable = false
+            panel.minSize = WebChatSwiftUILayout.panelMinSize
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
@@ -302,16 +379,18 @@ final class WebChatSwiftUIWindowController {
             panel.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
             panel.setFrame(
                 WindowPlacement.topRightFrame(
-                    size: WebChatSwiftUILayout.panelSize,
+                    size: defaultSize,
                     padding: WebChatSwiftUILayout.anchorPadding),
                 display: false)
             return panel
         }
     }
 
-    private static func makeContentController(
+    private static func makeContentController<Content: View>(
         for presentation: WebChatPresentation,
-        hosting: NSHostingController<OpenClawChatView>) -> NSViewController
+        hosting: NSHostingController<Content>) -> (
+            controller: NSViewController,
+            panelChromeContainer: HoverChromeContainerView?)
     {
         let controller = NSViewController()
         let effectView = NSVisualEffectView()
@@ -329,9 +408,18 @@ final class WebChatSwiftUIWindowController {
         effectView.layer?.cornerRadius = cornerRadius
         effectView.layer?.masksToBounds = true
 
-        effectView.translatesAutoresizingMaskIntoConstraints = true
-        effectView.autoresizingMask = [.width, .height]
-        let rootView = effectView
+        let rootView: NSView
+        var panelChromeContainer: HoverChromeContainerView?
+        switch presentation {
+        case .panel:
+            let chromeContainer = HoverChromeContainerView(containing: effectView)
+            rootView = chromeContainer
+            panelChromeContainer = chromeContainer
+        case .window:
+            effectView.translatesAutoresizingMaskIntoConstraints = true
+            effectView.autoresizingMask = [.width, .height]
+            rootView = effectView
+        }
 
         hosting.view.translatesAutoresizingMaskIntoConstraints = false
         hosting.view.wantsLayer = true
@@ -348,7 +436,7 @@ final class WebChatSwiftUIWindowController {
             hosting.view.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
         ])
 
-        return controller
+        return (controller: controller, panelChromeContainer: panelChromeContainer)
     }
 
     private func ensureWindowSize() {
@@ -356,7 +444,8 @@ final class WebChatSwiftUIWindowController {
         let current = window.frame.size
         let min = WebChatSwiftUILayout.windowMinSize
         if current.width < min.width || current.height < min.height {
-            let frame = WindowPlacement.centeredFrame(size: WebChatSwiftUILayout.windowSize)
+            let targetSize = WebChatSwiftUILayout.windowSize(for: window.screen ?? NSScreen.main)
+            let frame = WindowPlacement.centeredFrame(size: targetSize, on: window.screen ?? NSScreen.main)
             window.setFrame(frame, display: false)
         }
     }

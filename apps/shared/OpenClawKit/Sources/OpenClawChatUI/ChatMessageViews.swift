@@ -3,11 +3,15 @@ import Foundation
 import SwiftUI
 
 private enum ChatUIConstants {
-    #if os(macOS)
-    static let bubbleMaxWidth: CGFloat = .infinity
-    #else
-    static let bubbleMaxWidth: CGFloat = 560
-    #endif
+    static var bubbleMaxWidth: CGFloat {
+        #if os(macOS)
+        .infinity
+        #elseif os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? .infinity : 560
+        #else
+        560
+        #endif
+    }
     static let bubbleCorner: CGFloat = 18
 }
 
@@ -504,12 +508,13 @@ private extension View {
 private struct AttachmentRow: View {
     let att: OpenClawChatMessageContent
     let isUser: Bool
+    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "paperclip")
             Text(self.att.fileName ?? "Attachment")
-                .font(.footnote)
+                .font(.system(size: 13 * self.chatTextScale))
                 .lineLimit(1)
                 .foregroundStyle(self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText)
             Spacer()
@@ -524,11 +529,12 @@ private struct ToolCallCard: View {
     let content: OpenClawChatMessageContent
     let isUser: Bool
     @State private var expanded = false
+    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(self.collapsedSummary)
-                .font(.footnote.monospaced())
+                .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(self.expanded ? nil : 1)
                 .contentShape(Rectangle())
@@ -541,7 +547,7 @@ private struct ToolCallCard: View {
 
             if self.expanded, let argumentsText = self.argumentsText {
                 Text(argumentsText)
-                    .font(.footnote.monospaced())
+                    .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .openClawTextSelectionEnabledCompat()
                     .lineLimit(nil)
@@ -554,7 +560,7 @@ private struct ToolCallCard: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .font(.caption)
+                .font(.system(size: 12 * self.chatTextScale))
                 .foregroundStyle(.secondary)
             }
         }
@@ -626,17 +632,18 @@ private struct ToolResultCard: View {
     let text: String
     let isUser: Bool
     @State private var expanded = false
+    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(self.title)
-                    .font(.footnote.weight(.semibold))
+                    .font(.system(size: 13 * self.chatTextScale, weight: .semibold))
                 Spacer(minLength: 0)
             }
 
             Text(self.displayText)
-                .font(.footnote.monospaced())
+                .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
                 .foregroundStyle(self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText)
                 .lineLimit(self.expanded ? nil : 1)
                 .truncationMode(.tail)
@@ -655,7 +662,7 @@ private struct ToolResultCard: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .font(.caption)
+                .font(.system(size: 12 * self.chatTextScale))
                 .foregroundStyle(.secondary)
             }
         }
@@ -699,13 +706,14 @@ private struct ToolResultCard: View {
 struct ChatTypingIndicatorBubble: View {
     let style: OpenClawChatView.Style
     let assistantName: String?
+    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         HStack(spacing: 10) {
             TypingDots()
             if self.style == .standard {
                 Text(self.thinkingLabel)
-                    .font(.subheadline)
+                    .font(.system(size: 15 * self.chatTextScale))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -762,11 +770,12 @@ struct ChatStreamingAssistantBubble: View {
 @MainActor
 struct ChatPendingToolsBubble: View {
     let toolCalls: [OpenClawChatPendingToolCall]
+    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Running tools…", systemImage: "hammer")
-                .font(.caption)
+                .font(.system(size: 12 * self.chatTextScale))
                 .foregroundStyle(.secondary)
 
             ForEach(self.toolCalls) { call in
@@ -774,14 +783,14 @@ struct ChatPendingToolsBubble: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(display.emoji) \(display.label)")
-                            .font(.footnote.monospaced())
+                            .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         ProgressView().controlSize(.mini)
                     }
                     if let detail = display.detailLine, !detail.isEmpty {
                         Text(detail)
-                            .font(.caption.monospaced())
+                            .font(.system(size: 12 * self.chatTextScale, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
@@ -812,17 +821,16 @@ extension ChatPendingToolsBubble: @MainActor Equatable {
 @MainActor
 private struct TypingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var animate = false
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { idx in
                 Circle()
-                    .fill(Color.secondary.opacity(0.55))
+                    .fill(Color.primary.opacity(0.45))
                     .frame(width: 7, height: 7)
-                    .scaleEffect(self.reduceMotion ? 0.85 : (self.animate ? 1.0 : 0.72))
-                    .opacity(self.reduceMotion ? 0.55 : (self.animate ? 0.95 : 0.35))
+                    .scaleEffect(self.reduceMotion ? 0.85 : (self.animate ? 1.0 : 0.55))
+                    .opacity(self.reduceMotion ? 0.7 : (self.animate ? 1.0 : 0.3))
                     .frame(width: 8, height: 8, alignment: .center)
                     .clipped()
                     .animation(
@@ -835,22 +843,16 @@ private struct TypingDots: View {
         .frame(height: 10, alignment: .center)
         .fixedSize()
         .clipped()
-        .onAppear { self.updateAnimationState() }
+        .onAppear {
+            // Delay slightly to ensure SwiftUI processes the initial layout before
+            // toggling animate, so the animation transition is properly observed.
+            if !self.reduceMotion {
+                DispatchQueue.main.async {
+                    self.animate = true
+                }
+            }
+        }
         .onDisappear { self.animate = false }
-        .onChange(of: self.scenePhase) { _, _ in
-            self.updateAnimationState()
-        }
-        .onChange(of: self.reduceMotion) { _, _ in
-            self.updateAnimationState()
-        }
-    }
-
-    private func updateAnimationState() {
-        guard !self.reduceMotion, self.scenePhase == .active else {
-            self.animate = false
-            return
-        }
-        self.animate = true
     }
 }
 

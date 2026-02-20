@@ -102,6 +102,14 @@ public final class OpenClawChatViewModel {
         Task { await self.performSwitchSession(to: sessionKey) }
     }
 
+    public func deleteSession(key: String) async throws {
+        try await self.transport.deleteSession(sessionKey: key)
+        self.sessions.removeAll { $0.key == key }
+        if self.sessionKey == key {
+            await self.performSwitchSession(to: "main")
+        }
+    }
+
     public var sessionChoices: [OpenClawChatSessionEntry] {
         let sorted = self.sessions.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
 

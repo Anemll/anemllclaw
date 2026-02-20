@@ -267,6 +267,25 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
                 "code": .string(code),
             ])
         }
+
+        func backupExport(nowMs _: Int64) async throws -> GatewayJSONValue {
+            .object([
+                "ok": .bool(true),
+                "fileName": .string("stub-backup.ocbackup"),
+                "data": .string("c3R1Yg=="),
+                "sizeBytes": .integer(4),
+            ])
+        }
+
+        func backupImport(params: GatewayJSONValue, nowMs _: Int64) async throws -> GatewayJSONValue {
+            let hasData = params.objectValue?["data"]?.stringValue?.isEmpty == false
+            return .object([
+                "ok": .bool(hasData),
+                "restoredFileCount": .integer(0),
+                "restoredDefaultsCount": .integer(0),
+                "restoredKeychainCount": .integer(0),
+            ])
+        }
     }
 
     private actor ConcurrencyProbe {
@@ -1021,6 +1040,47 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         let allText = messages.flatMap(\.content).map(\.text).joined(separator: "\n")
         XCTAssertTrue(allText.contains("tool.call write"))
         XCTAssertTrue(allText.contains("tool.result write"))
+    }
+
+    func testChatSendDisableToolsBypassesToolCallableProvider() async throws {
+        let provider = ToolCallingLLMProvider()
+        let router = try GatewayLocalMethodRouter(
+            config: GatewayLocalMethodRouterConfig(
+                hostLabel: "unit-test",
+                upstreamConfigured: false,
+                llmConfig: GatewayLocalLLMConfig(
+                    provider: .openAICompatible,
+                    baseURL: URL(string: "https://example.invalid"),
+                    apiKey: "test-key",
+                    model: "stub-model"),
+                memoryStorePath: self.temporaryMemoryStorePath(),
+                enableLocalSafeTools: true,
+                enableLocalFileTools: true),
+            llmProvider: provider)
+
+        let chatSend = GatewayRequestFrame(
+            id: "chat-tool-disable-1",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string("session-tool-disable"),
+                "message": .string("Create a memory file."),
+                "disableTools": .bool(true),
+            ]))
+        let chatResponse = await router.handle(chatSend, nowMs: 1_700_000_003_360)
+        XCTAssertEqual(chatResponse?.ok, true)
+        XCTAssertNil(chatResponse?.payload?.objectValue?["toolCalls"])
+
+        let historyRequest = GatewayRequestFrame(
+            id: "chat-tool-disable-history-1",
+            method: "chat.history",
+            params: .object([
+                "sessionKey": .string("session-tool-disable"),
+                "limit": .integer(10),
+            ]))
+        let historyResponse = await router.handle(historyRequest, nowMs: 1_700_000_003_370)
+        XCTAssertEqual(historyResponse?.ok, true)
+        let historyPayload = try self.decodePayload(historyResponse?.payload, as: ChatHistoryPayload.self)
+        XCTAssertEqual(historyPayload?.messages.last?.content.first?.text, "fallback: Create a memory file.")
     }
 
     func testChatSendAutoNudgesDeferredToolPlanIntoToolExecution() async throws {

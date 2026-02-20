@@ -1,9 +1,5 @@
 import SwiftUI
 
-#if os(iOS)
-import UIKit
-#endif
-
 @MainActor
 public struct OpenClawChatView: View {
     public enum Style {
@@ -12,12 +8,12 @@ public struct OpenClawChatView: View {
     }
 
     @State private var viewModel: OpenClawChatViewModel
-    @State private var scrollerBottomID = UUID()
-    @State private var scrollPosition: UUID?
     @State private var showSessions = false
     @State private var hasPerformedInitialScroll = false
     @State private var isPinnedToBottom = true
     @State private var lastUserMessageID: UUID?
+    @State private var scrollProxy: ScrollViewProxy?
+    private let bottomAnchorID = "chatView.bottomAnchor"
     private let showsSessionSwitcher: Bool
     private let showsToolCalls: Bool
     private let assistantName: String?
@@ -91,7 +87,8 @@ public struct OpenClawChatView: View {
                     OpenClawChatComposer(
                         viewModel: self.viewModel,
                         style: self.style,
-                        showsSessionSwitcher: self.showsSessionSwitcher)
+                        showsSessionSwitcher: self.showsSessionSwitcher,
+                        showSessionsSheet: self.$showSessions)
                         .padding(.horizontal, Layout.composerPaddingHorizontal)
                 }
             }
@@ -102,19 +99,6 @@ public struct OpenClawChatView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.openClawChatTextScale, self.textScale)
         .onAppear {
-            if let syncedMessageAnchor {
-                if let anchor = syncedMessageAnchor.wrappedValue,
-                   self.isValidScrollTarget(anchor)
-                {
-                    self.scrollPosition = anchor
-                    self.isPinnedToBottom = self.isBottomEquivalent(anchor)
-                } else {
-                    self.scrollPosition = self.scrollerBottomID
-                    self.isPinnedToBottom = true
-                    syncedMessageAnchor.wrappedValue = nil
-                }
-                self.hasPerformedInitialScroll = true
-            }
             guard self.autoloadOnAppear else { return }
             self.viewModel.load()
         }
@@ -129,58 +113,19 @@ public struct OpenClawChatView: View {
 
     private var messageList: some View {
         ZStack {
-            ScrollView {
-                LazyVStack(spacing: Layout.messageSpacing) {
-                    self.messageListRows
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: Layout.messageSpacing) {
+                        self.messageListRows
 
-                    Color.clear
-                        #if os(macOS)
-                        .frame(height: Layout.messageListPaddingBottom)
-                        #else
-                        .frame(height: Layout.messageListPaddingBottom + 1)
-                        #endif
-                        .id(self.scrollerBottomID)
-                }
-                // Use scroll targets for stable auto-scroll without ScrollViewReader relayout glitches.
-                .scrollTargetLayout()
-                .padding(.top, Layout.messageListPaddingTop)
-                .padding(.horizontal, Layout.messageListPaddingHorizontal)
-            }
-            // Keep the scroll pinned to the bottom for new messages.
-            .scrollPosition(id: self.$scrollPosition, anchor: .bottom)
-            .onChange(of: self.scrollPosition) { _, position in
-                if self.shouldForceAutoFollow {
-                    self.isPinnedToBottom = true
-                    if let syncedMessageAnchor {
-                        syncedMessageAnchor.wrappedValue = nil
+                        Spacer()
+                            .frame(height: Layout.messageListPaddingBottom)
+                            .id(self.bottomAnchorID)
                     }
-                    if let position, !self.isBottomEquivalent(position) {
-                        self.pinToBottom(animated: false)
-                    }
-                    return
+                    .padding(.top, Layout.messageListPaddingTop)
+                    .padding(.horizontal, Layout.messageListPaddingHorizontal)
                 }
-                guard let position else {
-                    if self.isPinnedToBottom {
-                        if let syncedMessageAnchor {
-                            syncedMessageAnchor.wrappedValue = nil
-                        }
-                        self.pinToBottom(animated: false)
-                    }
-                    return
-                }
-                guard self.isValidScrollTarget(position) else {
-                    self.isPinnedToBottom = true
-                    if let syncedMessageAnchor {
-                        syncedMessageAnchor.wrappedValue = nil
-                    }
-                    self.pinToBottom(animated: false)
-                    return
-                }
-                let isAtBottom = self.isBottomEquivalent(position)
-                self.isPinnedToBottom = isAtBottom
-                if let syncedMessageAnchor {
-                    syncedMessageAnchor.wrappedValue = isAtBottom ? nil : position
-                }
+                .onAppear { self.scrollProxy = proxy }
             }
 
             if self.viewModel.isLoading {
@@ -195,24 +140,21 @@ public struct OpenClawChatView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .layoutPriority(1)
         .onChange(of: self.viewModel.isLoading) { _, isLoading in
-            guard !isLoading, !self.hasPerformedInitialScroll else { return }
-            self.pinToBottom(animated: false)
+            guard !isLoading else { return }
             self.hasPerformedInitialScroll = true
             self.isPinnedToBottom = true
+            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.sessionKey) { _, _ in
             self.isPinnedToBottom = true
             self.lastUserMessageID = nil
             self.hasPerformedInitialScroll = true
-            self.pinToBottom(animated: false)
+            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.isSending) { _, isSending in
-            // Scroll to bottom when user sends a message, even if scrolled up.
             guard isSending, self.hasPerformedInitialScroll else { return }
             self.isPinnedToBottom = true
-            if !self.isScrollPositionAtBottom {
-                self.pinToBottom(animated: true)
-            }
+            self.scrollToBottom(animated: true)
         }
         .onChange(of: self.viewModel.messages.count) { _, _ in
             guard self.hasPerformedInitialScroll else { return }
@@ -221,40 +163,25 @@ public struct OpenClawChatView: View {
                lastMessage.id != self.lastUserMessageID {
                 self.lastUserMessageID = lastMessage.id
                 self.isPinnedToBottom = true
-                self.pinToBottom(animated: true)
+                self.scrollToBottom(animated: true)
                 return
             }
 
-            guard self.isPinnedToBottom || self.shouldForceAutoFollow else { return }
-            if !self.isScrollPositionAtBottom {
-                self.pinToBottom(animated: false)
-            }
+            guard self.isPinnedToBottom else { return }
+            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.pendingRunCount) { _, _ in
             guard self.hasPerformedInitialScroll else { return }
-            guard self.isPinnedToBottom || self.shouldForceAutoFollow else { return }
-            if !self.isScrollPositionAtBottom {
-                self.pinToBottom(animated: false)
-            }
+            guard self.isPinnedToBottom else { return }
+            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.streamingAssistantText) { _, _ in
             guard self.hasPerformedInitialScroll else { return }
-            guard self.isPinnedToBottom || self.shouldForceAutoFollow else { return }
-            if !self.isScrollPositionAtBottom {
-                self.pinToBottom(animated: false)
-            }
+            guard self.isPinnedToBottom else { return }
+            self.scrollToBottom(animated: false)
         }
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            self.handleKeyboardViewportTransition()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            self.handleKeyboardViewportTransition()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
-            self.handleKeyboardViewportTransition()
-        }
-        #endif
+        // Keyboard show/hide is handled by SwiftUI's built-in safe area adjustment.
+        // Manual scrollToBottom on keyboard events fights the framework and overshoots.
     }
 
     @ViewBuilder
@@ -305,69 +232,20 @@ public struct OpenClawChatView: View {
         return merged.filter { !self.isToolTraceOnlyMessage($0) }
     }
 
-    private func isBottomEquivalent(_ id: UUID) -> Bool {
-        if id == self.scrollerBottomID {
-            return true
-        }
-        let trailingVisibleIDs = self.visibleMessages.suffix(2).map(\.id)
-        return trailingVisibleIDs.contains(id)
-    }
-
-    private func isValidScrollTarget(_ id: UUID) -> Bool {
-        if id == self.scrollerBottomID {
-            return true
-        }
-        return self.visibleMessages.contains { $0.id == id }
-    }
-
-    private var shouldForceAutoFollow: Bool {
-        if self.viewModel.isSending || self.viewModel.pendingRunCount > 0 {
-            return true
-        }
-        if let streamingText = self.viewModel.streamingAssistantText,
-           AssistantTextParser.hasVisibleContent(in: streamingText)
-        {
-            return true
-        }
-        return false
-    }
-
-    private var isScrollPositionAtBottom: Bool {
-        guard let position = self.scrollPosition else { return false }
-        return self.isBottomEquivalent(position)
-    }
-
-    #if os(iOS)
-    private func handleKeyboardViewportTransition() {
-        guard self.hasPerformedInitialScroll else { return }
-        guard self.isPinnedToBottom || self.shouldForceAutoFollow else { return }
-
-        DispatchQueue.main.async {
-            self.pinToBottom(animated: false)
-            // Keyboard-safe-area changes can settle over multiple passes.
-            DispatchQueue.main.async {
-                self.pinToBottom(animated: false)
-            }
-        }
-    }
-    #endif
-
-    private func pinToBottom(animated: Bool) {
+    /// Single source of truth for scrolling to the bottom of the conversation.
+    /// Uses only ScrollViewReader.scrollTo — no .scrollPosition binding.
+    private func scrollToBottom(animated: Bool) {
+        guard let proxy = self.scrollProxy else { return }
         if let syncedMessageAnchor {
             syncedMessageAnchor.wrappedValue = nil
         }
-        let target = self.scrollerBottomID
+
         if animated {
             withAnimation(.easeOut(duration: 0.18)) {
-                self.scrollPosition = target
+                proxy.scrollTo(self.bottomAnchorID, anchor: .bottom)
             }
         } else {
-            self.scrollPosition = target
-        }
-
-        // Re-assert once the runloop advances so long-message relayout does not leave an empty viewport.
-        DispatchQueue.main.async {
-            self.scrollPosition = target
+            proxy.scrollTo(self.bottomAnchorID, anchor: .bottom)
         }
     }
 

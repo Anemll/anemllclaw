@@ -26,13 +26,18 @@ public actor GatewayTCPJSONServer {
         self.authConfig = authConfig
     }
 
-    public func start(port: UInt16 = 0) async throws -> UInt16 {
+    public func start(port: UInt16 = 0, localhostOnly: Bool = true) async throws -> UInt16 {
         guard self.listener == nil else {
             throw GatewayTCPJSONServerError.alreadyRunning
         }
 
+        let parameters: NWParameters = .tcp
+        if localhostOnly {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        }
+
         let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
-        let listener = try NWListener(using: .tcp, on: nwPort)
+        let listener = try NWListener(using: parameters, on: nwPort)
         listener.newConnectionHandler = { connection in
             Task { await self.accept(connection) }
         }

@@ -5,6 +5,7 @@ import Observation
 import os
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct SettingsTab: View {
     @Environment(NodeAppModel.self) private var appModel: NodeAppModel
@@ -16,9 +17,9 @@ struct SettingsTab: View {
     @AppStorage("node.instanceId") private var instanceId: String = UUID().uuidString
     @AppStorage("voiceWake.enabled") private var voiceWakeEnabled: Bool = false
     @AppStorage("talk.enabled") private var talkEnabled: Bool = false
-    @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = true
+    @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = false
     @AppStorage("talk.background.enabled") private var talkBackgroundEnabled: Bool = false
-    @AppStorage("talk.voiceDirectiveHint.enabled") private var talkVoiceDirectiveHintEnabled: Bool = true
+    @AppStorage("talk.voiceDirectiveHint.enabled") private var talkVoiceDirectiveHintEnabled: Bool = false
     @AppStorage("camera.enabled") private var cameraEnabled: Bool = true
     @AppStorage("location.enabledMode") private var locationEnabledModeRaw: String = OpenClawLocationMode.off.rawValue
     @AppStorage("location.preciseEnabled") private var locationPreciseEnabled: Bool = true
@@ -50,7 +51,7 @@ struct SettingsTab: View {
     @AppStorage("gateway.setupCode") private var setupCode: String = ""
     @State private var setupStatusText: String?
     @State private var manualGatewayPortText: String = ""
-    @State private var gatewayExpanded: Bool = true
+    @State private var gatewayExpanded: Bool = false
     @State private var selectedAgentPickerId: String = ""
 
     @State private var showResetOnboardingAlert: Bool = false
@@ -59,7 +60,23 @@ struct SettingsTab: View {
     @State private var llmBaseURL: String = ""
     @State private var llmAPIKey: String = ""
     @State private var llmModel: String = ""
+    @State private var llmToolCallingMode: GatewayLocalLLMToolCallingMode = .auto
     @State private var llmApplying: Bool = false
+
+    @State private var savedProviders: [SavedLLMProvider] = []
+    @State private var activeProviderID: String?
+    @State private var editingProvider: SavedLLMProvider?
+
+    @State private var showBackupConfirmAlert: Bool = false
+    @State private var showRestoreImporter: Bool = false
+    @State private var pendingRestoreFileURL: URL?
+    @State private var showRestoreConfirmAlert: Bool = false
+    @State private var backupOperationInFlight: Bool = false
+    @State private var backupExportDocument = OpenClawBackupExportDocument(data: Data())
+    @State private var backupExportFileName: String = "OpenClaw-Backup.ocbackup"
+    @State private var showBackupExporter: Bool = false
+    @State private var backupStatusMessage: String?
+    @State private var showBackupStatusAlert: Bool = false
 
     private let gatewayLogger = Logger(subsystem: "ai.openclaw.ios", category: "GatewaySettings")
 
@@ -76,62 +93,60 @@ struct SettingsTab: View {
                     }
                     LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
 
-                    Picker("LLM Provider", selection: self.$llmProvider) {
-                        Text("Disabled").tag(GatewayLocalLLMProviderKind.disabled)
-                        Text("OpenAI-compatible").tag(GatewayLocalLLMProviderKind.openAICompatible)
-                        Text("Anthropic-compatible").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
-                        Text("MiniMax-compatible").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
-                        Text("Grok-compatible").tag(GatewayLocalLLMProviderKind.grokCompatible)
+                    Toggle("LAN Access (Debug)", isOn: Binding(
+                        get: { self.localGatewayRuntime.lanAccessEnabled },
+                        set: { newValue in
+                            Task { await self.localGatewayRuntime.setLanAccessEnabled(newValue) }
+                        }))
+                    if self.localGatewayRuntime.lanAccessEnabled {
+                        Text("Server is reachable from your local network. This reduces security — use only for debugging.")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Server only accepts connections from this device (localhost).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-
-                    if self.llmProvider != .disabled {
-                        TextField("Base URL", text: self.$llmBaseURL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                        SecureField("API Key", text: self.$llmAPIKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        TextField("Model (e.g. gpt-4o-mini)", text: self.$llmModel)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                } header: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                        Text("Local Server")
                     }
+                }
 
-                    if self.llmSettingsDirty {
-                        Button {
-                            Task { await self.applyLLMSettings(test: false) }
-                        } label: {
-                            if self.llmApplying {
-                                HStack(spacing: 8) {
-                                    ProgressView().progressViewStyle(.circular)
-                                    Text("Applying…")
-                                }
-                            } else {
-                                Label("Apply & Restart", systemImage: "arrow.clockwise")
+                Section {
+                    if self.savedProviders.isEmpty {
+                        Text("No LLM providers configured.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(self.savedProviders) { provider in
+                            self.providerRow(provider)
+                        }
+                        .onDelete { indexSet in
+                            let deletedIDs = indexSet.map { self.savedProviders[$0].id }
+                            self.savedProviders.remove(atOffsets: indexSet)
+                            LLMProviderStore.save(self.savedProviders)
+                            if let activeID = self.activeProviderID, deletedIDs.contains(activeID) {
+                                self.activeProviderID = nil
+                                LLMProviderStore.setActiveID(nil)
+                                Task { await self.activateProvider(nil) }
                             }
                         }
-                        .disabled(self.llmApplying)
+                    }
 
-                        Button {
-                            Task { await self.applyLLMSettings(test: true) }
-                        } label: {
-                            Label("Apply, Restart & Test", systemImage: "arrow.clockwise.circle")
+                    Button {
+                        self.editingProvider = SavedLLMProvider()
+                    } label: {
+                        Label("Add Provider", systemImage: "plus.circle.fill")
+                    }
+
+                    if self.llmApplying {
+                        HStack(spacing: 8) {
+                            ProgressView().progressViewStyle(.circular)
+                            Text("Applying…")
                         }
-                        .disabled(self.llmApplying)
-                    } else if self.llmProvider != .disabled {
-                        Button {
-                            Task { await self.testLocalLLM() }
-                        } label: {
-                            if self.llmApplying {
-                                HStack(spacing: 8) {
-                                    ProgressView().progressViewStyle(.circular)
-                                    Text("Testing…")
-                                }
-                            } else {
-                                Label("Test LLM", systemImage: "checkmark.seal")
-                            }
-                        }
-                        .disabled(self.llmApplying || self.localGatewayRuntime.state != .running)
                     }
 
                     Toggle(
@@ -139,6 +154,25 @@ struct SettingsTab: View {
                         isOn: Binding(
                             get: { !self.llmSetupPromptSuppressed },
                             set: { self.llmSetupPromptSuppressed = !$0 }))
+
+                    LabeledContent {
+                        Picker("Tool Calls", selection: self.$llmToolCallingMode) {
+                            ForEach(GatewayLocalLLMToolCallingMode.allCases, id: \.self) { mode in
+                                Text(mode.displayLabel).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Tool Calls")
+                            Text("(i)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(self.llmToolCallingMode.helpText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
 
                     if let error = self.localGatewayRuntime.localLLMConfigErrorText {
                         Text(error)
@@ -166,12 +200,7 @@ struct SettingsTab: View {
                             .lineLimit(4)
                     }
                 } header: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
-                            .frame(width: 10, height: 10)
-                        Text("Local Server")
-                    }
+                    Text("LLM Providers")
                 }
 
                 Section {
@@ -360,31 +389,32 @@ struct SettingsTab: View {
                     }
                 }
 
+                Section {
+                    Button {
+                        self.showBackupConfirmAlert = true
+                    } label: {
+                        Label("Backup to Files…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(self.backupOperationInFlight)
+
+                    Button(role: .destructive) {
+                        self.showRestoreImporter = true
+                    } label: {
+                        Label("Restore from Backup…", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(self.backupOperationInFlight)
+
+                    Text("Backup includes chats, workspace files, settings, and saved credentials.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Backup / Restore")
+                }
+
                 Section("Device") {
                     DisclosureGroup("Features") {
-                        Toggle("Voice Wake", isOn: self.$voiceWakeEnabled)
-                            .onChange(of: self.voiceWakeEnabled) { _, newValue in
-                                self.appModel.setVoiceWakeEnabled(newValue)
-                            }
-                        Toggle("Talk Mode", isOn: self.$talkEnabled)
-                            .onChange(of: self.talkEnabled) { _, newValue in
-                                self.appModel.setTalkEnabled(newValue)
-                            }
-                        SecureField("Talk ElevenLabs API Key (optional)", text: self.$talkElevenLabsApiKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Text("Use this local override when gateway config redacts talk.apiKey for mobile clients.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Toggle("Background Listening", isOn: self.$talkBackgroundEnabled)
-                        Text("Keep listening when the app is in the background. Uses more battery.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Toggle("Voice Directive Hint", isOn: self.$talkVoiceDirectiveHintEnabled)
-                        Text("Include ElevenLabs voice switching instructions in the Talk Mode prompt. Disable to save tokens.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        // Keep this separate so users can hide the side bubble without disabling Talk Mode.
+                        // Voice Wake, Talk Mode, and ElevenLabs are hidden —
+                        // they require a remote gateway and don't work with local server.
                         Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
                         Toggle("Show Tool Calls in Chat", isOn: self.$showsToolCallsInChat)
                         Text("Tool calls are collapsed by default. Disable to hide tool traces in Chat.")
@@ -396,14 +426,6 @@ struct SettingsTab: View {
                         Text("When chat.send fails, Chat sends \"Continue\" up to this many times per user message.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-
-                        NavigationLink {
-                            VoiceWakeWordsSettingsView()
-                        } label: {
-                            LabeledContent(
-                                "Wake Words",
-                                value: VoiceWakePreferences.displayString(for: self.voiceWake.triggerWords))
-                        }
 
                         Toggle("Allow Camera", isOn: self.$cameraEnabled)
                         Text("Allows the gateway to request photos or short video clips (foreground only).")
@@ -451,6 +473,7 @@ struct SettingsTab: View {
                     }
                 }
             }
+            .modifier(SettingsFormWidthModifier())
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -486,6 +509,9 @@ struct SettingsTab: View {
                 self.gatewayExpanded = !localRunning && !self.isGatewayConnected
                 self.selectedAgentPickerId = self.appModel.selectedAgentId ?? ""
                 self.loadLLMSettingsFromRuntime()
+                let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
+                self.savedProviders = migrated.providers
+                self.activeProviderID = migrated.activeID
             }
             .onChange(of: self.selectedAgentPickerId) { _, newValue in
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -556,6 +582,54 @@ struct SettingsTab: View {
             }
         }
         .gatewayTrustPromptAlert()
+        .sheet(item: self.$editingProvider) { editing in
+            self.providerEditorSheet(for: editing)
+        }
+        .alert("Create Backup?", isPresented: self.$showBackupConfirmAlert) {
+            Button("Backup") {
+                Task { await self.performBackupExport() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Backup includes chats, workspace files, settings, and saved credentials.")
+        }
+        .fileImporter(
+            isPresented: self.$showRestoreImporter,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false)
+        { result in
+            self.handleRestoreSelection(result)
+        }
+        .alert("Restore Backup?", isPresented: self.$showRestoreConfirmAlert) {
+            Button("Restore", role: .destructive) {
+                Task { await self.performRestoreFromPendingFile() }
+            }
+            Button("Cancel", role: .cancel) {
+                self.pendingRestoreFileURL = nil
+            }
+        } message: {
+            Text("This replaces current local chats, workspace files, settings, and saved credentials.")
+        }
+        .fileExporter(
+            isPresented: self.$showBackupExporter,
+            document: self.backupExportDocument,
+            contentType: .data,
+            defaultFilename: self.backupExportFileName)
+        { result in
+            switch result {
+            case let .success(url):
+                self.backupStatusMessage = "Saved to \(url.lastPathComponent)."
+                self.showBackupStatusAlert = true
+            case let .failure(error):
+                self.backupStatusMessage = "Backup export failed: \(error.localizedDescription)"
+                self.showBackupStatusAlert = true
+            }
+        }
+        .alert("Backup", isPresented: self.$showBackupStatusAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(self.backupStatusMessage ?? "")
+        }
     }
 
     @ViewBuilder
@@ -639,6 +713,117 @@ struct SettingsTab: View {
         return self.appModel.gatewayServerName != nil && !status.contains("offline")
     }
 
+    // MARK: - Provider List
+
+    @ViewBuilder
+    private func providerRow(_ provider: SavedLLMProvider) -> some View {
+        let isActive = self.activeProviderID == provider.id
+        Button {
+            Task { await self.activateProvider(provider) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isActive ? .green : .secondary)
+                    .font(.title3)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.displayName)
+                        .font(.body.weight(isActive ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                    Text(provider.provider.displayLabel + (provider.model.isEmpty ? "" : " · \(provider.model)"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    self.editingProvider = provider
+                } label: {
+                    Image(systemName: "pencil.circle")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(self.llmApplying)
+    }
+
+    @ViewBuilder
+    private func providerEditorSheet(for editing: SavedLLMProvider) -> some View {
+        LLMProviderEditorSheet(
+            provider: editing,
+            isNew: !self.savedProviders.contains(where: { $0.id == editing.id }))
+        { saved, test in
+            await self.handleProviderEditorSave(saved, test: test)
+        }
+    }
+
+    @MainActor
+    private func handleProviderEditorSave(_ saved: SavedLLMProvider, test: Bool) async {
+        if let index = self.savedProviders.firstIndex(where: { $0.id == saved.id }) {
+            self.savedProviders[index] = saved
+        } else {
+            self.savedProviders.append(saved)
+        }
+        LLMProviderStore.save(self.savedProviders)
+        await self.activateProvider(saved)
+        if test {
+            let quickTestLogLine = "llm editor quick test start"
+                + " provider=\(saved.provider.rawValue)"
+                + " model=\(saved.model)"
+            print("[OpenClaw iOS] \(quickTestLogLine)")
+            self.gatewayLogger.info("\(quickTestLogLine, privacy: .public)")
+            await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
+            let passed = self.localGatewayRuntime.lastLocalLLMProbeSucceeded == true
+            let outcome = passed ? "passed" : "failed"
+            print("[OpenClaw iOS] llm editor quick test \(outcome)")
+            self.gatewayLogger.info("llm editor quick test \(outcome, privacy: .public)")
+        }
+    }
+
+    private func activateProvider(_ provider: SavedLLMProvider?) async {
+        self.llmApplying = true
+        defer { self.llmApplying = false }
+
+        if let provider {
+            self.activeProviderID = provider.id
+            LLMProviderStore.setActiveID(provider.id)
+
+            self.llmProvider = provider.provider
+            self.llmBaseURL = provider.baseURL
+            self.llmAPIKey = provider.apiKey
+            self.llmModel = provider.model
+            self.llmToolCallingMode = provider.toolCallingMode
+
+            var settings = self.localGatewayRuntime.controlPlaneSettings
+            settings.localLLMProvider = provider.provider
+            settings.localLLMBaseURL = provider.baseURL
+            settings.localLLMAPIKey = provider.apiKey
+            settings.localLLMModel = provider.model
+            settings.localLLMToolCallingMode = provider.toolCallingMode
+            await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+        } else {
+            self.activeProviderID = nil
+            LLMProviderStore.setActiveID(nil)
+
+            self.llmProvider = .disabled
+            self.llmBaseURL = ""
+            self.llmAPIKey = ""
+            self.llmModel = ""
+
+            var settings = self.localGatewayRuntime.controlPlaneSettings
+            settings.localLLMProvider = .disabled
+            settings.localLLMBaseURL = ""
+            settings.localLLMAPIKey = ""
+            settings.localLLMModel = ""
+            settings.localLLMToolCallingMode = self.llmToolCallingMode
+            await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+        }
+    }
+
     // MARK: - Local LLM Settings
 
     private var llmSettingsDirty: Bool {
@@ -647,6 +832,7 @@ struct SettingsTab: View {
             || self.llmBaseURL != settings.localLLMBaseURL
             || self.llmAPIKey != settings.localLLMAPIKey
             || self.llmModel != settings.localLLMModel
+            || self.llmToolCallingMode != settings.localLLMToolCallingMode
     }
 
     private func loadLLMSettingsFromRuntime() {
@@ -655,6 +841,7 @@ struct SettingsTab: View {
         self.llmBaseURL = settings.localLLMBaseURL
         self.llmAPIKey = settings.localLLMAPIKey
         self.llmModel = settings.localLLMModel
+        self.llmToolCallingMode = settings.localLLMToolCallingMode
     }
 
     private func applyRecommendedLLMDefaultsIfNeeded(for provider: GatewayLocalLLMProviderKind) {
@@ -680,6 +867,7 @@ struct SettingsTab: View {
         settings.localLLMBaseURL = self.llmBaseURL
         settings.localLLMAPIKey = self.llmAPIKey
         settings.localLLMModel = self.llmModel
+        settings.localLLMToolCallingMode = self.llmToolCallingMode
         await self.localGatewayRuntime.applyControlPlaneSettings(settings)
         if test {
             await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
@@ -693,67 +881,8 @@ struct SettingsTab: View {
         self.llmApplying = false
     }
 
-    /// Extract a human-readable error from the nested gateway LLM error format.
-    /// Input like: `local llm failed: httpError(status: 400, message: "{\"error\":{\"message\":\"unknown model 'x'\"}}")`
-    /// Output: `HTTP 400: unknown model 'x'`
     private static func formatLLMError(_ raw: String) -> String {
-        // Try to extract HTTP status from "httpError(status: NNN, ...)"
-        var httpStatus: String?
-        if let statusRange = raw.range(of: "status: "),
-           let commaRange = raw[statusRange.upperBound...].range(of: ",")
-        {
-            httpStatus = String(raw[statusRange.upperBound ..< commaRange.lowerBound])
-        }
-
-        // Try to extract the inner JSON message field.
-        // Look for the JSON blob inside message: "..."
-        if let jsonStart = raw.range(of: "message: \"")?.upperBound ?? raw.range(of: "message:\"")?.upperBound {
-            // Find the matching closing quote — the JSON string ends at the last `")` in the error.
-            let tail = raw[jsonStart...]
-            // The JSON is escaped; try to unescape and parse it.
-            var jsonString = String(tail)
-            // Strip trailing `")` wrapper if present.
-            if jsonString.hasSuffix("\")") {
-                jsonString = String(jsonString.dropLast(2))
-            } else if jsonString.hasSuffix("\"") {
-                jsonString = String(jsonString.dropLast(1))
-            }
-            // Unescape \" → "
-            jsonString = jsonString.replacingOccurrences(of: "\\\"", with: "\"")
-
-            if let data = jsonString.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            {
-                // Nested: {"error": {"message": "..."}} or {"type":"error","error":{"message":"..."}}
-                if let errorObj = json["error"] as? [String: Any],
-                   let msg = errorObj["message"] as? String
-                {
-                    if let status = httpStatus {
-                        return "HTTP \(status): \(msg)"
-                    }
-                    return msg
-                }
-                // Flat: {"message": "..."}
-                if let msg = json["message"] as? String {
-                    if let status = httpStatus {
-                        return "HTTP \(status): \(msg)"
-                    }
-                    return msg
-                }
-            }
-        }
-
-        // Fallback: strip the common prefix for brevity.
-        var cleaned = raw
-        for prefix in ["local llm failed: ", "httpError(", "local llm "] {
-            if cleaned.hasPrefix(prefix) {
-                cleaned = String(cleaned.dropFirst(prefix.count))
-            }
-        }
-        if cleaned.hasSuffix(")") {
-            cleaned = String(cleaned.dropLast(1))
-        }
-        return cleaned
+        SettingsNetworkingHelpers.formatLLMError(raw)
     }
 
     private var gatewaySummaryText: String {
@@ -1038,7 +1167,7 @@ struct SettingsTab: View {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
-        if Self.isTailnetHostOrIP(trimmed) && !Self.hasTailnetIPv4() {
+        if SettingsNetworkingHelpers.isTailnetHostOrIP(trimmed) && !SettingsNetworkingHelpers.hasTailnetIPv4() {
             let msg = "Tailscale is off on this iPhone. Turn it on, then try again."
             self.setupStatusText = msg
             GatewayDiagnostics.log("preflight fail: tailnet missing host=\(trimmed)")
@@ -1105,8 +1234,8 @@ struct SettingsTab: View {
     private var tailnetWarningText: String? {
         let host = self.manualGatewayHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return nil }
-        guard Self.isTailnetHostOrIP(host) else { return nil }
-        guard !Self.hasTailnetIPv4() else { return nil }
+        guard SettingsNetworkingHelpers.isTailnetHostOrIP(host) else { return nil }
+        guard !SettingsNetworkingHelpers.hasTailnetIPv4() else { return nil }
         return "This gateway is on your tailnet. Turn on Tailscale on this iPhone, then tap Connect."
     }
 
@@ -1132,57 +1261,6 @@ struct SettingsTab: View {
         return nil
     }
 
-    private static func hasTailnetIPv4() -> Bool {
-        var addrList: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&addrList) == 0, let first = addrList else { return false }
-        defer { freeifaddrs(addrList) }
-
-        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let flags = Int32(ptr.pointee.ifa_flags)
-            let isUp = (flags & IFF_UP) != 0
-            let isLoopback = (flags & IFF_LOOPBACK) != 0
-            let family = ptr.pointee.ifa_addr.pointee.sa_family
-            if !isUp || isLoopback || family != UInt8(AF_INET) { continue }
-
-            var addr = ptr.pointee.ifa_addr.pointee
-            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            let result = getnameinfo(
-                &addr,
-                socklen_t(ptr.pointee.ifa_addr.pointee.sa_len),
-                &buffer,
-                socklen_t(buffer.count),
-                nil,
-                0,
-                NI_NUMERICHOST)
-            guard result == 0 else { continue }
-            let len = buffer.prefix { $0 != 0 }
-            let bytes = len.map { UInt8(bitPattern: $0) }
-            guard let ip = String(bytes: bytes, encoding: .utf8) else { continue }
-            if self.isTailnetIPv4(ip) { return true }
-        }
-
-        return false
-    }
-
-    private static func isTailnetHostOrIP(_ host: String) -> Bool {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if trimmed.hasSuffix(".ts.net") || trimmed.hasSuffix(".ts.net.") {
-            return true
-        }
-        return self.isTailnetIPv4(trimmed)
-    }
-
-    private static func isTailnetIPv4(_ ip: String) -> Bool {
-        let parts = ip.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        let octets = parts.compactMap { Int($0) }
-        guard octets.count == 4 else { return false }
-        let a = octets[0]
-        let b = octets[1]
-        guard (0...255).contains(a), (0...255).contains(b) else { return false }
-        return a == 100 && b >= 64 && b <= 127
-    }
-
     private static func parseHostPort(from address: String) -> SettingsHostPort? {
         SettingsNetworkingHelpers.parseHostPort(from: address)
     }
@@ -1191,8 +1269,109 @@ struct SettingsTab: View {
         SettingsNetworkingHelpers.httpURLString(host: host, port: port, fallback: fallback)
     }
 
-    private func resetOnboarding() {
-        // Disconnect first so RootCanvas doesn't instantly mark onboarding complete again.
+}
+
+// MARK: - Backup / Restore
+
+extension SettingsTab {
+    func performBackupExport() async {
+        guard !self.backupOperationInFlight else { return }
+        self.backupOperationInFlight = true
+        let wasRunning = self.localGatewayRuntime.state == .running
+        if wasRunning {
+            await self.localGatewayRuntime.stop()
+        }
+
+        do {
+            let artifact = try await Task.detached(priority: .userInitiated) {
+                try OpenClawBackupManager.createBackupArtifact()
+            }.value
+
+            if wasRunning {
+                await self.localGatewayRuntime.start()
+            }
+
+            self.backupOperationInFlight = false
+            self.backupExportDocument = OpenClawBackupExportDocument(data: artifact.data)
+            self.backupExportFileName = artifact.defaultFileName
+            self.showBackupExporter = true
+        } catch {
+            if wasRunning {
+                await self.localGatewayRuntime.start()
+            }
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Backup failed: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
+    func handleRestoreSelection(_ result: Result<[URL], any Error>) {
+        switch result {
+        case let .success(urls):
+            guard let url = urls.first else { return }
+            self.pendingRestoreFileURL = url
+            self.showRestoreConfirmAlert = true
+        case let .failure(error):
+            self.backupStatusMessage = "Could not open file: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
+    func performRestoreFromPendingFile() async {
+        guard !self.backupOperationInFlight else { return }
+        guard let url = self.pendingRestoreFileURL else { return }
+
+        self.pendingRestoreFileURL = nil
+        self.backupOperationInFlight = true
+
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasSecurityScope {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let archiveData = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url, options: [.mappedIfSafe])
+            }.value
+
+            let wasRunning = self.localGatewayRuntime.state == .running
+            if wasRunning {
+                await self.localGatewayRuntime.stop()
+            }
+
+            do {
+                let restored = try await Task.detached(priority: .userInitiated) {
+                    try OpenClawBackupManager.restoreBackupArchive(from: archiveData)
+                }.value
+
+                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.loadLLMSettingsFromRuntime()
+                let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
+                self.savedProviders = migrated.providers
+                self.activeProviderID = migrated.activeID
+
+                self.backupOperationInFlight = false
+                self.backupStatusMessage =
+                    "Restored \(restored.restoredFileCount) files, "
+                    + "\(restored.restoredDefaultsCount) settings, "
+                    + "\(restored.restoredKeychainCount) keychain entries."
+                self.showBackupStatusAlert = true
+            } catch {
+                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.backupOperationInFlight = false
+                self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
+                self.showBackupStatusAlert = true
+            }
+        } catch {
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
+    func resetOnboarding() {
         self.appModel.disconnectGateway()
         self.connectingGatewayID = nil
         self.setupStatusText = nil
@@ -1210,25 +1389,20 @@ struct SettingsTab: View {
             GatewaySettingsStore.deleteGatewayCredentials(instanceId: trimmedInstanceId)
         }
 
-        // Reset onboarding state + clear saved gateway connection (the two things RootCanvas checks).
         GatewaySettingsStore.clearLastGatewayConnection()
 
-        // RootCanvas also short-circuits onboarding when these are true.
         self.onboardingComplete = false
         self.hasConnectedOnce = false
 
-        // Clear manual override so it doesn't count as an existing gateway config.
         self.manualGatewayEnabled = false
         self.manualGatewayHost = ""
 
-        // Force re-present even without app restart.
         self.onboardingRequestID += 1
 
-        // The onboarding wizard is presented from RootCanvas; dismiss Settings so it can show.
         self.dismiss()
     }
 
-    private func gatewayDetailLines(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) -> [String] {
+    func gatewayDetailLines(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) -> [String] {
         var lines: [String] = []
         if let lanHost = gateway.lanHost { lines.append("LAN: \(lanHost)") }
         if let tailnet = gateway.tailnetDns { lines.append("Tailnet: \(tailnet)") }
@@ -1246,5 +1420,48 @@ struct SettingsTab: View {
         }
 
         return lines
+    }
+}
+
+private extension GatewayLocalLLMToolCallingMode {
+    static let allCases: [GatewayLocalLLMToolCallingMode] = [.auto, .on, .off]
+
+    var displayLabel: String {
+        switch self {
+        case .auto:
+            return "Auto"
+        case .on:
+            return "On"
+        case .off:
+            return "Off"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .auto:
+            return "Auto uses tool-aware API, then falls back to plain chat if the provider rejects tools."
+        case .on:
+            return "On forces tool-aware API. Chat fails if the model endpoint does not support tool calls."
+        case .off:
+            return "Off disables tool-aware API and uses plain chat completions only."
+        }
+    }
+}
+
+private struct SettingsFormWidthModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            content
+                .formStyle(.grouped)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }

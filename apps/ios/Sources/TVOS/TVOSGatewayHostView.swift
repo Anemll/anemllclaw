@@ -1,6 +1,7 @@
 #if os(tvOS)
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 import OpenClawGatewayCore
 
 struct TVOSGatewayHostView: View {
@@ -99,32 +100,39 @@ struct TVOSGatewayHostView: View {
         case forceRebindWS
         case clearLog
         case clearErrors
-        // Row 3 – chat mirroring
+        // Row 3 – LAN access
+        case lanAccessToggle
+        // Row 4 – chat mirroring
         case externalTelegramChatMirror
-        // Row 4 – TCP debug
+        // Row 5 – TCP debug
         case tcpToggle
         case rebindTCP
         case probeTCP
-        // Row 5 – LLM / agent
+        // Row 6 – LLM / agent
         case testLocalLLM
         case testAgenticRun
         case agentStatus
         case abortAgent
-        // Row 6 – Listener auth
+        // Row 7 – Listener auth
         case authMode
         case authToken
         case authPassword
-        // Row 7 – Upstream gateway
+        // Row 8 – Upstream gateway (hidden but kept for potential re-enablement)
         case upstreamURL
         case upstreamToken
         case upstreamPassword
-        // Row 8 – LLM settings
+        // Row 9 – LLM settings
         case llmProvider
         case llmBaseURL
         case llmAPIKey
         case llmModel
         case llmApply
         case llmReload
+        // Row 10 – Backup / Restore
+        case backupButton
+        case restoreButton
+        // Row 11 – Acknowledgments
+        case acknowledgments
     }
 
     /// All settings focus targets grouped by visual row for directional navigation.
@@ -132,13 +140,16 @@ struct TVOSGatewayHostView: View {
         [.done],
         [.runtimeToggle, .probeInProcess, .probeWebSocket, .probeUpstream],
         [.wsToggle, .forceRebindWS, .clearLog, .clearErrors],
+        [.lanAccessToggle],
         [.externalTelegramChatMirror],
         [.tcpToggle, .rebindTCP, .probeTCP],
         [.testLocalLLM, .testAgenticRun, .agentStatus, .abortAgent],
         [.authMode, .authToken, .authPassword],
-        [.upstreamURL, .upstreamToken, .upstreamPassword],
+        // Upstream row hidden: [.upstreamURL, .upstreamToken, .upstreamPassword],
         [.llmProvider, .llmBaseURL, .llmAPIKey, .llmModel],
         [.llmApply, .llmReload],
+        [.backupButton, .restoreButton],
+        [.acknowledgments],
     ]
 
     private static let chatTopAnchor = "tvos-chat-top-anchor"
@@ -163,6 +174,13 @@ struct TVOSGatewayHostView: View {
     @State private var previousFocusTarget: FocusTarget? = .input
     @FocusState private var focusedTarget: FocusTarget?
     @FocusState private var settingsFocus: SettingsFocus?
+
+    @State private var showBackupConfirmAlert: Bool = false
+    @State private var showRestoreConfirmAlert: Bool = false
+    @State private var backupOperationInFlight: Bool = false
+    @State private var backupStatusMessage: String?
+    @State private var showBackupStatusAlert: Bool = false
+    @State private var showAcknowledgments: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -734,11 +752,13 @@ struct TVOSGatewayHostView: View {
                 Text("Listener Auth")
             }
 
-            Section {
-                self.upstreamGatewaySettingsContent
-            } header: {
-                Text("Upstream Gateway")
-            }
+            // Upstream Gateway settings are hidden — not used in current tvOS builds.
+            // Uncomment to re-enable upstream gateway configuration.
+            // Section {
+            //     self.upstreamGatewaySettingsContent
+            // } header: {
+            //     Text("Upstream Gateway")
+            // }
 
             Section {
                 self.localLLMSettingsContent
@@ -752,10 +772,18 @@ struct TVOSGatewayHostView: View {
                 Text("Network Status")
             }
 
+            // Upstream & TCP status is hidden — not used in current tvOS builds.
+            // Uncomment to re-enable upstream and TCP status display.
+            // Section {
+            //     self.upstreamAndTCPStatusContent
+            // } header: {
+            //     Text("Upstream & TCP")
+            // }
+
             Section {
-                self.upstreamAndTCPStatusContent
+                self.backupRestoreContent
             } header: {
-                Text("Upstream & TCP")
+                Text("Backup / Restore")
             }
 
             Section {
@@ -769,8 +797,22 @@ struct TVOSGatewayHostView: View {
             } header: {
                 Text("Runtime Log (\(self.runtime.diagnosticsLog.count))")
             }
+
+            Section {
+                Button {
+                    self.showAcknowledgments = true
+                } label: {
+                    Label("Acknowledgments", systemImage: "doc.text")
+                }
+                .focused(self.$settingsFocus, equals: .acknowledgments)
+            } header: {
+                Text("About")
+            }
         }
         .listStyle(.grouped)
+        .sheet(isPresented: self.$showAcknowledgments) {
+            TVOSAcknowledgmentsSheet()
+        }
         .background(
             LinearGradient(
                 colors: [Color.black, Color(red: 0.08, green: 0.08, blue: 0.12)],
@@ -782,6 +824,27 @@ struct TVOSGatewayHostView: View {
         }
         .onAppear {
             self.settingsDraft = self.runtime.controlPlaneSettings
+        }
+        .alert("Create Backup?", isPresented: self.$showBackupConfirmAlert) {
+            Button("Backup") {
+                Task { await self.performBackupExport() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Backup includes chats, workspace files, settings, and saved credentials. The file will be saved to the app's Documents folder.")
+        }
+        .alert("Restore Backup?", isPresented: self.$showRestoreConfirmAlert) {
+            Button("Restore", role: .destructive) {
+                Task { await self.performRestoreFromDocuments() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores the most recent .ocbackup file from the Documents folder, replacing current chats, workspace files, settings, and saved credentials.")
+        }
+        .alert("Backup", isPresented: self.$showBackupStatusAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(self.backupStatusMessage ?? "")
         }
     }
 
@@ -835,6 +898,21 @@ struct TVOSGatewayHostView: View {
             .focused(self.$settingsFocus, equals: .probeTCP)
         }
         .buttonStyle(.bordered)
+
+        HStack(spacing: 12) {
+            Toggle("LAN Access", isOn: self.lanAccessBinding)
+                .toggleStyle(.switch)
+                .focused(self.$settingsFocus, equals: .lanAccessToggle)
+        }
+        if self.runtime.lanAccessEnabled {
+            Text("WebSocket is reachable from your local network. Required for Admin Web panel access from another device.")
+                .font(.footnote)
+                .foregroundStyle(.orange)
+        } else {
+            Text("WebSocket only accepts connections from this device (localhost). Enable LAN Access for Admin Web panel use.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
 
         HStack(spacing: 12) {
             Toggle("Show Telegram external messages in chat", isOn: self.telegramExternalChatMirrorBinding)
@@ -1017,6 +1095,139 @@ struct TVOSGatewayHostView: View {
             .foregroundStyle(.secondary)
     }
 
+    @ViewBuilder
+    private var backupRestoreContent: some View {
+        HStack(spacing: 12) {
+            Button {
+                self.showBackupConfirmAlert = true
+            } label: {
+                Label("Backup to Documents", systemImage: "square.and.arrow.up")
+            }
+            .disabled(self.backupOperationInFlight)
+            .focused(self.$settingsFocus, equals: .backupButton)
+
+            Button(role: .destructive) {
+                self.showRestoreConfirmAlert = true
+            } label: {
+                Label("Restore from Documents", systemImage: "square.and.arrow.down")
+            }
+            .disabled(self.backupOperationInFlight)
+            .focused(self.$settingsFocus, equals: .restoreButton)
+        }
+        .buttonStyle(.bordered)
+
+        if self.backupOperationInFlight {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Processing…")
+            }
+        }
+
+        Text("Backup saves to the app's Documents folder. Use Finder (macOS) or a file manager to transfer .ocbackup files.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private static var backupDocumentsDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    }
+
+    private func performBackupExport() async {
+        guard !self.backupOperationInFlight else { return }
+        self.backupOperationInFlight = true
+        let wasRunning = self.runtime.state == .running
+        if wasRunning {
+            await self.runtime.stop()
+        }
+
+        do {
+            let artifact = try await Task.detached(priority: .userInitiated) {
+                try OpenClawBackupManager.createBackupArtifact()
+            }.value
+
+            if wasRunning {
+                await self.runtime.start()
+            }
+
+            let destinationURL = Self.backupDocumentsDirectory
+                .appendingPathComponent(artifact.defaultFileName, isDirectory: false)
+            try artifact.data.write(to: destinationURL, options: .atomic)
+
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Saved to Documents/\(artifact.defaultFileName)"
+            self.showBackupStatusAlert = true
+        } catch {
+            if wasRunning {
+                await self.runtime.start()
+            }
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Backup failed: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
+    private func performRestoreFromDocuments() async {
+        guard !self.backupOperationInFlight else { return }
+        self.backupOperationInFlight = true
+
+        do {
+            let documentsURL = Self.backupDocumentsDirectory
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: documentsURL,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles])
+            let backupFiles = contents
+                .filter { $0.pathExtension == "ocbackup" }
+                .sorted { lhs, rhs in
+                    let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return lhsDate > rhsDate
+                }
+
+            guard let latestBackup = backupFiles.first else {
+                self.backupOperationInFlight = false
+                self.backupStatusMessage = "No .ocbackup files found in Documents folder."
+                self.showBackupStatusAlert = true
+                return
+            }
+
+            let archiveData = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: latestBackup, options: [.mappedIfSafe])
+            }.value
+
+            let wasRunning = self.runtime.state == .running
+            if wasRunning {
+                await self.runtime.stop()
+            }
+
+            do {
+                let restored = try await Task.detached(priority: .userInitiated) {
+                    try OpenClawBackupManager.restoreBackupArchive(from: archiveData)
+                }.value
+
+                await self.runtime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.settingsDraft = self.runtime.controlPlaneSettings
+
+                self.backupOperationInFlight = false
+                self.backupStatusMessage =
+                    "Restored from \(latestBackup.lastPathComponent): "
+                    + "\(restored.restoredFileCount) files, "
+                    + "\(restored.restoredDefaultsCount) settings, "
+                    + "\(restored.restoredKeychainCount) keychain entries."
+                self.showBackupStatusAlert = true
+            } catch {
+                await self.runtime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+                self.backupOperationInFlight = false
+                self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
+                self.showBackupStatusAlert = true
+            }
+        } catch {
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
     private func applyControlPlaneSettings(testLocalLLM: Bool = false) {
         guard !self.applyingSettings else { return }
         let draft = self.settingsDraft
@@ -1042,6 +1253,10 @@ struct TVOSGatewayHostView: View {
             if self.runtime.localIPv4Addresses.count > 1 {
                 self.detailLine("All local IPs: \(self.runtime.localIPv4Addresses.joined(separator: ", "))")
             }
+            self.statusLine(
+                "LAN Access",
+                self.runtime.lanAccessEnabled ? "enabled" : "disabled",
+                color: self.runtime.lanAccessEnabled ? .green : .gray)
             self.statusLine(
                 "WebSocket listener",
                 self.webSocketListenerLabel,
@@ -1464,6 +1679,10 @@ struct TVOSGatewayHostView: View {
             if self.runtime.localIPv4Addresses.count > 1 {
                 self.detailLine("All local IPs: \(self.runtime.localIPv4Addresses.joined(separator: ", "))")
             }
+            self.statusLine(
+                "LAN Access",
+                self.runtime.lanAccessEnabled ? "enabled" : "disabled",
+                color: self.runtime.lanAccessEnabled ? .green : .gray)
 
             self.statusLine(
                 "WebSocket listener",
@@ -1683,6 +1902,14 @@ struct TVOSGatewayHostView: View {
             }
             .focused(self.$settingsFocus, equals: .tcpToggle)
         }
+    }
+
+    private var lanAccessBinding: Binding<Bool> {
+        Binding(
+            get: { self.runtime.lanAccessEnabled },
+            set: { newValue in
+                Task { await self.runtime.setLanAccessEnabled(newValue) }
+            })
     }
 
     private var telegramExternalChatMirrorBinding: Binding<Bool> {
@@ -2025,6 +2252,139 @@ private extension View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(Color.white.opacity(0.2), lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - Acknowledgments
+
+private struct TVOSAcknowledgmentsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("OpenClaw uses the following open-source libraries. We are grateful to the authors and contributors of these projects.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                self.librarySection(
+                    name: "OpenClawGatewayCore",
+                    description: "Local gateway runtime with embedded SQLite memory store, WebSocket/TCP servers, and agentic method router.",
+                    license: "Proprietary",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "OpenClawKit",
+                    description: "Shared UI components, chat transport protocol, and client-side utilities for OpenClaw apps.",
+                    license: "Proprietary",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "Textual",
+                    description: "A Swift package for rendering rich text content including Markdown, LaTeX, and code blocks in SwiftUI.",
+                    license: "MIT",
+                    author: "Guille Gonzalez",
+                    url: "https://github.com/gonzalezreal/textual")
+
+                self.librarySection(
+                    name: "SwiftUI Math",
+                    description: "Mathematical expression rendering for SwiftUI, used by Textual for LaTeX support.",
+                    license: "MIT",
+                    author: "Guille Gonzalez, SwiftMath contributors",
+                    url: "https://github.com/gonzalezreal/swiftui-math")
+
+                self.librarySection(
+                    name: "ElevenLabsKit",
+                    description: "Swift SDK for the ElevenLabs text-to-speech and voice synthesis API.",
+                    license: "MIT",
+                    author: "Peter Steinberger",
+                    url: "https://github.com/steipete/ElevenLabsKit")
+
+                self.librarySection(
+                    name: "Swift Concurrency Extras",
+                    description: "Useful utilities for working with Swift concurrency, including serial executors and async streams.",
+                    license: "MIT",
+                    author: "Point-Free",
+                    url: "https://github.com/pointfreeco/swift-concurrency-extras")
+
+                self.librarySection(
+                    name: "SwabbleKit",
+                    description: "Lightweight test-double and mock generation toolkit for Swift.",
+                    license: "MIT",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "Commander",
+                    description: "A Swift framework for composing command-line interfaces.",
+                    license: "MIT",
+                    author: "Peter Steinberger",
+                    url: "https://github.com/steipete/Commander")
+
+                self.librarySection(
+                    name: "Swift Snapshot Testing",
+                    description: "Delightful Swift snapshot testing framework with support for multiple strategies.",
+                    license: "MIT",
+                    author: "Point-Free",
+                    url: "https://github.com/pointfreeco/swift-snapshot-testing")
+
+                self.librarySection(
+                    name: "SQLite3",
+                    description: "Embedded SQL database engine. Used via system library for the gateway memory store.",
+                    license: "Public Domain",
+                    author: "D. Richard Hipp and contributors",
+                    url: "https://www.sqlite.org")
+
+                Section {
+                    Text("All trademarks are the property of their respective owners. License texts are available in each library's repository.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.grouped)
+            .navigationTitle("Acknowledgments")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        self.dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func librarySection(
+        name: String,
+        description: String,
+        license: String,
+        author: String,
+        url: String? = nil) -> some View
+    {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(name)
+                    .font(.headline)
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Label(license, systemImage: "doc.text")
+                        .font(.caption)
+                        .foregroundStyle(.mint)
+                    Label(author, systemImage: "person")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let url {
+                    Text(url)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.blue)
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 #endif

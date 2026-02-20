@@ -101,6 +101,11 @@ public actor GatewaySessionStore {
             queue: GatewaySessionOperationQueue())
     }
 
+    public func removeSession(sessionKey: String) {
+        let key = Self.normalizedSessionKey(sessionKey)
+        self.sessions.removeValue(forKey: key)
+    }
+
     public func sessionCount() -> Int {
         self.sessions.count
     }

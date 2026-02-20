@@ -319,12 +319,13 @@ Things like:
 
 ### Cron jobs
 
-- Geekbench monitor every 4 hours:
+(Add your own periodic tasks here. Example format:)
+- My task every 4 hours:
   - `schedule.kind = "every"`
   - `everyMs = 14400000`
   - `sessionTarget = "isolated"`
   - `payload.kind = "agentTurn"`
-  - `payload.message = "Use skills/GEEKBENCH_MONITOR.md and report only new matches"`
+  - `payload.message = "Describe what the agent should do"`
 ```
 
 ## Why Separate?

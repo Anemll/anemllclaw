@@ -69,6 +69,7 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
     var localLLMBaseURL: String
     var localLLMAPIKey: String
     var localLLMModel: String
+    var localLLMToolCallingMode: GatewayLocalLLMToolCallingMode
 
     var telegramBotToken: String
     var telegramDefaultChatID: String
@@ -86,6 +87,7 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMBaseURL: "",
         localLLMAPIKey: "",
         localLLMModel: "",
+        localLLMToolCallingMode: .auto,
         telegramBotToken: "",
         telegramDefaultChatID: "")
 }
@@ -176,6 +178,20 @@ private actor TVOSRuntimeAdminBridge: GatewayLocalMethodRouterAdminBridge {
         }
         return try await runtime.adminPairingApprove(params: params, nowMs: nowMs)
     }
+
+    func backupExport(nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return try await runtime.adminBackupExport(nowMs: nowMs)
+    }
+
+    func backupImport(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return try await runtime.adminBackupImport(params: params, nowMs: nowMs)
+    }
 }
 
 @MainActor
@@ -257,6 +273,8 @@ final class TVOSLocalGatewayRuntime {
     private(set) var chatLastErrorText: String?
     private(set) var diagnosticsLog: [TVOSGatewayRuntimeLogEntry]
 
+    private(set) var lanAccessEnabled: Bool
+
     private let webSocketListenPortPreference: UInt16
     private let tcpListenPortPreference: UInt16
     private let exposeTCPListener: Bool
@@ -315,6 +333,7 @@ final class TVOSLocalGatewayRuntime {
         self.webSocketListenPortPreference = listenPort
         self.tcpListenPortPreference = tcpDebugPort
         self.transportOverride = transport
+        self.lanAccessEnabled = UserDefaults.standard.bool(forKey: "network.lanAccess.enabled")
 
         var settings = Self.loadControlPlaneSettings()
         if tcpAuthConfig.mode != .none {
@@ -626,6 +645,7 @@ final class TVOSLocalGatewayRuntime {
                 "control plane settings applied auth=\(normalized.authMode.rawValue)"
                     + " upstream=\(Self.trimmed(normalized.upstreamURL) ?? "(none)")"
                     + " llm=\(normalized.localLLMProvider.rawValue)"
+                    + " llmTools=\(normalized.localLLMToolCallingMode.rawValue)"
                     + " telegram=\(Self.presenceState(normalized.telegramBotToken))")
 
             if wasRunning {
@@ -647,9 +667,7 @@ final class TVOSLocalGatewayRuntime {
             let wasRunning = self.state == .running
             if wasRunning {
                 await self.stopLocked()
-                if self.exposeTCPListener {
-                    try? await Task.sleep(nanoseconds: Self.listenerRestartQuiesceDurationNanoseconds)
-                }
+                try? await Task.sleep(nanoseconds: Self.listenerRestartQuiesceDurationNanoseconds)
             }
 
             self.controlPlaneSettings = normalized
@@ -665,6 +683,20 @@ final class TVOSLocalGatewayRuntime {
                 await self.probeHealthOverWebSocket()
                 await self.probeUpstreamHealth()
             }
+        }
+    }
+
+    func setLanAccessEnabled(_ enabled: Bool) async {
+        guard enabled != self.lanAccessEnabled else { return }
+        self.lanAccessEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "network.lanAccess.enabled")
+        self.appendLog("LAN access \(enabled ? "enabled" : "disabled") — restarting listeners")
+        // Restart listeners with the new bind scope.
+        await self.stopWebSocketListener()
+        await self.startWebSocketListenerIfNeeded()
+        if self.exposeTCPListener {
+            await self.stopTCPListener()
+            await self.startTCPListenerIfNeeded()
         }
     }
 
@@ -937,7 +969,7 @@ final class TVOSLocalGatewayRuntime {
             return
         }
 
-        let sessionKey = "tvos-agentic-llm-probe"
+        let sessionKey = "tvos-agentic-llm-probe-\(UUID().uuidString.lowercased())"
         let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Who are you?"
             : prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -945,7 +977,8 @@ final class TVOSLocalGatewayRuntime {
         let modelText = Self.trimmed(self.controlPlaneSettings.localLLMModel) ?? "(none)"
         self.appendLog(
             "local llm probe start provider=\(self.controlPlaneSettings.localLLMProvider.rawValue)"
-                + " baseURL=\(baseURLText) model=\(modelText) session=\(sessionKey)")
+                + " baseURL=\(baseURLText) model=\(modelText) session=\(sessionKey)"
+                + " skipPreamble=1 disableTools=1")
 
         do {
             let sendRequest = GatewayRequestFrame(
@@ -955,6 +988,9 @@ final class TVOSLocalGatewayRuntime {
                     "sessionKey": .string(sessionKey),
                     "message": .string(normalizedPrompt),
                     "thinking": .string("low"),
+                    "historyLimit": .integer(12),
+                    "skipPreamble": .bool(true),
+                    "disableTools": .bool(true),
                     "idempotencyKey": .string(UUID().uuidString),
                 ]))
             let sendResponse = try await host.invoke(sendRequest)
@@ -1225,7 +1261,9 @@ final class TVOSLocalGatewayRuntime {
             return
         }
         do {
-            let boundPort = try await webSocketServer.start(port: self.webSocketListenPortPreference)
+            let boundPort = try await webSocketServer.start(
+                port: self.webSocketListenPortPreference,
+                localhostOnly: !self.lanAccessEnabled)
             self.listenerPort = boundPort
             self.listenerErrorText = nil
             self.listenerState = .listening
@@ -1233,10 +1271,12 @@ final class TVOSLocalGatewayRuntime {
             self.webSocketRetryTask = nil
             self.webSocketRetryAttempt = 0
             self.webSocketRetryDelaySeconds = nil
+            let localhostOnly = !self.lanAccessEnabled
             let endpointSummary = Self.listenerEndpointSummary(
                 port: boundPort,
                 localAddresses: self.localIPv4Addresses,
-                scheme: "ws")
+                scheme: "ws",
+                localhostOnly: localhostOnly)
             self.appendLog("websocket listener active on \(endpointSummary)")
         } catch {
             self.listenerPort = nil
@@ -1314,7 +1354,8 @@ final class TVOSLocalGatewayRuntime {
             let endpointSummary = Self.listenerEndpointSummary(
                 port: existingPort,
                 localAddresses: self.localIPv4Addresses,
-                scheme: "tcp")
+                scheme: "tcp",
+                localhostOnly: !self.lanAccessEnabled)
             self.appendLog("tcp debug listener already bound on \(endpointSummary), marking active")
             return
         }
@@ -1329,7 +1370,9 @@ final class TVOSLocalGatewayRuntime {
         guard let tcpServer = self.tcpServer else { return }
 
         do {
-            let boundPort = try await tcpServer.start(port: port)
+            let boundPort = try await tcpServer.start(
+                port: port,
+                localhostOnly: !self.lanAccessEnabled)
             self.tcpListenerPort = boundPort
             self.tcpListenerErrorText = nil
             self.tcpListenerState = .listening
@@ -1337,10 +1380,12 @@ final class TVOSLocalGatewayRuntime {
             self.tcpRetryTask = nil
             self.tcpRetryAttempt = 0
             self.tcpRetryDelaySeconds = nil
+            let tcpLocalhostOnly = !self.lanAccessEnabled
             let endpointSummary = Self.listenerEndpointSummary(
                 port: boundPort,
                 localAddresses: self.localIPv4Addresses,
-                scheme: "tcp")
+                scheme: "tcp",
+                localhostOnly: tcpLocalhostOnly)
             self.appendLog("tcp debug listener active on \(endpointSummary)")
             return
         } catch {
@@ -1356,7 +1401,8 @@ final class TVOSLocalGatewayRuntime {
                     let endpointSummary = Self.listenerEndpointSummary(
                         port: existingPort,
                         localAddresses: self.localIPv4Addresses,
-                        scheme: "tcp")
+                        scheme: "tcp",
+                        localhostOnly: !self.lanAccessEnabled)
                     self.appendLog("tcp debug listener already running on \(endpointSummary), marking active")
                     return
                 }
@@ -1586,14 +1632,15 @@ final class TVOSLocalGatewayRuntime {
                         hostLabel: "tvos-local",
                         upstreamConfigured: self.upstreamConfigured,
                         upstreamForwarder: self.upstreamClient,
-                        llmConfig: localLLMConfig,
-                        telegramConfig: localTelegramConfig,
-                        memoryStorePath: primaryMemoryStorePath,
-                        bootstrapConfig: bootstrapConfig,
-                        enableLocalSafeTools: true,
-                        enableLocalFileTools: true,
-                        enableAutoProfileRewrite: false,
-                        adminBridge: adminBridge))
+                                llmConfig: localLLMConfig,
+                                telegramConfig: localTelegramConfig,
+                                memoryStorePath: primaryMemoryStorePath,
+                                bootstrapConfig: bootstrapConfig,
+                                enableLocalSafeTools: true,
+                                enableLocalFileTools: true,
+                                llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
+                                enableAutoProfileRewrite: false,
+                                adminBridge: adminBridge))
             } catch {
                 let firstErrorText = "local router init failed: \(error.localizedDescription)"
                 self.localLLMConfigErrorText = firstErrorText
@@ -1616,6 +1663,7 @@ final class TVOSLocalGatewayRuntime {
                                 bootstrapConfig: bootstrapConfig,
                                 enableLocalSafeTools: true,
                                 enableLocalFileTools: true,
+                                llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
                                 enableAutoProfileRewrite: false,
                                 adminBridge: adminBridge))
                         self.localLLMConfigErrorText = nil
@@ -1857,6 +1905,20 @@ final class TVOSLocalGatewayRuntime {
             next.localLLMModel = model
         }
 
+        let toolCallingModeRaw =
+            Self.firstString(
+                in: source,
+                keys: ["localLLMToolCallingMode", "localLlmToolCallingMode", "llmToolCallingMode", "toolCallingMode"])
+            ?? localLLMObject?["toolCallingMode"]?.stringValue
+            ?? localLLMObject?["toolMode"]?.stringValue
+        if let toolCallingModeRaw {
+            guard let toolCallingMode = Self.parseLocalLLMToolCallingMode(toolCallingModeRaw) else {
+                throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                    "invalid localLLMToolCallingMode: \(toolCallingModeRaw)")
+            }
+            next.localLLMToolCallingMode = toolCallingMode
+        }
+
         if let telegramBotToken =
             Self.firstString(in: source, keys: ["telegramBotToken", "telegramToken", "telegram.token"])
             ?? Self.firstString(in: root, keys: ["telegramBotToken", "telegramToken", "telegram.token"])
@@ -1893,6 +1955,7 @@ final class TVOSLocalGatewayRuntime {
             "localLLMBaseURL": .string(settings.localLLMBaseURL),
             "localLLMAPIKey": .string(settings.localLLMAPIKey),
             "localLLMModel": .string(settings.localLLMModel),
+            "localLLMToolCallingMode": .string(settings.localLLMToolCallingMode.rawValue),
             "telegramBotToken": .string(settings.telegramBotToken),
             "telegramDefaultChatID": .string(settings.telegramDefaultChatID),
             "telegram": .object([
@@ -2131,6 +2194,79 @@ final class TVOSLocalGatewayRuntime {
         ])
     }
 
+    fileprivate func adminBackupExport(nowMs: Int64) async throws -> GatewayJSONValue {
+        // Export is read-only (captures files, defaults, keychain) so we do NOT
+        // stop the runtime.  Stopping tears down the WebSocket listener and
+        // kills the very connection the admin client is using to receive the
+        // response, which always resulted in "socket closed" on the client side.
+        let artifact = try await Task.detached(priority: .userInitiated) {
+            try OpenClawBackupManager.createBackupArtifact()
+        }.value
+
+        let base64String = artifact.data.base64EncodedString()
+        return .object([
+            "ok": .bool(true),
+            "fileName": .string(artifact.defaultFileName),
+            "fileCount": .integer(Int64(artifact.fileCount)),
+            "defaultsCount": .integer(Int64(artifact.defaultsCount)),
+            "keychainCount": .integer(Int64(artifact.keychainCount)),
+            "sizeBytes": .integer(Int64(artifact.data.count)),
+            "data": .string(base64String),
+            "ts": .integer(nowMs),
+        ])
+    }
+
+    fileprivate func adminBackupImport(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue {
+        guard let source = params.objectValue else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("backup.import params must be an object")
+        }
+
+        guard let base64String = Self.firstString(in: source, keys: ["data"]),
+              !base64String.isEmpty
+        else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("backup.import requires 'data' field with base64-encoded backup")
+        }
+
+        guard let archiveData = Data(base64Encoded: base64String, options: [.ignoreUnknownCharacters]) else {
+            throw TVOSRuntimeAdminBridgeError.invalidRequest("backup.import 'data' is not valid base64")
+        }
+
+        let wasRunning = self.state == .running
+        if wasRunning {
+            await self.stop()
+            try? await Task.sleep(nanoseconds: Self.listenerRestartQuiesceDurationNanoseconds)
+        }
+
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try OpenClawBackupManager.restoreBackupArchive(from: archiveData)
+            }.value
+
+            await self.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+
+            var payload: [String: GatewayJSONValue] = [
+                "ok": .bool(true),
+                "restoredFileCount": .integer(Int64(result.restoredFileCount)),
+                "restoredDefaultsCount": .integer(Int64(result.restoredDefaultsCount)),
+                "restoredKeychainCount": .integer(Int64(result.restoredKeychainCount)),
+                "state": self.adminRuntimeStatePayload(nowMs: nowMs),
+                "ts": .integer(nowMs),
+            ]
+            if !result.skippedFileTokens.isEmpty {
+                payload["skippedFileCount"] = .integer(Int64(result.skippedFileTokens.count))
+                payload["skippedFileTokens"] = .array(result.skippedFileTokens.map { .string($0) })
+                self.appendLog(
+                    "backup.import skipped \(result.skippedFileTokens.count) file(s): "
+                        + result.skippedFileTokens.joined(separator: ", "),
+                    level: .warning)
+            }
+            return .object(payload)
+        } catch {
+            if wasRunning { await self.start() }
+            throw error
+        }
+    }
+
     private func adminPairingPayload(nowMs: Int64) -> GatewayJSONValue {
         _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
 
@@ -2307,6 +2443,20 @@ final class TVOSLocalGatewayRuntime {
             return .grokCompatible
         default:
             return GatewayLocalLLMProviderKind(rawValue: normalized)
+        }
+    }
+
+    private static func parseLocalLLMToolCallingMode(_ raw: String) -> GatewayLocalLLMToolCallingMode? {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "auto", "":
+            return .auto
+        case "on", "enabled", "true", "force":
+            return .on
+        case "off", "disabled", "false", "none":
+            return .off
+        default:
+            return GatewayLocalLLMToolCallingMode(rawValue: normalized)
         }
     }
 
@@ -2497,11 +2647,11 @@ final class TVOSLocalGatewayRuntime {
         case .openAICompatible:
             return "gpt-4o-mini"
         case .anthropicCompatible:
-            return "claude-3.5-sonnet"
+            return "claude-sonnet-4-6"
         case .minimaxCompatible:
             return "MiniMax-M2.5"
         case .grokCompatible:
-            return "grok-3-mini-beta"
+            return "grok-4-1-fast-non-reasoning"
         }
     }
 
@@ -2799,6 +2949,11 @@ final class TVOSLocalGatewayRuntime {
         settings.localLLMModel =
             Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
             ?? ""
+        let localToolCallingModeRaw =
+            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.toolCallingMode"))
+            ?? GatewayLocalLLMToolCallingMode.auto.rawValue
+        settings.localLLMToolCallingMode =
+            Self.parseLocalLLMToolCallingMode(localToolCallingModeRaw) ?? .auto
         settings.telegramBotToken =
             Self.trimmed(defaults.string(forKey: "gateway.tvos.telegram.botToken"))
             ?? ""
@@ -2837,6 +2992,9 @@ final class TVOSLocalGatewayRuntime {
         defaults.set(Self.trimmed(settings.localLLMBaseURL), forKey: "gateway.tvos.localLLM.baseURL")
         defaults.set(Self.trimmed(settings.localLLMAPIKey), forKey: "gateway.tvos.localLLM.apiKey")
         defaults.set(Self.trimmed(settings.localLLMModel), forKey: "gateway.tvos.localLLM.model")
+        defaults.set(
+            settings.localLLMToolCallingMode.rawValue,
+            forKey: "gateway.tvos.localLLM.toolCallingMode")
         defaults.set(Self.trimmed(settings.telegramBotToken), forKey: "gateway.tvos.telegram.botToken")
         defaults.set(
             Self.trimmed(settings.telegramDefaultChatID),
@@ -2866,6 +3024,10 @@ final class TVOSLocalGatewayRuntime {
         markIfDifferent("localLLMBaseURL", expected.localLLMBaseURL, persisted.localLLMBaseURL)
         markIfDifferent("localLLMAPIKey", expected.localLLMAPIKey, persisted.localLLMAPIKey)
         markIfDifferent("localLLMModel", expected.localLLMModel, persisted.localLLMModel)
+        markIfDifferent(
+            "localLLMToolCallingMode",
+            expected.localLLMToolCallingMode,
+            persisted.localLLMToolCallingMode)
         markIfDifferent("telegramBotToken", expected.telegramBotToken, persisted.telegramBotToken)
         markIfDifferent(
             "telegramDefaultChatID",
@@ -2878,8 +3040,8 @@ final class TVOSLocalGatewayRuntime {
                 + " persisted.auth=\(persisted.authMode.rawValue)/\(Self.redacted(persisted.authToken))/\(Self.redacted(persisted.authPassword))"
                 + " runtime.upstream=\(Self.trimmed(expected.upstreamURL) ?? "(none)") role=\(Self.trimmed(expected.upstreamRole) ?? "node") scopes=\(Self.trimmed(expected.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(expected.upstreamToken)) password=\(Self.presenceState(expected.upstreamPassword))"
                 + " persisted.upstream=\(Self.trimmed(persisted.upstreamURL) ?? "(none)") role=\(Self.trimmed(persisted.upstreamRole) ?? "node") scopes=\(Self.trimmed(persisted.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(persisted.upstreamToken)) password=\(Self.presenceState(persisted.upstreamPassword))"
-                + " runtime.llm=\(expected.localLLMProvider.rawValue) baseURL=\(Self.trimmed(expected.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(expected.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(expected.localLLMAPIKey))"
-                + " persisted.llm=\(persisted.localLLMProvider.rawValue) baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(persisted.localLLMAPIKey))"
+                + " runtime.llm=\(expected.localLLMProvider.rawValue) baseURL=\(Self.trimmed(expected.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(expected.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(expected.localLLMAPIKey)) tools=\(expected.localLLMToolCallingMode.rawValue)"
+                + " persisted.llm=\(persisted.localLLMProvider.rawValue) baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(persisted.localLLMAPIKey)) tools=\(persisted.localLLMToolCallingMode.rawValue)"
                 + " runtime.telegram.chat=\(Self.trimmed(expected.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(expected.telegramBotToken))"
                 + " persisted.telegram.chat=\(Self.trimmed(persisted.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(persisted.telegramBotToken))",
             level: .warning)
@@ -3570,6 +3732,7 @@ final class TVOSLocalGatewayRuntime {
             localLLMBaseURL: Self.trimmed(settings.localLLMBaseURL) ?? "",
             localLLMAPIKey: Self.trimmed(settings.localLLMAPIKey) ?? "",
             localLLMModel: Self.trimmed(settings.localLLMModel) ?? "",
+            localLLMToolCallingMode: settings.localLLMToolCallingMode,
             telegramBotToken: Self.trimmed(settings.telegramBotToken) ?? "",
             telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "")
     }
@@ -3642,6 +3805,7 @@ final class TVOSLocalGatewayRuntime {
                 + " llm=\(self.controlPlaneSettings.localLLMProvider.rawValue)"
                 + " model=\(localModel)"
                 + " baseURL=\(localBaseURL)"
+                + " tools=\(self.controlPlaneSettings.localLLMToolCallingMode.rawValue)"
                 + " telegramChat=\(telegramDefaultChatID)"
                 + " telegramToken=\(telegramTokenState)"
                 + " bootstrapPath=\(bootstrapState)")
@@ -3893,9 +4057,13 @@ final class TVOSLocalGatewayRuntime {
     private static func listenerEndpointSummary(
         port: UInt16,
         localAddresses: [String],
-        scheme: String) -> String
+        scheme: String,
+        localhostOnly: Bool = false) -> String
     {
         let loopback = "\(scheme)://127.0.0.1:\(port)"
+        if localhostOnly {
+            return "127.0.0.1:\(port) (\(loopback))"
+        }
         guard !localAddresses.isEmpty else {
             return "0.0.0.0:\(port) (\(loopback))"
         }

@@ -227,7 +227,7 @@
         <h2>Connection</h2>
         <div class="row">
           <label for="gateway-url">Gateway URL</label>
-          <input id="gateway-url" value="ws://127.0.0.1:18789" />
+          <input id="gateway-url" value="ws://192.168.1.176:18789" />
         </div>
         <div class="inline">
           <div class="row" style="grid-template-columns: 130px 1fr; margin: 0">
@@ -397,6 +397,17 @@
             <label for="cfg-llm-model">Model</label>
             <input id="cfg-llm-model" placeholder="MiniMax-M2.5" />
           </div>
+          <div class="row">
+            <label for="cfg-llm-tool-mode">Tool Calls Mode (i)</label>
+            <select id="cfg-llm-tool-mode">
+              <option value="auto">auto</option>
+              <option value="on">on</option>
+              <option value="off">off</option>
+            </select>
+          </div>
+          <div class="muted small" style="margin: -2px 0 8px 180px">
+            auto = tools by default with fallback; on = force tool API; off = plain chat only.
+          </div>
 
           <div style="margin-top: 10px">
             <div class="muted small" style="margin-bottom: 6px">Runtime state (from config.get / restart)</div>
@@ -445,6 +456,24 @@
         </div>
       </div>
 
+      <div class="panel" style="margin-top: 14px">
+        <h2>Backup / Restore</h2>
+        <p class="muted small" style="margin: 0 0 10px">
+          Export or import device settings, files, and keychain entries via the gateway WebSocket.
+        </p>
+        <div class="actions-3">
+          <button id="backup-export-btn" disabled>Export Backup</button>
+          <button id="backup-import-btn" disabled>Import Backup</button>
+          <button id="backup-download-btn" disabled>Download Last Export</button>
+        </div>
+        <div class="row" style="margin-top: 10px">
+          <label for="backup-import-file">Import File</label>
+          <input id="backup-import-file" type="file" accept=".ocbackup" />
+        </div>
+        <div id="backup-status" class="muted small" style="margin-top: 8px">No backup activity yet.</div>
+        <pre id="backup-result">No backup data yet.</pre>
+      </div>
+
       <div class="grid" style="margin-top: 14px">
         <div class="panel">
           <h2>Last RPC Result</h2>
@@ -480,6 +509,7 @@
         activeActionTitle: "",
         lastRuntimeState: {},
         pairingPayload: null,
+        lastBackupExport: null,
       };
 
       const connectBtn = el("connect-btn");
@@ -520,6 +550,12 @@
       const skillsFileContent = el("skills-file-content");
       const cronListMeta = el("cron-list-meta");
       const cronListContent = el("cron-list-content");
+      const backupExportBtn = el("backup-export-btn");
+      const backupImportBtn = el("backup-import-btn");
+      const backupDownloadBtn = el("backup-download-btn");
+      const backupImportFile = el("backup-import-file");
+      const backupStatus = el("backup-status");
+      const backupResult = el("backup-result");
 
       const connectAuthMode = el("connect-auth-mode");
       const connectSecret = el("connect-secret");
@@ -539,6 +575,7 @@
       const cfgLLMBaseURL = el("cfg-llm-base-url");
       const cfgLLMAPIKey = el("cfg-llm-api-key");
       const cfgLLMModel = el("cfg-llm-model");
+      const cfgLLMToolMode = el("cfg-llm-tool-mode");
       const monitorSessionKey = el("monitor-session-key");
       const monitorIntervalSec = el("monitor-interval-sec");
 
@@ -555,6 +592,8 @@
         restart: "Restart Runtime",
         health: "Health",
         cronList: "List Crons",
+        backupExport: "Export Backup",
+        backupImport: "Import Backup",
       };
 
       function now() {
@@ -584,6 +623,8 @@
         monitorToggleBtn.disabled = !connected || busy;
         pairingListBtn.disabled = !connected || busy;
         pairingApproveBtn.disabled = !connected || busy;
+        backupExportBtn.disabled = !connected || busy;
+        backupImportBtn.disabled = !connected || busy;
         if (!connected) {
           monitorStatus.textContent = "monitor off";
         }
@@ -603,6 +644,10 @@
           active && title === "runtime.restart" ? "Restarting…" : defaultButtonLabels.restart;
         healthBtn.textContent = active && title === "health" ? "Checking…" : defaultButtonLabels.health;
         cronListBtn.textContent = active && title === "cron.list" ? "Listing…" : defaultButtonLabels.cronList;
+        backupExportBtn.textContent =
+          active && title === "backup.export" ? "Exporting…" : defaultButtonLabels.backupExport;
+        backupImportBtn.textContent =
+          active && title === "backup.import" ? "Importing…" : defaultButtonLabels.backupImport;
 
         if (active && title === "monitor.toggle") {
           monitorToggleBtn.textContent = "Working…";
@@ -775,6 +820,7 @@
           localLLMBaseURL: cfgLLMBaseURL.value,
           localLLMAPIKey: cfgLLMAPIKey.value,
           localLLMModel: cfgLLMModel.value,
+          localLLMToolCallingMode: cfgLLMToolMode.value || "auto",
         };
       }
 
@@ -801,6 +847,7 @@
             baseURL: settings.localLLMBaseURL,
             apiKey: settings.localLLMAPIKey,
             model: settings.localLLMModel,
+            toolCallingMode: settings.localLLMToolCallingMode,
           },
           telegram: {
             botToken: settings.telegramBotToken,
@@ -826,7 +873,12 @@
           localLLMBaseURL: trim(settings.localLLMBaseURL),
           localLLMAPIKey: trim(settings.localLLMAPIKey),
           localLLMModel: trim(settings.localLLMModel),
+          localLLMToolCallingMode: trim(settings.localLLMToolCallingMode || "auto").toLowerCase() || "auto",
         };
+
+        if (!["auto", "on", "off"].includes(normalized.localLLMToolCallingMode)) {
+          normalized.localLLMToolCallingMode = "auto";
+        }
 
         if (normalized.authMode === "token") {
           if (!normalized.authToken) {
@@ -867,6 +919,7 @@
           "localLLMBaseURL",
           "localLLMAPIKey",
           "localLLMModel",
+          "localLLMToolCallingMode",
         ];
         const expectedNormalized = normalizedSettingsForCompare(expected);
         const actualNormalized = normalizedSettingsForCompare(actual || {});
@@ -919,6 +972,7 @@
         cfgLLMBaseURL.value = settings.localLLMBaseURL || "";
         cfgLLMAPIKey.value = settings.localLLMAPIKey || "";
         cfgLLMModel.value = settings.localLLMModel || "";
+        cfgLLMToolMode.value = settings.localLLMToolCallingMode || "auto";
       }
 
       function applyRuntimeState(payload) {
@@ -1501,6 +1555,7 @@
         log(
           "config.get ok"
             + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+            + ` llm.tools=${normalized.localLLMToolCallingMode || "auto"}`
             + ` llm.model=${normalized.localLLMModel || "(none)"}`
             + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
             + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
@@ -1516,6 +1571,7 @@
         log(
           "config.set request"
             + ` llm.provider=${normalizedBefore.localLLMProvider || "disabled"}`
+            + ` llm.tools=${normalizedBefore.localLLMToolCallingMode || "auto"}`
             + ` llm.model=${normalizedBefore.localLLMModel || "(none)"}`
             + ` llm.baseURL=${normalizedBefore.localLLMBaseURL || "(none)"}`
             + ` llm.apiKey=${redactedPresence(normalizedBefore.localLLMAPIKey)}`
@@ -1548,6 +1604,7 @@
           log(
             "config.set ok"
               + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.tools=${normalized.localLLMToolCallingMode || "auto"}`
               + ` llm.model=${normalized.localLLMModel || "(none)"}`
               + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
               + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
@@ -1587,6 +1644,7 @@
           log(
             "config.set verified after reconnect"
               + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.tools=${normalized.localLLMToolCallingMode || "auto"}`
               + ` llm.model=${normalized.localLLMModel || "(none)"}`
               + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
               + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
@@ -1646,6 +1704,7 @@
           log(
             "runtime.restart verified after reconnect"
               + ` llm.provider=${normalized.localLLMProvider || "disabled"}`
+              + ` llm.tools=${normalized.localLLMToolCallingMode || "auto"}`
               + ` llm.model=${normalized.localLLMModel || "(none)"}`
               + ` llm.baseURL=${normalized.localLLMBaseURL || "(none)"}`
               + ` llm.apiKey=${redactedPresence(normalized.localLLMAPIKey)}`
@@ -1665,6 +1724,138 @@
         const payload = await request("health", {});
         renderResult({ method: "health", payload });
         log("health ok");
+      }
+
+      async function backupExport() {
+        backupStatus.textContent = "Exporting backup… (this may take a moment)";
+        backupResult.textContent = "";
+        const monitorWasActive = state.monitorActive;
+        if (monitorWasActive) {
+          stopMonitor();
+          log("monitor paused for backup.export");
+        }
+
+        try {
+          const payload = await request("backup.export", {}, { timeoutMs: 120000 });
+          renderResult({ method: "backup.export", payload: { ...payload, data: "(base64 omitted)" } });
+          const fileName = payload.fileName || "backup.ocbackup";
+          const sizeBytes = payload.sizeBytes || 0;
+          const fileCount = payload.fileCount || 0;
+          const defaultsCount = payload.defaultsCount || 0;
+          const keychainCount = payload.keychainCount || 0;
+
+          state.lastBackupExport = { data: payload.data, fileName };
+          backupDownloadBtn.disabled = false;
+
+          const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(2);
+          backupStatus.textContent =
+            `Export OK: ${fileName} (${sizeMB} MB) — ${fileCount} files, ${defaultsCount} settings, ${keychainCount} keychain`;
+          backupResult.textContent = jsonSafe({
+            ok: true,
+            fileName,
+            sizeBytes,
+            fileCount,
+            defaultsCount,
+            keychainCount,
+          });
+          log(`backup.export ok file=${fileName} size=${sizeMB}MB files=${fileCount} defaults=${defaultsCount} keychain=${keychainCount}`);
+        } catch (error) {
+          backupStatus.textContent = `Export failed: ${error.message}`;
+          backupResult.textContent = jsonSafe({ error: error.message });
+          throw error;
+        } finally {
+          if (monitorWasActive && state.connected) {
+            startMonitor();
+            log("monitor resumed");
+          }
+        }
+      }
+
+      async function backupImport() {
+        const fileInput = backupImportFile;
+        if (!fileInput.files || fileInput.files.length === 0) {
+          throw new Error("Select a .ocbackup file first");
+        }
+        const file = fileInput.files[0];
+        backupStatus.textContent = `Reading ${file.name}…`;
+        backupResult.textContent = "";
+
+        const arrayBuffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = "";
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const base64Data = btoa(binary);
+
+        const monitorWasActive = state.monitorActive;
+        if (monitorWasActive) {
+          stopMonitor();
+          log("monitor paused for backup.import");
+        }
+
+        backupStatus.textContent = `Importing ${file.name} (${(bytes.length / 1024).toFixed(1)} KB)… runtime will restart.`;
+
+        try {
+          const payload = await request("backup.import", { data: base64Data }, { timeoutMs: 120000 });
+          renderResult({ method: "backup.import", payload });
+          const restoredFiles = payload.restoredFileCount || 0;
+          const restoredDefaults = payload.restoredDefaultsCount || 0;
+          const restoredKeychain = payload.restoredKeychainCount || 0;
+          backupStatus.textContent =
+            `Import OK from ${file.name}: ${restoredFiles} files, ${restoredDefaults} settings, ${restoredKeychain} keychain entries restored.`;
+          backupResult.textContent = jsonSafe(payload);
+          log(`backup.import ok files=${restoredFiles} defaults=${restoredDefaults} keychain=${restoredKeychain}`);
+
+          await loadConfig();
+          return;
+        } catch (error) {
+          const message = String(error?.message || error || "unknown error");
+          const maybeTransportDrop =
+            /timeout waiting for backup\.import|socket closed|WebSocket is not connected/i.test(message);
+          if (!maybeTransportDrop) {
+            backupStatus.textContent = `Import failed: ${message}`;
+            backupResult.textContent = jsonSafe({ error: message });
+            throw error;
+          }
+
+          log(`backup.import response interrupted (${message}); reconnecting + verifying`, "WARN");
+          backupStatus.textContent = "Import response interrupted — reconnecting…";
+          closeSocket();
+          syncConnectAuthFromSettings(readSettingsForm());
+          await connect();
+          await loadConfig();
+          backupStatus.textContent = "Import completed (verified after reconnect).";
+          return;
+        } finally {
+          if (monitorWasActive && state.connected) {
+            startMonitor();
+            log("monitor resumed");
+          }
+        }
+      }
+
+      function downloadLastBackup() {
+        if (!state.lastBackupExport || !state.lastBackupExport.data) {
+          log("no backup data to download", "WARN");
+          return;
+        }
+        const binary = atob(state.lastBackupExport.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = state.lastBackupExport.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        log(`downloaded ${state.lastBackupExport.fileName}`);
       }
 
       function parseHistoryText(content) {
@@ -1870,6 +2061,9 @@
         pairingCode.value = "";
         renderPairingPanel();
       });
+      backupExportBtn.addEventListener("click", () => withAction(backupExport, "backup.export"));
+      backupImportBtn.addEventListener("click", () => withAction(backupImport, "backup.import"));
+      backupDownloadBtn.addEventListener("click", () => downloadLastBackup());
       bootstrapFileSelect.addEventListener("change", () => renderBootstrapSelection());
       skillsFileSelect.addEventListener("change", () => renderSkillsSelection());
 

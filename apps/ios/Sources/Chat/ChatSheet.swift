@@ -1,4 +1,5 @@
 import OpenClawChatUI
+import OpenClawGatewayCore
 import OpenClawKit
 import SwiftUI
 
@@ -29,11 +30,21 @@ struct ChatSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(NodeAppModel.self) private var appModel: NodeAppModel
+    @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
+    @Environment(GatewayConnectionController.self) private var gatewayController: GatewayConnectionController
+    @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime: TVOSLocalGatewayRuntime
     @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = true
     @AppStorage("chat.autoRetryAttemptsOnError") private var autoRetryAttemptsOnError: Int = 1
+    @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
+    private var mainChatZoomLevelRaw: String = OpenClawChatTextScaleLevel.defaultLevel.rawValue
     @State private var viewModel: OpenClawChatViewModel
     @State private var showsTranscriptViewer = false
+    @State private var showsSettings = false
     @State private var transcriptMessageAnchor: UUID?
+    @State private var savedProviders: [SavedLLMProvider] = []
+    @State private var activeProviderID: String?
+    @State private var modelSwitching = false
     private let userAccent: Color?
     private let agentName: String?
 
@@ -60,20 +71,26 @@ struct ChatSheet: View {
 
     var body: some View {
         NavigationStack {
-            OpenClawChatView(
-                viewModel: self.viewModel,
-                showsSessionSwitcher: true,
-                showsToolCalls: self.showsToolCallsInChat,
-                assistantName: self.agentName,
-                userAccent: self.userAccent,
-                syncedMessageAnchor: self.$transcriptMessageAnchor)
-                .toolbar(.hidden, for: .navigationBar)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    self.compactTopBar
+            Group {
+                if self.usesMacTopBarLayout {
+                    self.chatContent
+                        .ignoresSafeArea(.container, edges: .top)
+                        .overlay(alignment: .top) {
+                            self.compactTopBar
+                        }
+                } else {
+                    self.chatContent
+                        .safeAreaInset(edge: .top, spacing: 0) {
+                            self.compactTopBar
+                        }
                 }
+            }
+                .navigationTitle(self.agentName ?? "Chat")
                 .onAppear {
                     self.viewModel.autoRetryAttemptsOnError = max(0, self.autoRetryAttemptsOnError)
                     LastThreadStore.save(self.viewModel.sessionKey)
+                    self.savedProviders = LLMProviderStore.load()
+                    self.activeProviderID = LLMProviderStore.activeID()
                 }
                 .onChange(of: self.autoRetryAttemptsOnError) { _, newValue in
                     self.viewModel.autoRetryAttemptsOnError = max(0, newValue)
@@ -89,7 +106,33 @@ struct ChatSheet: View {
                         userAccent: self.userAccent,
                         messageAnchor: self.$transcriptMessageAnchor)
                 }
+                .sheet(isPresented: self.$showsSettings, onDismiss: {
+                    self.savedProviders = LLMProviderStore.load()
+                    self.activeProviderID = LLMProviderStore.activeID()
+                }) {
+                    SettingsTab()
+                        .environment(self.appModel)
+                        .environment(self.voiceWake)
+                        .environment(self.gatewayController)
+                        .environment(self.localGatewayRuntime)
+                }
         }
+    }
+
+    private var chatContent: some View {
+        OpenClawChatView(
+            viewModel: self.viewModel,
+            showsSessionSwitcher: true,
+            showsToolCalls: self.showsToolCallsInChat,
+            assistantName: self.agentName,
+            userAccent: self.userAccent,
+            syncedMessageAnchor: self.$transcriptMessageAnchor,
+            textScale: self.mainChatZoomLevel.textScale)
+            .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var usesMacTopBarLayout: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
     }
 
     private var compactTopBar: some View {
@@ -101,7 +144,20 @@ struct ChatSheet: View {
             }
             .accessibilityLabel("Open full chat view")
 
+            self.mainZoomMenu
+
+            if self.configuredProviders.count >= 2 {
+                self.modelPickerMenu
+            }
+
             Spacer(minLength: 0)
+
+            Button {
+                self.showsSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
 
             Button {
                 self.dismiss()
@@ -110,15 +166,95 @@ struct ChatSheet: View {
             }
             .accessibilityLabel("Close")
         }
-        .font(.system(size: 15, weight: .semibold))
+        .font(.system(size: self.compactTopBarFontSize, weight: .semibold))
         .padding(.horizontal, 12)
-        .frame(height: 34)
+        .frame(height: self.compactTopBarHeight)
         .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 1)
         }
+    }
+
+    private var compactTopBarHeight: CGFloat {
+        self.usesMacTopBarLayout ? 26 : 34
+    }
+
+    private var compactTopBarFontSize: CGFloat {
+        self.usesMacTopBarLayout ? 13 : 15
+    }
+
+    private var mainZoomMenu: some View {
+        Menu {
+            ForEach(OpenClawChatTextScaleLevel.allCases) { level in
+                Button {
+                    self.mainChatZoomLevelRaw = level.rawValue
+                } label: {
+                    if level == self.mainChatZoomLevel {
+                        Label(level.title, systemImage: "checkmark")
+                    } else {
+                        Text(level.title)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "textformat.size")
+        }
+        .accessibilityLabel("Adjust chat text size")
+    }
+
+    private var mainChatZoomLevel: OpenClawChatTextScaleLevel {
+        OpenClawChatTextScaleLevel(rawValue: self.mainChatZoomLevelRaw) ?? .defaultLevel
+    }
+
+    private var configuredProviders: [SavedLLMProvider] {
+        self.savedProviders.filter(\.isConfigured)
+    }
+
+    private var activeProvider: SavedLLMProvider? {
+        guard let id = self.activeProviderID else { return nil }
+        return self.savedProviders.first(where: { $0.id == id })
+    }
+
+    private var modelPickerMenu: some View {
+        Menu {
+            ForEach(self.configuredProviders) { provider in
+                Button {
+                    Task { await self.activateProvider(provider) }
+                } label: {
+                    if provider.id == self.activeProviderID {
+                        Label(provider.shortDisplayName, systemImage: "checkmark")
+                    } else {
+                        Text(provider.shortDisplayName)
+                    }
+                }
+                .disabled(provider.id == self.activeProviderID || self.modelSwitching)
+            }
+        } label: {
+            Text(self.activeProvider?.shortDisplayName ?? "Model")
+                .font(.system(size: self.compactTopBarFontSize - 2, weight: .medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .accessibilityLabel("Switch model")
+    }
+
+    private func activateProvider(_ provider: SavedLLMProvider) async {
+        guard provider.id != self.activeProviderID else { return }
+        self.modelSwitching = true
+        defer { self.modelSwitching = false }
+
+        self.activeProviderID = provider.id
+        LLMProviderStore.setActiveID(provider.id)
+
+        var settings = self.localGatewayRuntime.controlPlaneSettings
+        settings.localLLMProvider = provider.provider
+        settings.localLLMBaseURL = provider.baseURL
+        settings.localLLMAPIKey = provider.apiKey
+        settings.localLLMModel = provider.model
+        await self.localGatewayRuntime.applyControlPlaneSettings(settings)
     }
 }
 
@@ -278,15 +414,15 @@ private enum TranscriptZoomLevel: String, CaseIterable, Identifiable {
     var textScale: CGFloat {
         switch self {
         case .extraSmall:
-            return 0.82
+            return 0.74
         case .small:
-            return 0.92
+            return 0.88
         case .default:
             return 1.0
         case .large:
-            return 1.14
+            return 1.22
         case .extraLarge:
-            return 1.30
+            return 1.42
         }
     }
 }

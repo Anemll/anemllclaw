@@ -32,7 +32,7 @@ public actor GatewayWebSocketServer {
         self.tickIntervalMs = max(250, tickIntervalMs)
     }
 
-    public func start(port: UInt16 = 0) async throws -> UInt16 {
+    public func start(port: UInt16 = 0, localhostOnly: Bool = true) async throws -> UInt16 {
         guard self.listener == nil else {
             throw GatewayWebSocketServerError.alreadyRunning
         }
@@ -44,6 +44,9 @@ public actor GatewayWebSocketServer {
 
         let parameters = NWParameters(tls: nil, tcp: tcpOptions)
         parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        if localhostOnly {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        }
 
         let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
         let listener = try NWListener(using: parameters, on: nwPort)

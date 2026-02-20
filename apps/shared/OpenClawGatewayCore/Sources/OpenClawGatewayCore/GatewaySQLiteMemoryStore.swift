@@ -204,6 +204,44 @@ public actor GatewaySQLiteMemoryStore {
         return summaries
     }
 
+    public func deleteTranscripts(sessionKey: String) throws -> Int {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+
+        let normalizedKey = Self.normalizedSessionKey(sessionKey)
+
+        // Delete from FTS mirror first (if enabled).
+        if self.ftsEnabled {
+            let ftsSql = """
+                DELETE FROM transcript_turns_fts WHERE rowid IN (
+                    SELECT id FROM transcript_turns WHERE session_key = ?
+                )
+            """
+            var ftsStmt: OpaquePointer?
+            if sqlite3_prepare_v2(database, ftsSql, -1, &ftsStmt, nil) == SQLITE_OK {
+                self.bindText(normalizedKey, at: 1, statement: ftsStmt!)
+                sqlite3_step(ftsStmt!)
+                sqlite3_finalize(ftsStmt!)
+            }
+        }
+
+        let sql = "DELETE FROM transcript_turns WHERE session_key = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText(normalizedKey, at: 1, statement: statement)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+
+        return Int(sqlite3_changes(database))
+    }
+
     public func search(
         query: String,
         sessionKey: String? = nil,

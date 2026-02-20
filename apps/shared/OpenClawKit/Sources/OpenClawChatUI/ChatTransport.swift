@@ -26,6 +26,8 @@ public protocol OpenClawChatTransport: Sendable {
     func events() -> AsyncStream<OpenClawChatTransportEvent>
 
     func setActiveSessionKey(_ sessionKey: String) async throws
+
+    func deleteSession(sessionKey: String) async throws
 }
 
 extension OpenClawChatTransport {
@@ -45,5 +47,12 @@ extension OpenClawChatTransport {
             domain: "OpenClawChatTransport",
             code: 0,
             userInfo: [NSLocalizedDescriptionKey: "sessions.list not supported by this transport"])
+    }
+
+    public func deleteSession(sessionKey _: String) async throws {
+        throw NSError(
+            domain: "OpenClawChatTransport",
+            code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "sessions.delete not supported by this transport"])
     }
 }

@@ -13,9 +13,13 @@ struct OpenClawChatComposer: View {
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
-    @State private var showCreateThreadConfirm = false
-    @State private var showCreateThreadSheet = false
-    @State private var newThreadName: String = ""
+    @Binding var showSessionsSheet: Bool
+    @State private var showCreateConversation = false
+    @State private var newConversationName: String = ""
+    #if os(macOS)
+    @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
+    private var chatTextScaleLevelRaw: String = OpenClawChatTextScaleLevel.defaultLevel.rawValue
+    #endif
 
     #if os(iOS)
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -35,6 +39,9 @@ struct OpenClawChatComposer: View {
                         self.sessionPicker
                     }
                     self.thinkingPicker
+                    #if os(macOS)
+                    self.textScaleMenu
+                    #endif
                     Spacer()
                     self.refreshButton
                     #if os(iOS)
@@ -92,19 +99,21 @@ struct OpenClawChatComposer: View {
             self.shouldFocusTextView = true
         }
         #endif
-        .confirmationDialog(
-            "Do you want to create a new thread?",
-            isPresented: self.$showCreateThreadConfirm,
-            titleVisibility: .visible)
-        {
-            Button("Create New Thread") {
-                self.newThreadName = ""
-                self.showCreateThreadSheet = true
+        .alert("New Conversation", isPresented: self.$showCreateConversation) {
+            TextField("Name", text: self.$newConversationName)
+                #if os(iOS) || os(tvOS)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                #endif
+            Button("Cancel", role: .cancel) {
+                self.newConversationName = ""
             }
-            Button("Cancel", role: .cancel) {}
-        }
-        .sheet(isPresented: self.$showCreateThreadSheet) {
-            self.createThreadSheet
+            Button("Create") {
+                self.createConversationFromInput()
+            }
+            .disabled(self.trimmedNewConversationName.isEmpty)
+        } message: {
+            Text("Enter a name for this conversation.")
         }
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
@@ -154,8 +163,16 @@ struct OpenClawChatComposer: View {
                 }
             }
             Divider()
-            Button("Create New…") {
-                self.showCreateThreadConfirm = true
+            Button {
+                self.newConversationName = ""
+                self.showCreateConversation = true
+            } label: {
+                Label("New Conversation", systemImage: "square.and.pencil")
+            }
+            Button {
+                self.showSessionsSheet = true
+            } label: {
+                Label("Manage Conversations…", systemImage: "list.bullet")
             }
         } label: {
             HStack(spacing: 4) {
@@ -172,45 +189,7 @@ struct OpenClawChatComposer: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .frame(maxWidth: self.sessionPickerMaxWidth, alignment: .leading)
-        .help("Session")
-    }
-
-    private var createThreadSheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    #if os(iOS) || os(tvOS)
-                    TextField("Thread name", text: self.$newThreadName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    #else
-                    TextField("Thread name", text: self.$newThreadName)
-                    #endif
-                } header: {
-                    Text("New Thread")
-                }
-            }
-            #if os(macOS)
-            .navigationTitle("Create Thread")
-            #else
-            .navigationTitle("Create Thread")
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        self.showCreateThreadSheet = false
-                        self.newThreadName = ""
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        self.createThreadFromInput()
-                    }
-                    .disabled(self.trimmedNewThreadName.isEmpty)
-                }
-            }
-        }
+        .help("Conversation")
     }
 
     @ViewBuilder
@@ -387,13 +366,15 @@ struct OpenClawChatComposer: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: self.sendButtonSymbolSize, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(6)
+                .frame(width: self.sendButtonVisualSize, height: self.sendButtonVisualSize)
                 .background(Circle().fill(Color.red))
+                .frame(minWidth: self.sendButtonHitTarget, minHeight: self.sendButtonHitTarget)
+                .contentShape(Rectangle())
                 .disabled(self.viewModel.isAborting)
             } else {
                 Button {
@@ -403,16 +384,42 @@ struct OpenClawChatComposer: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: self.sendButtonSymbolSize, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .padding(6)
+                .frame(width: self.sendButtonVisualSize, height: self.sendButtonVisualSize)
                 .background(Circle().fill(Color.accentColor))
+                .frame(minWidth: self.sendButtonHitTarget, minHeight: self.sendButtonHitTarget)
+                .contentShape(Rectangle())
                 .disabled(!self.viewModel.canSend)
             }
         }
+    }
+
+    private var sendButtonVisualSize: CGFloat {
+        #if os(macOS)
+        32
+        #else
+        26
+        #endif
+    }
+
+    private var sendButtonHitTarget: CGFloat {
+        #if os(macOS)
+        42
+        #else
+        self.sendButtonVisualSize
+        #endif
+    }
+
+    private var sendButtonSymbolSize: CGFloat {
+        #if os(macOS)
+        15
+        #else
+        13
+        #endif
     }
 
     private var refreshButton: some View {
@@ -425,6 +432,33 @@ struct OpenClawChatComposer: View {
         .controlSize(.small)
         .help("Refresh")
     }
+
+    #if os(macOS)
+    private var textScaleLevel: OpenClawChatTextScaleLevel {
+        OpenClawChatTextScaleLevel(rawValue: self.chatTextScaleLevelRaw) ?? .defaultLevel
+    }
+
+    private var textScaleMenu: some View {
+        Menu {
+            ForEach(OpenClawChatTextScaleLevel.allCases) { level in
+                Button {
+                    self.chatTextScaleLevelRaw = level.rawValue
+                } label: {
+                    if level == self.textScaleLevel {
+                        Label(level.title, systemImage: "checkmark")
+                    } else {
+                        Text(level.title)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "textformat.size")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Chat text size")
+    }
+    #endif
 
     #if os(iOS)
     private var keyboardDismissButton: some View {
@@ -467,16 +501,16 @@ struct OpenClawChatComposer: View {
         self.style == .onboarding ? 52 : 64
     }
 
-    private var trimmedNewThreadName: String {
-        self.newThreadName.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var trimmedNewConversationName: String {
+        self.newConversationName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func createThreadFromInput() {
-        let threadName = self.trimmedNewThreadName
-        guard !threadName.isEmpty else { return }
-        self.showCreateThreadSheet = false
-        self.newThreadName = ""
-        self.viewModel.switchSession(to: threadName)
+    private func createConversationFromInput() {
+        let name = self.trimmedNewConversationName
+        guard !name.isEmpty else { return }
+        self.showCreateConversation = false
+        self.newConversationName = ""
+        self.viewModel.switchSession(to: name)
     }
 
     private func sendFromComposer() {

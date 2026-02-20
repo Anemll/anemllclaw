@@ -6,11 +6,16 @@ import OSLog
 
 struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
     private static let logger = Logger(subsystem: "ai.openclaw", category: "local.chat.transport")
-    private let host: GatewayLoopbackHost
+    private let resolveHost: @Sendable () async -> GatewayLoopbackHost?
     var supportsRealtimeRunEvents: Bool { false }
 
     init(host: GatewayLoopbackHost) {
-        self.host = host
+        let captured = host
+        self.resolveHost = { captured }
+    }
+
+    init(runtime: TVOSLocalGatewayRuntime) {
+        self.resolveHost = { @MainActor in runtime.host }
     }
 
     // MARK: - OpenClawChatTransport
@@ -20,7 +25,7 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
             id: UUID().uuidString,
             method: "chat.history",
             params: .object(["sessionKey": .string(sessionKey)]))
-        let response = try await self.host.invoke(request)
+        let response = try await self.currentHost().invoke(request)
         return try Self.decode(response)
     }
 
@@ -53,7 +58,7 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
             method: "chat.send",
             params: .object(paramsDict))
         do {
-            let response = try await self.host.invoke(request)
+            let response = try await self.currentHost().invoke(request)
             let decoded: OpenClawChatSendResponse = try Self.decode(response)
             Self.logger.info("chat.send ok runId=\(decoded.runId, privacy: .public)")
             return decoded
@@ -71,7 +76,7 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
                 "sessionKey": .string(sessionKey),
                 "runId": .string(runId),
             ]))
-        _ = try await self.host.invoke(request)
+        _ = try await self.currentHost().invoke(request)
     }
 
     func listSessions(limit: Int?) async throws -> OpenClawChatSessionsListResponse {
@@ -86,15 +91,33 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
             id: UUID().uuidString,
             method: "sessions.list",
             params: .object(paramsDict))
-        let response = try await self.host.invoke(request)
+        let response = try await self.currentHost().invoke(request)
         return try Self.decode(response)
+    }
+
+    func deleteSession(sessionKey: String) async throws {
+        let request = GatewayRequestFrame(
+            id: UUID().uuidString,
+            method: "sessions.delete",
+            params: .object([
+                "key": .string(sessionKey),
+                "deleteTranscript": .bool(true),
+            ]))
+        let response = try await self.currentHost().invoke(request)
+        guard response.ok else {
+            let message = response.error?.message ?? "sessions.delete failed"
+            throw NSError(
+                domain: "LocalGatewayChatTransport",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: message])
+        }
     }
 
     func requestHealth(timeoutMs: Int) async throws -> Bool {
         let request = GatewayRequestFrame(
             id: UUID().uuidString,
             method: "health")
-        let response = try await self.host.invoke(request)
+        let response = try await self.currentHost().invoke(request)
         guard response.ok else { return false }
         if let okValue = response.payload?.objectValue?["ok"]?.boolValue {
             return okValue
@@ -116,6 +139,13 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
     }
 
     // MARK: - Private
+
+    private func currentHost() async throws -> GatewayLoopbackHost {
+        guard let host = await self.resolveHost() else {
+            throw GatewayLoopbackHostError.notRunning
+        }
+        return host
+    }
 
     private static func decode<T: Decodable>(_ response: GatewayResponseFrame) throws -> T {
         guard response.ok else {
