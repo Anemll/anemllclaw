@@ -58,15 +58,26 @@ with open(tmpjson) as f:
 
 # Write workspace files
 files_dir = os.path.join(outdir, "files")
+os.makedirs(files_dir, exist_ok=True)
+real_files_dir = os.path.realpath(files_dir)
 for entry in archive["files"]:
     token = entry["pathToken"]
     data = base64.b64decode(entry["data"])
-    dest = os.path.normpath(os.path.join(files_dir, token))
-    if not dest.startswith(os.path.normpath(files_dir) + os.sep) and dest != os.path.normpath(files_dir):
+    # Normalise first to collapse ../ before creating dirs, then verify
+    # the resolved real path stays inside the extraction root.
+    candidate = os.path.normpath(os.path.join(real_files_dir, token))
+    if not (candidate == real_files_dir or candidate.startswith(real_files_dir + os.sep)):
         print(f"  SKIPPED (path traversal): {token}", file=sys.stderr)
         continue
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "wb") as out:
+    parent = os.path.dirname(candidate)
+    os.makedirs(parent, exist_ok=True)
+    # Re-resolve after mkdir to catch symlink races
+    dest = os.path.realpath(candidate)
+    if not (dest == real_files_dir or dest.startswith(real_files_dir + os.sep)):
+        print(f"  SKIPPED (symlink escape): {token}", file=sys.stderr)
+        continue
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as out:
         out.write(data)
     print(f"  file: {token} ({len(data)} bytes)")
 
@@ -79,7 +90,8 @@ print(f"  defaults: defaults.plist ({len(defaults_data)} bytes)")
 
 # Write keychain items as JSON (CAUTION: contains secrets)
 keychain_path = os.path.join(outdir, "keychain.json")
-with open(keychain_path, "w") as out:
+fd = os.open(keychain_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as out:
     json.dump(archive["keychainItems"], out, indent=2)
 print(f"  keychain: keychain.json ({len(archive['keychainItems'])} items)")
 

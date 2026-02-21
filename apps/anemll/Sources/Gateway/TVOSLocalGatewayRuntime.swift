@@ -2965,7 +2965,9 @@ final class TVOSLocalGatewayRuntime {
 
         let persistedProviderRaw = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.provider"))
         let persistedBaseURL = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.baseURL"))
-        let persistedAPIKey = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.apiKey"))
+        // API key lives in Keychain, not UserDefaults.
+        let persistedAPIKey = Self.trimmed(
+            KeychainStore.loadString(service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey"))
         let persistedModel = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
 
         let localProviderRaw = persistedProviderRaw
@@ -3018,7 +3020,14 @@ final class TVOSLocalGatewayRuntime {
 
         defaults.set(settings.localLLMProvider.rawValue, forKey: "gateway.tvos.localLLM.provider")
         defaults.set(self.trimmed(settings.localLLMBaseURL), forKey: "gateway.tvos.localLLM.baseURL")
-        defaults.set(self.trimmed(settings.localLLMAPIKey), forKey: "gateway.tvos.localLLM.apiKey")
+        // API key persisted in Keychain, not UserDefaults.
+        let llmKey = (self.trimmed(settings.localLLMAPIKey) ?? "")
+        if llmKey.isEmpty {
+            _ = KeychainStore.delete(service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
+        } else {
+            _ = KeychainStore.saveString(llmKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
+        }
+        defaults.removeObject(forKey: "gateway.tvos.localLLM.apiKey") // clean up legacy
         defaults.set(self.trimmed(settings.localLLMModel), forKey: "gateway.tvos.localLLM.model")
         defaults.set(
             settings.localLLMToolCallingMode.rawValue,
