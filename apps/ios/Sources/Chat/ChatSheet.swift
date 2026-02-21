@@ -47,8 +47,9 @@ struct ChatSheet: View {
     @State private var modelSwitching = false
     private let userAccent: Color?
     private let agentName: String?
+    private let allowDismiss: Bool
 
-    init(gateway: GatewayNodeSession, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil) {
+    init(gateway: GatewayNodeSession, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil, allowDismiss: Bool = true) {
         let transport = IOSGatewayChatTransport(gateway: gateway)
         let resolvedSessionKey = LastThreadStore.resolve(initial: sessionKey)
         self._viewModel = State(
@@ -57,9 +58,10 @@ struct ChatSheet: View {
                 transport: transport))
         self.userAccent = userAccent
         self.agentName = agentName
+        self.allowDismiss = allowDismiss
     }
 
-    init(transport: any OpenClawChatTransport, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil) {
+    init(transport: any OpenClawChatTransport, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil, allowDismiss: Bool = true) {
         let resolvedSessionKey = LastThreadStore.resolve(initial: sessionKey)
         self._viewModel = State(
             initialValue: OpenClawChatViewModel(
@@ -67,6 +69,7 @@ struct ChatSheet: View {
                 transport: transport))
         self.userAccent = userAccent
         self.agentName = agentName
+        self.allowDismiss = allowDismiss
     }
 
     var body: some View {
@@ -159,12 +162,14 @@ struct ChatSheet: View {
             }
             .accessibilityLabel("Settings")
 
-            Button {
-                self.dismiss()
-            } label: {
-                Image(systemName: "xmark")
+            if self.allowDismiss {
+                Button {
+                    self.dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close")
             }
-            .accessibilityLabel("Close")
         }
         .font(.system(size: self.compactTopBarFontSize, weight: .semibold))
         .padding(.horizontal, 12)
