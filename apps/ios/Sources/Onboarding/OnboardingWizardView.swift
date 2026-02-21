@@ -292,7 +292,7 @@ struct OnboardingWizardView: View {
                 .font(.largeTitle.weight(.bold))
                 .padding(.bottom, 8)
 
-            Text("Connect to your AnemllClaw gateway")
+            Text("Connect to your OpenClaw gateway")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -597,7 +597,7 @@ struct OnboardingWizardView: View {
             Button {
                 self.onClose()
             } label: {
-                Text("Open AnemllClaw")
+                Text("Open OpenClaw")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)

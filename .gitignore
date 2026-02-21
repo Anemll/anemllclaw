@@ -70,6 +70,27 @@ apps/ios/*.dSYM.zip
 # provisioning profiles (local)
 apps/ios/*.mobileprovision
 
+# AnemllClaw (apps/anemll/) build artifacts
+apps/anemll/*.xcodeproj/
+apps/anemll/*.xcworkspace/
+apps/anemll/.swiftpm/
+apps/anemll/*.xcfilelist
+apps/anemll/fastlane/README.md
+apps/anemll/fastlane/report.xml
+apps/anemll/fastlane/Preview.html
+apps/anemll/fastlane/screenshots/
+apps/anemll/fastlane/test_output/
+apps/anemll/fastlane/logs/
+apps/anemll/fastlane/.env
+apps/anemll/*.ipa
+apps/anemll/*.dSYM.zip
+apps/anemll/*.mobileprovision
+apps/anemll/shared/OpenClawKit/.build/
+apps/anemll/shared/OpenClawKit/.swiftpm/
+apps/anemll/shared/OpenClawKit/Package.resolved
+apps/anemll/shared/OpenClawGatewayCore/.build
+apps/anemll/shared/OpenClawGatewayCore/.swiftpm/
+
 # Local untracked files
 .local/
 docs/.local/

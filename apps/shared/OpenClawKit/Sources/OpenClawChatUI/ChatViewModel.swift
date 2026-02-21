@@ -15,8 +15,6 @@ private let chatUILogger = Logger(subsystem: "ai.openclaw", category: "OpenClawC
 @MainActor
 @Observable
 public final class OpenClawChatViewModel {
-    private static let completedSendStatuses: Set<String> = ["completed", "done", "final", "ok", "success", "succeeded"]
-
     public private(set) var messages: [OpenClawChatMessage] = []
     public var input: String = ""
     public var thinkingLevel: String = "off"
@@ -24,9 +22,7 @@ public final class OpenClawChatViewModel {
     public private(set) var isSending = false
     public private(set) var isAborting = false
     public var errorText: String?
-    public var autoRetryAttemptsOnError: Int = 1
     public var attachments: [OpenClawPendingAttachment] = []
-    public var appName: String = "OpenClaw"
     public private(set) var healthOK: Bool = false
     public private(set) var pendingRunCount: Int = 0
 
@@ -39,8 +35,6 @@ public final class OpenClawChatViewModel {
 
     @ObservationIgnored
     private nonisolated(unsafe) var eventTask: Task<Void, Never>?
-    @ObservationIgnored
-    private nonisolated(unsafe) var sendTask: Task<Void, Never>?
     private var pendingRuns = Set<String>() {
         didSet { self.pendingRunCount = self.pendingRuns.count }
     }
@@ -76,7 +70,6 @@ public final class OpenClawChatViewModel {
 
     deinit {
         self.eventTask?.cancel()
-        self.sendTask?.cancel()
         for (_, task) in self.pendingRunTimeoutTasks {
             task.cancel()
         }
@@ -91,7 +84,7 @@ public final class OpenClawChatViewModel {
     }
 
     public func send() {
-        self.sendTask = Task { await self.performSend() }
+        Task { await self.performSend() }
     }
 
     public func abort() {
@@ -106,15 +99,9 @@ public final class OpenClawChatViewModel {
         Task { await self.performSwitchSession(to: sessionKey) }
     }
 
-    public func deleteSession(key: String) async throws {
-        try await self.transport.deleteSession(sessionKey: key)
-        self.sessions.removeAll { $0.key == key }
-        if self.sessionKey == key {
-            await self.performSwitchSession(to: "main")
-        }
-    }
-
     public var sessionChoices: [OpenClawChatSessionEntry] {
+        let now = Date().timeIntervalSince1970 * 1000
+        let cutoff = now - (24 * 60 * 60 * 1000)
         let sorted = self.sessions.sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
 
         var result: [OpenClawChatSessionEntry] = []
@@ -131,6 +118,7 @@ public final class OpenClawChatViewModel {
 
         for entry in sorted {
             guard !included.contains(entry.key) else { continue }
+            guard (entry.updatedAt ?? 0) >= cutoff else { continue }
             result.append(entry)
             included.insert(entry.key)
         }
@@ -360,62 +348,25 @@ public final class OpenClawChatViewModel {
         self.input = ""
         self.attachments = []
 
-        let maxAutoRetries = max(0, self.autoRetryAttemptsOnError)
-        var retriesRemaining = maxAutoRetries
-        var retryIndex = 0
-        var currentRunId = runId
-        var currentMessage = messageText
-        var currentAttachments = encodedAttachments
-
-        while true {
-            guard !Task.isCancelled else { break }
-            do {
-                let response = try await self.transport.sendMessage(
-                    sessionKey: self.sessionKey,
-                    message: currentMessage,
-                    thinking: self.thinkingLevel,
-                    idempotencyKey: currentRunId,
-                    attachments: currentAttachments)
-                if response.runId != currentRunId {
-                    self.clearPendingRun(currentRunId)
-                    self.pendingRuns.insert(response.runId)
-                    self.armPendingRunTimeout(runId: response.runId)
-                    currentRunId = response.runId
-                }
-
-                let normalizedStatus = response.status
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                if !self.transport.supportsRealtimeRunEvents,
-                   Self.completedSendStatuses.contains(normalizedStatus)
-                {
-                    self.clearPendingRuns(reason: nil)
-                    await self.refreshHistoryAfterRun()
-                }
-                break
-            } catch {
-                self.clearPendingRun(currentRunId)
-                guard retriesRemaining > 0 else {
-                    self.errorText = error.localizedDescription
-                    chatUILogger.error("chat.send failed \(error.localizedDescription, privacy: .public)")
-                    break
-                }
-
-                retriesRemaining -= 1
-                retryIndex += 1
-                chatUILogger.warning(
-                    "chat.send failed \(error.localizedDescription, privacy: .public); auto-retry \(retryIndex, privacy: .public)/\(maxAutoRetries, privacy: .public) with Continue")
-
-                currentRunId = UUID().uuidString
-                self.pendingRuns.insert(currentRunId)
-                self.armPendingRunTimeout(runId: currentRunId)
-                currentMessage = "Continue"
-                currentAttachments = []
+        do {
+            let response = try await self.transport.sendMessage(
+                sessionKey: self.sessionKey,
+                message: messageText,
+                thinking: self.thinkingLevel,
+                idempotencyKey: runId,
+                attachments: encodedAttachments)
+            if response.runId != runId {
+                self.clearPendingRun(runId)
+                self.pendingRuns.insert(response.runId)
+                self.armPendingRunTimeout(runId: response.runId)
             }
+        } catch {
+            self.clearPendingRun(runId)
+            self.errorText = error.localizedDescription
+            chatUILogger.error("chat.send failed \(error.localizedDescription, privacy: .public)")
         }
 
         self.isSending = false
-        self.sendTask = nil
     }
 
     private func performAbort() async {
@@ -424,19 +375,7 @@ public final class OpenClawChatViewModel {
         self.isAborting = true
         defer { self.isAborting = false }
 
-        // Cancel the in-flight send task so performSend() exits immediately.
-        self.sendTask?.cancel()
-        self.sendTask = nil
-
         let runIds = Array(self.pendingRuns)
-
-        // Clear local state immediately so the user can type again.
-        self.clearPendingRuns(reason: nil)
-        self.isSending = false
-        self.streamingAssistantText = nil
-        self.pendingToolCallsById = [:]
-
-        // Best-effort: tell the gateway to abort each run.
         for runId in runIds {
             do {
                 try await self.transport.abortRun(sessionKey: self.sessionKey, runId: runId)
@@ -444,9 +383,6 @@ public final class OpenClawChatViewModel {
                 // Best-effort.
             }
         }
-
-        // Refresh history to pick up whatever the gateway committed before the abort.
-        await self.refreshHistoryAfterRun()
     }
 
     private func fetchSessions(limit: Int?) async {

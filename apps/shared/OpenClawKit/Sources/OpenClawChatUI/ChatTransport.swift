@@ -9,8 +9,6 @@ public enum OpenClawChatTransportEvent: Sendable {
 }
 
 public protocol OpenClawChatTransport: Sendable {
-    var supportsRealtimeRunEvents: Bool { get }
-
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload
     func sendMessage(
         sessionKey: String,
@@ -26,13 +24,9 @@ public protocol OpenClawChatTransport: Sendable {
     func events() -> AsyncStream<OpenClawChatTransportEvent>
 
     func setActiveSessionKey(_ sessionKey: String) async throws
-
-    func deleteSession(sessionKey: String) async throws
 }
 
 extension OpenClawChatTransport {
-    public var supportsRealtimeRunEvents: Bool { true }
-
     public func setActiveSessionKey(_: String) async throws {}
 
     public func abortRun(sessionKey _: String, runId _: String) async throws {
@@ -47,12 +41,5 @@ extension OpenClawChatTransport {
             domain: "OpenClawChatTransport",
             code: 0,
             userInfo: [NSLocalizedDescriptionKey: "sessions.list not supported by this transport"])
-    }
-
-    public func deleteSession(sessionKey _: String) async throws {
-        throw NSError(
-            domain: "OpenClawChatTransport",
-            code: 0,
-            userInfo: [NSLocalizedDescriptionKey: "sessions.delete not supported by this transport"])
     }
 }

@@ -8,22 +8,16 @@ public struct OpenClawChatView: View {
     }
 
     @State private var viewModel: OpenClawChatViewModel
+    @State private var scrollerBottomID = UUID()
+    @State private var scrollPosition: UUID?
     @State private var showSessions = false
     @State private var hasPerformedInitialScroll = false
     @State private var isPinnedToBottom = true
     @State private var lastUserMessageID: UUID?
-    @State private var scrollProxy: ScrollViewProxy?
-    private let bottomAnchorID = "chatView.bottomAnchor"
     private let showsSessionSwitcher: Bool
-    private let showsToolCalls: Bool
-    private let assistantName: String?
     private let style: Style
     private let markdownVariant: ChatMarkdownVariant
     private let userAccent: Color?
-    private let showsComposer: Bool
-    private let autoloadOnAppear: Bool
-    private let syncedMessageAnchor: Binding<UUID?>?
-    private let textScale: CGFloat
 
     private enum Layout {
         #if os(macOS)
@@ -50,27 +44,15 @@ public struct OpenClawChatView: View {
     public init(
         viewModel: OpenClawChatViewModel,
         showsSessionSwitcher: Bool = false,
-        showsToolCalls: Bool = true,
-        assistantName: String? = nil,
         style: Style = .standard,
         markdownVariant: ChatMarkdownVariant = .standard,
-        userAccent: Color? = nil,
-        showsComposer: Bool = true,
-        autoloadOnAppear: Bool = true,
-        syncedMessageAnchor: Binding<UUID?>? = nil,
-        textScale: CGFloat = 1.0)
+        userAccent: Color? = nil)
     {
         self._viewModel = State(initialValue: viewModel)
         self.showsSessionSwitcher = showsSessionSwitcher
-        self.showsToolCalls = showsToolCalls
-        self.assistantName = assistantName
         self.style = style
         self.markdownVariant = markdownVariant
         self.userAccent = userAccent
-        self.showsComposer = showsComposer
-        self.autoloadOnAppear = autoloadOnAppear
-        self.syncedMessageAnchor = syncedMessageAnchor
-        self.textScale = max(0.7, min(1.8, textScale))
     }
 
     public var body: some View {
@@ -83,25 +65,18 @@ public struct OpenClawChatView: View {
             VStack(spacing: Layout.stackSpacing) {
                 self.messageList
                     .padding(.horizontal, Layout.outerPaddingHorizontal)
-                if self.showsComposer {
-                    OpenClawChatComposer(
-                        viewModel: self.viewModel,
-                        style: self.style,
-                        showsSessionSwitcher: self.showsSessionSwitcher,
-                        showSessionsSheet: self.$showSessions)
-                        .padding(.horizontal, Layout.composerPaddingHorizontal)
-                }
+                OpenClawChatComposer(
+                    viewModel: self.viewModel,
+                    style: self.style,
+                    showsSessionSwitcher: self.showsSessionSwitcher)
+                    .padding(.horizontal, Layout.composerPaddingHorizontal)
             }
             .padding(.vertical, Layout.outerPaddingVertical)
             .frame(maxWidth: .infinity)
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .environment(\.openClawChatTextScale, self.textScale)
-        .onAppear {
-            guard self.autoloadOnAppear else { return }
-            self.viewModel.load()
-        }
+        .onAppear { self.viewModel.load() }
         .sheet(isPresented: self.$showSessions) {
             if self.showsSessionSwitcher {
                 ChatSessionsSheet(viewModel: self.viewModel)
@@ -113,19 +88,28 @@ public struct OpenClawChatView: View {
 
     private var messageList: some View {
         ZStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: Layout.messageSpacing) {
-                        self.messageListRows
+            ScrollView {
+                LazyVStack(spacing: Layout.messageSpacing) {
+                    self.messageListRows
 
-                        Spacer()
-                            .frame(height: Layout.messageListPaddingBottom)
-                            .id(self.bottomAnchorID)
-                    }
-                    .padding(.top, Layout.messageListPaddingTop)
-                    .padding(.horizontal, Layout.messageListPaddingHorizontal)
+                    Color.clear
+                        #if os(macOS)
+                        .frame(height: Layout.messageListPaddingBottom)
+                        #else
+                        .frame(height: Layout.messageListPaddingBottom + 1)
+                        #endif
+                        .id(self.scrollerBottomID)
                 }
-                .onAppear { self.scrollProxy = proxy }
+                // Use scroll targets for stable auto-scroll without ScrollViewReader relayout glitches.
+                .scrollTargetLayout()
+                .padding(.top, Layout.messageListPaddingTop)
+                .padding(.horizontal, Layout.messageListPaddingHorizontal)
+            }
+            // Keep the scroll pinned to the bottom for new messages.
+            .scrollPosition(id: self.$scrollPosition, anchor: .bottom)
+            .onChange(of: self.scrollPosition) { _, position in
+                guard let position else { return }
+                self.isPinnedToBottom = position == self.scrollerBottomID
             }
 
             if self.viewModel.isLoading {
@@ -140,21 +124,22 @@ public struct OpenClawChatView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .layoutPriority(1)
         .onChange(of: self.viewModel.isLoading) { _, isLoading in
-            guard !isLoading else { return }
+            guard !isLoading, !self.hasPerformedInitialScroll else { return }
+            self.scrollPosition = self.scrollerBottomID
             self.hasPerformedInitialScroll = true
             self.isPinnedToBottom = true
-            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.sessionKey) { _, _ in
+            self.hasPerformedInitialScroll = false
             self.isPinnedToBottom = true
-            self.lastUserMessageID = nil
-            self.hasPerformedInitialScroll = true
-            self.scrollToBottom(animated: false)
         }
         .onChange(of: self.viewModel.isSending) { _, isSending in
+            // Scroll to bottom when user sends a message, even if scrolled up.
             guard isSending, self.hasPerformedInitialScroll else { return }
             self.isPinnedToBottom = true
-            self.scrollToBottom(animated: true)
+            withAnimation(.snappy(duration: 0.22)) {
+                self.scrollPosition = self.scrollerBottomID
+            }
         }
         .onChange(of: self.viewModel.messages.count) { _, _ in
             guard self.hasPerformedInitialScroll else { return }
@@ -163,25 +148,29 @@ public struct OpenClawChatView: View {
                lastMessage.id != self.lastUserMessageID {
                 self.lastUserMessageID = lastMessage.id
                 self.isPinnedToBottom = true
-                self.scrollToBottom(animated: true)
+                withAnimation(.snappy(duration: 0.22)) {
+                    self.scrollPosition = self.scrollerBottomID
+                }
                 return
             }
 
             guard self.isPinnedToBottom else { return }
-            self.scrollToBottom(animated: false)
+            withAnimation(.snappy(duration: 0.22)) {
+                self.scrollPosition = self.scrollerBottomID
+            }
         }
         .onChange(of: self.viewModel.pendingRunCount) { _, _ in
-            guard self.hasPerformedInitialScroll else { return }
-            guard self.isPinnedToBottom else { return }
-            self.scrollToBottom(animated: false)
+            guard self.hasPerformedInitialScroll, self.isPinnedToBottom else { return }
+            withAnimation(.snappy(duration: 0.22)) {
+                self.scrollPosition = self.scrollerBottomID
+            }
         }
         .onChange(of: self.viewModel.streamingAssistantText) { _, _ in
-            guard self.hasPerformedInitialScroll else { return }
-            guard self.isPinnedToBottom else { return }
-            self.scrollToBottom(animated: false)
+            guard self.hasPerformedInitialScroll, self.isPinnedToBottom else { return }
+            withAnimation(.snappy(duration: 0.22)) {
+                self.scrollPosition = self.scrollerBottomID
+            }
         }
-        // Keyboard show/hide is handled by SwiftUI's built-in safe area adjustment.
-        // Manual scrollToBottom on keyboard events fights the framework and overshoots.
     }
 
     @ViewBuilder
@@ -189,7 +178,6 @@ public struct OpenClawChatView: View {
         ForEach(self.visibleMessages) { msg in
             ChatMessageBubble(
                 message: msg,
-                showsToolCalls: self.showsToolCalls,
                 style: self.style,
                 markdownVariant: self.markdownVariant,
                 userAccent: self.userAccent)
@@ -198,15 +186,15 @@ public struct OpenClawChatView: View {
                     alignment: msg.role.lowercased() == "user" ? .trailing : .leading)
         }
 
-        if self.viewModel.pendingRunCount > 0 || self.viewModel.isSending {
+        if self.viewModel.pendingRunCount > 0 {
             HStack {
-                ChatTypingIndicatorBubble(style: self.style, assistantName: self.assistantName ?? self.viewModel.appName)
+                ChatTypingIndicatorBubble(style: self.style)
                     .equatable()
                 Spacer(minLength: 0)
             }
         }
 
-        if self.showsToolCalls, !self.viewModel.pendingToolCalls.isEmpty {
+        if !self.viewModel.pendingToolCalls.isEmpty {
             ChatPendingToolsBubble(toolCalls: self.viewModel.pendingToolCalls)
                 .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,26 +215,7 @@ public struct OpenClawChatView: View {
         } else {
             base = self.viewModel.messages
         }
-        let merged = self.mergeToolResults(in: base)
-        guard !self.showsToolCalls else { return merged }
-        return merged.filter { !self.isToolTraceOnlyMessage($0) }
-    }
-
-    /// Single source of truth for scrolling to the bottom of the conversation.
-    /// Uses only ScrollViewReader.scrollTo — no .scrollPosition binding.
-    private func scrollToBottom(animated: Bool) {
-        guard let proxy = self.scrollProxy else { return }
-        if let syncedMessageAnchor {
-            syncedMessageAnchor.wrappedValue = nil
-        }
-
-        if animated {
-            withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(self.bottomAnchorID, anchor: .bottom)
-            }
-        } else {
-            proxy.scrollTo(self.bottomAnchorID, anchor: .bottom)
-        }
+        return self.mergeToolResults(in: base)
     }
 
     @ViewBuilder
@@ -315,7 +284,7 @@ public struct OpenClawChatView: View {
         if self.viewModel.pendingRunCount > 0 {
             return true
         }
-        if self.showsToolCalls, !self.viewModel.pendingToolCalls.isEmpty {
+        if !self.viewModel.pendingToolCalls.isEmpty {
             return true
         }
         return false
@@ -325,7 +294,7 @@ public struct OpenClawChatView: View {
         self.viewModel.messages.isEmpty &&
             !(self.viewModel.streamingAssistantText.map { AssistantTextParser.hasVisibleContent(in: $0) } ?? false) &&
             self.viewModel.pendingRunCount == 0 &&
-            (!self.showsToolCalls || self.viewModel.pendingToolCalls.isEmpty)
+            self.viewModel.pendingToolCalls.isEmpty
     }
 
     private var emptyStateTitle: String {
@@ -436,56 +405,6 @@ public struct OpenClawChatView: View {
             return content.text
         }
         return parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func isToolTraceOnlyMessage(_ message: OpenClawChatMessage) -> Bool {
-        let role = message.role.lowercased()
-        if role == "tool" || role == "toolresult" || role == "tool_result" {
-            return true
-        }
-
-        let textSegments = message.content.compactMap { content -> String? in
-            let kind = (content.type ?? "text").lowercased()
-            guard kind == "text" || kind.isEmpty else { return nil }
-            guard let text = content.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
-                return nil
-            }
-            return text
-        }
-
-        if role != "user",
-           !textSegments.isEmpty,
-           textSegments.allSatisfy({ self.isLegacyToolTraceText($0) })
-        {
-            return true
-        }
-
-        let hasVisibleText = !textSegments.isEmpty
-        if hasVisibleText {
-            return false
-        }
-
-        let hasAttachment = message.content.contains { content in
-            let kind = (content.type ?? "").lowercased()
-            return kind == "file" || kind == "attachment"
-        }
-        if hasAttachment {
-            return false
-        }
-
-        let hasToolContent = message.content.contains { content in
-            let kind = (content.type ?? "").lowercased()
-            if ["toolcall", "tool_call", "tooluse", "tool_use", "toolresult", "tool_result"].contains(kind) {
-                return true
-            }
-            return content.name != nil && content.arguments != nil
-        }
-        return hasToolContent
-    }
-
-    private func isLegacyToolTraceText(_ text: String) -> Bool {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized.hasPrefix("tool.call ") || normalized.hasPrefix("tool.result ")
     }
 }
 

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>AnemllClaw</string>
+	<string>OpenClaw</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -32,21 +32,17 @@
 		<string>_openclaw-gw._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>AnemllClaw can capture photos or short video clips when requested via the gateway.</string>
-	<key>NSMotionUsageDescription</key>
-	<string>AnemllClaw uses motion data to enhance device orientation awareness.</string>
+	<string>OpenClaw can capture photos or short video clips when requested via the gateway.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>AnemllClaw discovers and connects to your AnemllClaw gateway on the local network.</string>
+	<string>OpenClaw discovers and connects to your OpenClaw gateway on the local network.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>AnemllClaw can share your location in the background when you enable Always.</string>
+	<string>OpenClaw can share your location in the background when you enable Always.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>AnemllClaw uses your location when you allow location sharing.</string>
+	<string>OpenClaw uses your location when you allow location sharing.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>AnemllClaw needs microphone access for voice wake.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>AnemllClaw can save captured photos and videos to your photo library.</string>
+	<string>OpenClaw needs microphone access for voice wake.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>AnemllClaw uses on-device speech recognition for voice wake.</string>
+	<string>OpenClaw uses on-device speech recognition for voice wake.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

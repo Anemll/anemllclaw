@@ -3,15 +3,7 @@ import Foundation
 import SwiftUI
 
 private enum ChatUIConstants {
-    static var bubbleMaxWidth: CGFloat {
-        #if os(macOS)
-        .infinity
-        #elseif os(iOS)
-        ProcessInfo.processInfo.isiOSAppOnMac ? .infinity : 560
-        #else
-        560
-        #endif
-    }
+    static let bubbleMaxWidth: CGFloat = 560
     static let bubbleCorner: CGFloat = 18
 }
 
@@ -144,7 +136,6 @@ private struct ChatBubbleShape: InsettableShape {
 @MainActor
 struct ChatMessageBubble: View {
     let message: OpenClawChatMessage
-    let showsToolCalls: Bool
     let style: OpenClawChatView.Style
     let markdownVariant: ChatMarkdownVariant
     let userAccent: Color?
@@ -153,7 +144,6 @@ struct ChatMessageBubble: View {
         ChatMessageBody(
             message: self.message,
             isUser: self.isUser,
-            showsToolCalls: self.showsToolCalls,
             style: self.style,
             markdownVariant: self.markdownVariant,
             userAccent: self.userAccent)
@@ -167,18 +157,11 @@ struct ChatMessageBubble: View {
 
 @MainActor
 private struct ChatMessageBody: View {
-    private enum LegacyToolTrace {
-        case call(OpenClawChatMessageContent)
-        case result(OpenClawChatMessageContent)
-    }
-
     let message: OpenClawChatMessage
     let isUser: Bool
-    let showsToolCalls: Bool
     let style: OpenClawChatView.Style
     let markdownVariant: ChatMarkdownVariant
     let userAccent: Color?
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         let text = self.primaryText
@@ -186,22 +169,20 @@ private struct ChatMessageBody: View {
 
         VStack(alignment: .leading, spacing: 10) {
             if self.isToolResultMessage {
-                if self.showsToolCalls, !text.isEmpty {
+                if !text.isEmpty {
                     ToolResultCard(
                         title: self.toolResultTitle,
                         text: text,
                         isUser: self.isUser)
                 }
             } else if self.isUser {
-                if !text.isEmpty {
-                    ChatMarkdownRenderer(
-                        text: text,
-                        context: .user,
-                        variant: self.markdownVariant,
-                        font: .system(size: 14 * self.chatTextScale),
-                        textColor: textColor)
-                }
-            } else if !text.isEmpty {
+                ChatMarkdownRenderer(
+                    text: text,
+                    context: .user,
+                    variant: self.markdownVariant,
+                    font: .system(size: 14),
+                    textColor: textColor)
+            } else {
                 ChatAssistantTextBody(text: text, markdownVariant: self.markdownVariant)
             }
 
@@ -211,7 +192,7 @@ private struct ChatMessageBody: View {
                 }
             }
 
-            if self.showsToolCalls, !self.toolCalls.isEmpty {
+            if !self.toolCalls.isEmpty {
                 ForEach(self.toolCalls.indices, id: \.self) { idx in
                     ToolCallCard(
                         content: self.toolCalls[idx],
@@ -219,7 +200,7 @@ private struct ChatMessageBody: View {
                 }
             }
 
-            if self.showsToolCalls, !self.inlineToolResults.isEmpty {
+            if !self.inlineToolResults.isEmpty {
                 ForEach(self.inlineToolResults.indices, id: \.self) { idx in
                     let toolResult = self.inlineToolResults[idx]
                     let display = ToolDisplayRegistry.resolve(name: toolResult.name ?? "tool", args: nil)
@@ -230,7 +211,7 @@ private struct ChatMessageBody: View {
                 }
             }
         }
-        .openClawTextSelectionEnabledCompat()
+        .textSelection(.enabled)
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
         .foregroundStyle(textColor)
@@ -243,9 +224,6 @@ private struct ChatMessageBody: View {
     }
 
     private var primaryText: String {
-        if self.legacyToolTrace != nil {
-            return ""
-        }
         let parts = self.message.content.compactMap { content -> String? in
             let kind = (content.type ?? "text").lowercased()
             guard kind == "text" || kind.isEmpty else { return nil }
@@ -266,28 +244,20 @@ private struct ChatMessageBody: View {
     }
 
     private var toolCalls: [OpenClawChatMessageContent] {
-        var calls = self.message.content.filter { content in
+        self.message.content.filter { content in
             let kind = (content.type ?? "").lowercased()
             if ["toolcall", "tool_call", "tooluse", "tool_use"].contains(kind) {
                 return true
             }
             return content.name != nil && content.arguments != nil
         }
-        if case let .call(call)? = self.legacyToolTrace {
-            calls.append(call)
-        }
-        return calls
     }
 
     private var inlineToolResults: [OpenClawChatMessageContent] {
-        var results = self.message.content.filter { content in
+        self.message.content.filter { content in
             let kind = (content.type ?? "").lowercased()
             return kind == "toolresult" || kind == "tool_result"
         }
-        if case let .result(result)? = self.legacyToolTrace {
-            results.append(result)
-        }
-        return results
     }
 
     private var isToolResultMessage: Bool {
@@ -302,132 +272,6 @@ private struct ChatMessageBody: View {
         }
         let display = ToolDisplayRegistry.resolve(name: "tool", args: nil)
         return "\(display.emoji) \(display.title)"
-    }
-
-    private var legacyToolTrace: LegacyToolTrace? {
-        let role = self.message.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard role != "user" else { return nil }
-
-        let text = self.message.content.compactMap { content -> String? in
-            let kind = (content.type ?? "text").lowercased()
-            guard kind == "text" || kind.isEmpty else { return nil }
-            return content.text
-        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-
-        if let call = Self.parseLegacyToolCall(
-            text: text,
-            toolCallID: self.message.toolCallId)
-        {
-            return .call(call)
-        }
-
-        if let result = Self.parseLegacyToolResult(
-            text: text,
-            toolCallID: self.message.toolCallId)
-        {
-            return .result(result)
-        }
-
-        // Keep broad parsing conservative: only explicit "tool" role gets the legacy fallback.
-        guard role == "tool" else { return nil }
-
-        let fallbackName = self.message.toolName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallbackContent = OpenClawChatMessageContent(
-            type: "tool_result",
-            text: text,
-            thinking: nil,
-            thinkingSignature: nil,
-            mimeType: nil,
-            fileName: nil,
-            content: nil,
-            id: self.message.toolCallId,
-            name: (fallbackName?.isEmpty == false ? fallbackName : "tool"),
-            arguments: nil)
-        return .result(fallbackContent)
-    }
-
-    private static func parseLegacyToolCall(
-        text: String,
-        toolCallID: String?) -> OpenClawChatMessageContent?
-    {
-        let prefix = "tool.call "
-        guard text.lowercased().hasPrefix(prefix) else { return nil }
-
-        let payload = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !payload.isEmpty else { return nil }
-
-        let name: String
-        let argsRaw: String
-        if let argsRange = payload.range(of: " args=") {
-            name = String(payload[..<argsRange.lowerBound])
-            argsRaw = String(payload[argsRange.upperBound...])
-        } else {
-            name = payload
-            argsRaw = ""
-        }
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return nil }
-
-        let parsedArguments = Self.parseLegacyToolArguments(argsRaw)
-        return OpenClawChatMessageContent(
-            type: "tool_call",
-            text: nil,
-            thinking: nil,
-            thinkingSignature: nil,
-            mimeType: nil,
-            fileName: nil,
-            content: nil,
-            id: toolCallID,
-            name: trimmedName,
-            arguments: parsedArguments)
-    }
-
-    private static func parseLegacyToolResult(
-        text: String,
-        toolCallID: String?) -> OpenClawChatMessageContent?
-    {
-        let prefix = "tool.result "
-        guard text.lowercased().hasPrefix(prefix) else { return nil }
-
-        let payload = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !payload.isEmpty else { return nil }
-
-        let name: String
-        let resultText: String
-        if let split = payload.firstIndex(where: \.isWhitespace) {
-            name = String(payload[..<split])
-            resultText = String(payload[split...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            name = payload
-            resultText = ""
-        }
-
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return nil }
-
-        return OpenClawChatMessageContent(
-            type: "tool_result",
-            text: resultText.isEmpty ? "ok" : resultText,
-            thinking: nil,
-            thinkingSignature: nil,
-            mimeType: nil,
-            fileName: nil,
-            content: nil,
-            id: toolCallID,
-            name: trimmedName,
-            arguments: nil)
-    }
-
-    private static func parseLegacyToolArguments(_ raw: String) -> AnyCodable? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if let data = trimmed.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(AnyCodable.self, from: data)
-        {
-            return decoded
-        }
-        return AnyCodable(trimmed)
     }
 
     private var bubbleFillColor: Color {
@@ -494,27 +338,15 @@ private struct ChatMessageBody: View {
     }
 }
 
-private extension View {
-    @ViewBuilder
-    func openClawTextSelectionEnabledCompat() -> some View {
-        #if os(tvOS)
-        self
-        #else
-        self.textSelection(.enabled)
-        #endif
-    }
-}
-
 private struct AttachmentRow: View {
     let att: OpenClawChatMessageContent
     let isUser: Bool
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "paperclip")
             Text(self.att.fileName ?? "Attachment")
-                .font(.system(size: 13 * self.chatTextScale))
+                .font(.footnote)
                 .lineLimit(1)
                 .foregroundStyle(self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText)
             Spacer()
@@ -528,40 +360,20 @@ private struct AttachmentRow: View {
 private struct ToolCallCard: View {
     let content: OpenClawChatMessageContent
     let isUser: Bool
-    @State private var expanded = false
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(self.collapsedSummary)
-                .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(self.expanded ? nil : 1)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard self.canExpand else { return }
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        self.expanded.toggle()
-                    }
-                }
-
-            if self.expanded, let argumentsText = self.argumentsText {
-                Text(argumentsText)
-                    .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .openClawTextSelectionEnabledCompat()
-                    .lineLimit(nil)
+            HStack(spacing: 6) {
+                Text(self.toolName)
+                    .font(.footnote.weight(.semibold))
+                Spacer(minLength: 0)
             }
 
-            if self.canExpand {
-                Button(self.expanded ? "Collapse" : "Expand") {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        self.expanded.toggle()
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12 * self.chatTextScale))
-                .foregroundStyle(.secondary)
+            if let summary = self.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
         .padding(10)
@@ -573,53 +385,12 @@ private struct ToolCallCard: View {
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)))
     }
 
-    private var collapsedSummary: String {
-        self.display.summaryLine
+    private var toolName: String {
+        "\(self.display.emoji) \(self.display.title)"
     }
 
-    private var canExpand: Bool {
-        self.argumentsText != nil
-    }
-
-    private var argumentsText: String? {
-        guard let arguments = self.content.arguments else { return nil }
-        let object = Self.foundationObject(from: arguments.value)
-        if JSONSerialization.isValidJSONObject(object),
-           let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-           let text = String(data: data, encoding: .utf8)?
-               .trimmingCharacters(in: .whitespacesAndNewlines),
-           !text.isEmpty
-        {
-            return text
-        }
-
-        let rendered = String(describing: object).trimmingCharacters(in: .whitespacesAndNewlines)
-        return rendered.isEmpty ? nil : rendered
-    }
-
-    private static func foundationObject(from raw: Any) -> Any {
-        switch raw {
-        case let value as AnyCodable:
-            return self.foundationObject(from: value.value)
-        case let dict as [String: AnyCodable]:
-            return dict.mapValues { self.foundationObject(from: $0.value) }
-        case let array as [AnyCodable]:
-            return array.map { self.foundationObject(from: $0.value) }
-        case let dict as [String: Any]:
-            return dict.mapValues { self.foundationObject(from: $0) }
-        case let array as [Any]:
-            return array.map { self.foundationObject(from: $0) }
-        case let value as NSString:
-            return String(value)
-        case let value as NSNumber:
-            return value
-        case let value as String:
-            return value
-        case let value as NSNull:
-            return value
-        default:
-            return String(describing: raw)
-        }
+    private var summary: String? {
+        self.display.detailLine
     }
 
     private var display: ToolDisplaySummary {
@@ -632,37 +403,26 @@ private struct ToolResultCard: View {
     let text: String
     let isUser: Bool
     @State private var expanded = false
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(self.title)
-                    .font(.system(size: 13 * self.chatTextScale, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                 Spacer(minLength: 0)
             }
 
             Text(self.displayText)
-                .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
+                .font(.footnote.monospaced())
                 .foregroundStyle(self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText)
-                .lineLimit(self.expanded ? nil : 1)
-                .truncationMode(.tail)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard self.shouldShowToggle else { return }
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        self.expanded.toggle()
-                    }
-                }
+                .lineLimit(self.expanded ? nil : Self.previewLineLimit)
 
             if self.shouldShowToggle {
-                Button(self.expanded ? "Collapse" : "Expand") {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        self.expanded.toggle()
-                    }
+                Button(self.expanded ? "Show less" : "Show full output") {
+                    self.expanded.toggle()
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 12 * self.chatTextScale))
+                .font(.caption)
                 .foregroundStyle(.secondary)
             }
         }
@@ -675,45 +435,32 @@ private struct ToolResultCard: View {
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)))
     }
 
-    private static let previewCharacterLimit = 180
+    private static let previewLineLimit = 8
+
+    private var lines: [Substring] {
+        self.text.components(separatedBy: .newlines).map { Substring($0) }
+    }
 
     private var displayText: String {
-        guard !self.expanded else { return self.text }
-        return self.previewText
+        guard !self.expanded, self.lines.count > Self.previewLineLimit else { return self.text }
+        return self.lines.prefix(Self.previewLineLimit).joined(separator: "\n") + "\n…"
     }
 
     private var shouldShowToggle: Bool {
-        self.previewText != self.normalizedText
-    }
-
-    private var previewText: String {
-        let text = self.normalizedText
-        guard text.count > Self.previewCharacterLimit else { return text }
-        let end = text.index(text.startIndex, offsetBy: Self.previewCharacterLimit)
-        return String(text[..<end]) + "…"
-    }
-
-    private var normalizedText: String {
-        self.text
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        self.lines.count > Self.previewLineLimit
     }
 }
 
 @MainActor
 struct ChatTypingIndicatorBubble: View {
     let style: OpenClawChatView.Style
-    let assistantName: String?
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         HStack(spacing: 10) {
             TypingDots()
             if self.style == .standard {
-                Text(self.thinkingLabel)
-                    .font(.system(size: 15 * self.chatTextScale))
+                Text("OpenClaw is thinking…")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
@@ -729,20 +476,11 @@ struct ChatTypingIndicatorBubble: View {
         .frame(maxWidth: ChatUIConstants.bubbleMaxWidth, alignment: .leading)
         .focusable(false)
     }
-
-    private var thinkingLabel: String {
-        let trimmed = (self.assistantName ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "OpenClaw is thinking…"
-        }
-        return "\(trimmed) is thinking…"
-    }
 }
 
 extension ChatTypingIndicatorBubble: @MainActor Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.style == rhs.style && lhs.assistantName == rhs.assistantName
+        lhs.style == rhs.style
     }
 }
 
@@ -770,12 +508,11 @@ struct ChatStreamingAssistantBubble: View {
 @MainActor
 struct ChatPendingToolsBubble: View {
     let toolCalls: [OpenClawChatPendingToolCall]
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Running tools…", systemImage: "hammer")
-                .font(.system(size: 12 * self.chatTextScale))
+                .font(.caption)
                 .foregroundStyle(.secondary)
 
             ForEach(self.toolCalls) { call in
@@ -783,14 +520,14 @@ struct ChatPendingToolsBubble: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(display.emoji) \(display.label)")
-                            .font(.system(size: 13 * self.chatTextScale, design: .monospaced))
+                            .font(.footnote.monospaced())
                             .lineLimit(1)
                         Spacer(minLength: 0)
                         ProgressView().controlSize(.mini)
                     }
                     if let detail = display.detailLine, !detail.isEmpty {
                         Text(detail)
-                            .font(.system(size: 12 * self.chatTextScale, design: .monospaced))
+                            .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
@@ -821,18 +558,17 @@ extension ChatPendingToolsBubble: @MainActor Equatable {
 @MainActor
 private struct TypingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var animate = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             ForEach(0..<3, id: \.self) { idx in
                 Circle()
-                    .fill(Color.primary.opacity(0.45))
+                    .fill(Color.secondary.opacity(0.55))
                     .frame(width: 7, height: 7)
-                    .scaleEffect(self.reduceMotion ? 0.85 : (self.animate ? 1.0 : 0.55))
-                    .opacity(self.reduceMotion ? 0.7 : (self.animate ? 1.0 : 0.3))
-                    .frame(width: 8, height: 8, alignment: .center)
-                    .clipped()
+                    .scaleEffect(self.reduceMotion ? 0.85 : (self.animate ? 1.05 : 0.70))
+                    .opacity(self.reduceMotion ? 0.55 : (self.animate ? 0.95 : 0.30))
                     .animation(
                         self.reduceMotion ? nil : .easeInOut(duration: 0.55)
                             .repeatForever(autoreverses: true)
@@ -840,33 +576,34 @@ private struct TypingDots: View {
                         value: self.animate)
             }
         }
-        .frame(height: 10, alignment: .center)
-        .fixedSize()
-        .clipped()
-        .onAppear {
-            // Delay slightly to ensure SwiftUI processes the initial layout before
-            // toggling animate, so the animation transition is properly observed.
-            if !self.reduceMotion {
-                DispatchQueue.main.async {
-                    self.animate = true
-                }
-            }
-        }
+        .onAppear { self.updateAnimationState() }
         .onDisappear { self.animate = false }
+        .onChange(of: self.scenePhase) { _, _ in
+            self.updateAnimationState()
+        }
+        .onChange(of: self.reduceMotion) { _, _ in
+            self.updateAnimationState()
+        }
+    }
+
+    private func updateAnimationState() {
+        guard !self.reduceMotion, self.scenePhase == .active else {
+            self.animate = false
+            return
+        }
+        self.animate = true
     }
 }
 
 private struct ChatAssistantTextBody: View {
     let text: String
     let markdownVariant: ChatMarkdownVariant
-    @Environment(\.openClawChatTextScale) private var chatTextScale
 
     var body: some View {
         let segments = AssistantTextParser.segments(from: self.text)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(segments) { segment in
-                let baseSize = 14 * self.chatTextScale
-                let font = segment.kind == .thinking ? Font.system(size: baseSize).italic() : Font.system(size: baseSize)
+                let font = segment.kind == .thinking ? Font.system(size: 14).italic() : Font.system(size: 14)
                 ChatMarkdownRenderer(
                     text: segment.text,
                     context: .assistant,

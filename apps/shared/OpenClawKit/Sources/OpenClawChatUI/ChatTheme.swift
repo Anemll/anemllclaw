@@ -12,24 +12,6 @@ extension NSAppearance {
         self.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
     }
 }
-#else
-private extension UIColor {
-    static var openClawSystemBackgroundCompat: UIColor {
-        #if os(tvOS)
-        UIColor.black
-        #else
-        UIColor.systemBackground
-        #endif
-    }
-
-    static var openClawSecondarySystemBackgroundCompat: UIColor {
-        #if os(tvOS)
-        UIColor(white: 0.14, alpha: 1.0)
-        #else
-        UIColor.secondarySystemBackground
-        #endif
-    }
-}
 #endif
 
 enum OpenClawChatTheme {
@@ -61,7 +43,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         Color(nsColor: .windowBackgroundColor)
         #else
-        Color(uiColor: .openClawSystemBackgroundCompat)
+        Color(uiColor: .systemBackground)
         #endif
     }
 
@@ -98,7 +80,7 @@ enum OpenClawChatTheme {
             Color.black.opacity(0.08)
         }
         #else
-        Color(uiColor: .openClawSystemBackgroundCompat)
+        Color(uiColor: .systemBackground)
         #endif
     }
 
@@ -106,7 +88,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         Color(nsColor: .textBackgroundColor)
         #else
-        Color(uiColor: .openClawSecondarySystemBackgroundCompat)
+        Color(uiColor: .secondarySystemBackground)
         #endif
     }
 
@@ -114,7 +96,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         AnyShapeStyle(.ultraThinMaterial)
         #else
-        AnyShapeStyle(Color(uiColor: .openClawSecondarySystemBackgroundCompat).opacity(0.9))
+        AnyShapeStyle(Color(uiColor: .secondarySystemBackground).opacity(0.9))
         #endif
     }
 
@@ -126,7 +108,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         Color(nsColor: self.assistantBubbleDynamicNSColor)
         #else
-        Color(uiColor: .openClawSecondarySystemBackgroundCompat)
+        Color(uiColor: .secondarySystemBackground)
         #endif
     }
 
@@ -134,7 +116,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         Color(nsColor: self.onboardingAssistantBubbleDynamicNSColor)
         #else
-        Color(uiColor: .openClawSecondarySystemBackgroundCompat)
+        Color(uiColor: .secondarySystemBackground)
         #endif
     }
 
@@ -160,7 +142,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         AnyShapeStyle(.ultraThinMaterial)
         #else
-        AnyShapeStyle(Color(uiColor: .openClawSystemBackgroundCompat))
+        AnyShapeStyle(Color(uiColor: .systemBackground))
         #endif
     }
 
@@ -168,7 +150,7 @@ enum OpenClawChatTheme {
         #if os(macOS)
         AnyShapeStyle(.thinMaterial)
         #else
-        AnyShapeStyle(Color(uiColor: .openClawSecondarySystemBackgroundCompat))
+        AnyShapeStyle(Color(uiColor: .secondarySystemBackground))
         #endif
     }
 

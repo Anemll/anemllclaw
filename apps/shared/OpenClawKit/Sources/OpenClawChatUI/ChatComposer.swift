@@ -2,9 +2,8 @@ import Foundation
 import Observation
 import SwiftUI
 
-#if os(iOS)
+#if !os(macOS)
 import PhotosUI
-import UIKit
 import UniformTypeIdentifiers
 #endif
 
@@ -13,19 +12,9 @@ struct OpenClawChatComposer: View {
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
-    @Binding var showSessionsSheet: Bool
-    @State private var showCreateConversation = false
-    @State private var newConversationName: String = ""
-    #if os(macOS)
-    @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
-    private var chatTextScaleLevelRaw: String = OpenClawChatTextScaleLevel.defaultLevel.rawValue
-    #endif
 
-    #if os(iOS)
+    #if !os(macOS)
     @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var isKeyboardVisible = false
-    @FocusState private var isFocused: Bool
-    #elseif os(tvOS)
     @FocusState private var isFocused: Bool
     #else
     @State private var shouldFocusTextView = false
@@ -39,16 +28,8 @@ struct OpenClawChatComposer: View {
                         self.sessionPicker
                     }
                     self.thinkingPicker
-                    #if os(macOS)
-                    self.textScaleMenu
-                    #endif
                     Spacer()
                     self.refreshButton
-                    #if os(iOS)
-                    if self.isKeyboardVisible {
-                        self.keyboardDismissButton
-                    }
-                    #endif
                     self.attachmentPicker
                 }
             }
@@ -99,33 +80,6 @@ struct OpenClawChatComposer: View {
             self.shouldFocusTextView = true
         }
         #endif
-        .alert("New Conversation", isPresented: self.$showCreateConversation) {
-            TextField("Name", text: self.$newConversationName)
-                #if os(iOS) || os(tvOS)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                #endif
-            Button("Cancel", role: .cancel) {
-                self.newConversationName = ""
-            }
-            Button("Create") {
-                self.createConversationFromInput()
-            }
-            .disabled(self.trimmedNewConversationName.isEmpty)
-        } message: {
-            Text("Enter a name for this conversation.")
-        }
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            self.isKeyboardVisible = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            self.isKeyboardVisible = false
-        }
-        .onDisappear {
-            self.isKeyboardVisible = false
-        }
-        #endif
     }
 
     private var thinkingPicker: some View {
@@ -142,54 +96,23 @@ struct OpenClawChatComposer: View {
     }
 
     private var sessionPicker: some View {
-        Menu {
+        Picker(
+            "Session",
+            selection: Binding(
+                get: { self.viewModel.sessionKey },
+                set: { next in self.viewModel.switchSession(to: next) }))
+        {
             ForEach(self.viewModel.sessionChoices, id: \.key) { session in
-                Button {
-                    self.viewModel.switchSession(to: session.key)
-                } label: {
-                    if session.key == self.viewModel.sessionKey {
-                        Label {
-                            Text(session.displayName ?? session.key)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                        } icon: {
-                            Image(systemName: "checkmark")
-                        }
-                    } else {
-                        Text(session.displayName ?? session.key)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1)
-                    }
-                }
-            }
-            Divider()
-            Button {
-                self.newConversationName = ""
-                self.showCreateConversation = true
-            } label: {
-                Label("New Conversation", systemImage: "square.and.pencil")
-            }
-            Button {
-                self.showSessionsSheet = true
-            } label: {
-                Label("Manage Conversations…", systemImage: "list.bullet")
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(self.activeSessionLabel)
+                Text(session.displayName ?? session.key)
                     .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .allowsTightening(true)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .tag(session.key)
             }
         }
-        .buttonStyle(.bordered)
+        .labelsHidden()
+        .pickerStyle(.menu)
         .controlSize(.small)
-        .frame(maxWidth: self.sessionPickerMaxWidth, alignment: .leading)
-        .help("Conversation")
+        .frame(maxWidth: 160, alignment: .leading)
+        .help("Session")
     }
 
     @ViewBuilder
@@ -203,7 +126,7 @@ struct OpenClawChatComposer: View {
         .help("Add Image")
         .buttonStyle(.bordered)
         .controlSize(.small)
-        #elseif os(iOS)
+        #else
         PhotosPicker(selection: self.$pickerItems, maxSelectionCount: 8, matching: .images) {
             Image(systemName: "paperclip")
         }
@@ -213,16 +136,6 @@ struct OpenClawChatComposer: View {
         .onChange(of: self.pickerItems) { _, newItems in
             Task { await self.loadPhotosPickerItems(newItems) }
         }
-        #else
-        Button {
-            // tvOS does not support the iOS PhotosPicker flow in this chat composer.
-        } label: {
-            Image(systemName: "paperclip")
-        }
-        .help("Image picker is unavailable on tvOS")
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(true)
         #endif
     }
 
@@ -314,14 +227,10 @@ struct OpenClawChatComposer: View {
         return trimmed.isEmpty ? self.viewModel.sessionKey : trimmed
     }
 
-    private var sessionPickerMaxWidth: CGFloat {
-        self.activeSessionLabel.count > 22 ? 148 : 160
-    }
-
     private var editorOverlay: some View {
         ZStack(alignment: .topLeading) {
             if self.viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Message \(self.viewModel.appName)…")
+                Text("Message OpenClaw…")
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 4)
@@ -334,7 +243,7 @@ struct OpenClawChatComposer: View {
             .frame(minHeight: self.textMinHeight, idealHeight: self.textMinHeight, maxHeight: self.textMaxHeight)
             .padding(.horizontal, 4)
             .padding(.vertical, 3)
-            #elseif os(iOS)
+            #else
             TextEditor(text: self.$viewModel.input)
                 .font(.system(size: 15))
                 .scrollContentBackground(.hidden)
@@ -344,13 +253,6 @@ struct OpenClawChatComposer: View {
                     maxHeight: self.textMaxHeight)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
-                .focused(self.$isFocused)
-            #else
-            TextField("", text: self.$viewModel.input)
-                .font(.system(size: 15))
-                .textFieldStyle(.plain)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 6)
                 .focused(self.$isFocused)
             #endif
         }
@@ -366,77 +268,32 @@ struct OpenClawChatComposer: View {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: self.sendButtonSymbolSize, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .frame(width: self.sendButtonVisualSize, height: self.sendButtonVisualSize)
+                .padding(6)
                 .background(Circle().fill(Color.red))
-                .frame(minWidth: self.sendButtonHitTarget, minHeight: self.sendButtonHitTarget)
-                .contentShape(Rectangle())
                 .disabled(self.viewModel.isAborting)
             } else {
                 Button {
-                    self.sendFromComposer()
+                    self.viewModel.send()
                 } label: {
                     if self.viewModel.isSending {
                         ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: self.sendButtonSymbolSize, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                     }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .frame(width: self.sendButtonVisualSize, height: self.sendButtonVisualSize)
+                .padding(6)
                 .background(Circle().fill(Color.accentColor))
-                .frame(minWidth: self.sendButtonHitTarget, minHeight: self.sendButtonHitTarget)
-                .contentShape(Rectangle())
                 .disabled(!self.viewModel.canSend)
             }
         }
-    }
-
-    private var sendButtonVisualSize: CGFloat {
-        #if os(macOS)
-        64
-        #elseif os(visionOS)
-        52
-        #else
-        self.usesEnlargedControls ? 52 : 26
-        #endif
-    }
-
-    private var sendButtonHitTarget: CGFloat {
-        #if os(macOS)
-        84
-        #elseif os(visionOS)
-        64
-        #else
-        self.usesEnlargedControls ? 64 : self.sendButtonVisualSize
-        #endif
-    }
-
-    private var sendButtonSymbolSize: CGFloat {
-        #if os(macOS)
-        30
-        #elseif os(visionOS)
-        26
-        #else
-        self.usesEnlargedControls ? 26 : 13
-        #endif
-    }
-
-    private var usesEnlargedControls: Bool {
-        #if os(macOS) || os(visionOS)
-        return true
-        #elseif os(iOS)
-        if ProcessInfo.processInfo.isiOSAppOnMac { return true }
-        return UIDevice.current.userInterfaceIdiom == .pad
-        #else
-        return false
-        #endif
     }
 
     private var refreshButton: some View {
@@ -449,46 +306,6 @@ struct OpenClawChatComposer: View {
         .controlSize(.small)
         .help("Refresh")
     }
-
-    #if os(macOS)
-    private var textScaleLevel: OpenClawChatTextScaleLevel {
-        OpenClawChatTextScaleLevel(rawValue: self.chatTextScaleLevelRaw) ?? .defaultLevel
-    }
-
-    private var textScaleMenu: some View {
-        Menu {
-            ForEach(OpenClawChatTextScaleLevel.allCases) { level in
-                Button {
-                    self.chatTextScaleLevelRaw = level.rawValue
-                } label: {
-                    if level == self.textScaleLevel {
-                        Label(level.title, systemImage: "checkmark")
-                    } else {
-                        Text(level.title)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "textformat.size")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .help("Chat text size")
-    }
-    #endif
-
-    #if os(iOS)
-    private var keyboardDismissButton: some View {
-        Button {
-            self.dismissKeyboardFromComposer()
-        } label: {
-            Image(systemName: "keyboard.chevron.compact.down")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .help("Dismiss Keyboard")
-    }
-    #endif
 
     private var showsToolbar: Bool {
         self.style == .standard
@@ -518,37 +335,6 @@ struct OpenClawChatComposer: View {
         self.style == .onboarding ? 52 : 64
     }
 
-    private var trimmedNewConversationName: String {
-        self.newConversationName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func createConversationFromInput() {
-        let name = self.trimmedNewConversationName
-        guard !name.isEmpty else { return }
-        self.showCreateConversation = false
-        self.newConversationName = ""
-        self.viewModel.switchSession(to: name)
-    }
-
-    private func sendFromComposer() {
-        #if os(iOS)
-        self.dismissKeyboardFromComposer()
-        #endif
-        self.viewModel.send()
-    }
-
-    #if os(iOS)
-    private func dismissKeyboardFromComposer() {
-        self.isFocused = false
-        self.isKeyboardVisible = false
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil,
-            from: nil,
-            for: nil)
-    }
-    #endif
-
     #if os(macOS)
     private func pickFilesMac() {
         let panel = NSOpenPanel()
@@ -577,7 +363,7 @@ struct OpenClawChatComposer: View {
         }
         return true
     }
-    #elseif os(iOS)
+    #else
     private func loadPhotosPickerItems(_ items: [PhotosPickerItem]) async {
         for item in items {
             do {
