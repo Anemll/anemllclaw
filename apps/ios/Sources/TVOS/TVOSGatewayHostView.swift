@@ -138,6 +138,8 @@ struct TVOSGatewayHostView: View {
     /// All settings focus targets grouped by visual row for directional navigation.
     private static let settingsFocusRows: [[SettingsFocus]] = [
         [.done],
+        [.llmProvider, .llmBaseURL, .llmAPIKey, .llmModel],
+        [.llmApply, .llmReload],
         [.runtimeToggle, .probeInProcess, .probeWebSocket, .probeUpstream],
         [.wsToggle, .forceRebindWS, .clearLog, .clearErrors],
         [.lanAccessToggle],
@@ -146,8 +148,6 @@ struct TVOSGatewayHostView: View {
         [.testLocalLLM, .testAgenticRun, .agentStatus, .abortAgent],
         [.authMode, .authToken, .authPassword],
         // Upstream row hidden: [.upstreamURL, .upstreamToken, .upstreamPassword],
-        [.llmProvider, .llmBaseURL, .llmAPIKey, .llmModel],
-        [.llmApply, .llmReload],
         [.backupButton, .restoreButton],
         [.acknowledgments],
     ]
@@ -181,6 +181,7 @@ struct TVOSGatewayHostView: View {
     @State private var backupStatusMessage: String?
     @State private var showBackupStatusAlert: Bool = false
     @State private var showAcknowledgments: Bool = false
+    @State private var showLLMSetupPrompt: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -203,6 +204,13 @@ struct TVOSGatewayHostView: View {
             if self.focusedTarget == nil {
                 self.focusedTarget = .input
             }
+            // Prompt for LLM setup if provider is not configured or API key is missing.
+            let settings = self.runtime.controlPlaneSettings
+            if !self.runtime.localLLMConfigured
+                || (settings.localLLMProvider != .disabled && settings.localLLMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            {
+                self.showLLMSetupPrompt = true
+            }
         }
         .onChange(of: self.runtime.controlPlaneSettings) { _, next in
             guard !self.applyingSettings else { return }
@@ -210,6 +218,14 @@ struct TVOSGatewayHostView: View {
         }
         .fullScreenCover(isPresented: self.$isSettingsPresented) {
             self.settingsSheet
+        }
+        .alert("Set up your LLM provider", isPresented: self.$showLLMSetupPrompt) {
+            Button("Open Settings") {
+                self.isSettingsPresented = true
+            }
+            Button("Skip", role: .cancel) {}
+        } message: {
+            Text("AnemllClaw needs an LLM provider to chat. Open Settings to configure your provider, base URL, API key, and model.")
         }
         .onChange(of: self.focusedTarget) { old, _ in
             // Track where focus WAS so onMoveCommand can route from the
@@ -233,24 +249,26 @@ struct TVOSGatewayHostView: View {
     private var topBar: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw ANEMLL Server")
+                Text("AnemllClaw Server")
                     .font(.title2.weight(.semibold))
 
                 Text("Apple tvOS")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color(red: 0.63, green: 0.84, blue: 1.0))
 
-                Text("HTML: \(self.htmlReadout)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.mint)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if self.runtime.lanAccessEnabled {
+                    Text("HTML: \(self.htmlReadout)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.mint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-                Text("WS: \(self.webSocketReadout)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    Text("WS: \(self.webSocketReadout)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             Button("Restart") {
@@ -733,6 +751,13 @@ struct TVOSGatewayHostView: View {
                     .font(.title3.weight(.semibold))
             }
 
+            // LLM provider — top of settings for quick access.
+            Section {
+                self.localLLMSettingsContent
+            } header: {
+                Text("LLM Provider")
+            }
+
             // Runtime actions — immediately focusable on tvOS.
             Section {
                 self.settingsRuntimeActionsContent
@@ -759,12 +784,6 @@ struct TVOSGatewayHostView: View {
             // } header: {
             //     Text("Upstream Gateway")
             // }
-
-            Section {
-                self.localLLMSettingsContent
-            } header: {
-                Text("Local LLM + Runtime State")
-            }
 
             Section {
                 self.networkStatusContent
@@ -957,12 +976,18 @@ struct TVOSGatewayHostView: View {
             Text("All configurable parameters (listener auth, upstream, local LLM/API keys) are managed from Admin Web.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Text("Admin URL hint: \(self.htmlReadout)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.mint)
-            Text("Gateway WS endpoint: \(self.webSocketReadout)")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            if self.runtime.lanAccessEnabled {
+                Text("Admin URL hint: \(self.htmlReadout)")
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.mint)
+                Text("Gateway WS endpoint: \(self.webSocketReadout)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Enable LAN Access to use Admin Web from another device.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .focusable()
     }
@@ -1039,20 +1064,29 @@ struct TVOSGatewayHostView: View {
                 .frame(width: 200, alignment: .leading)
             Picker("", selection: self.$settingsDraft.localLLMProvider) {
                 Text("disabled").tag(GatewayLocalLLMProviderKind.disabled)
+                Text("grok").tag(GatewayLocalLLMProviderKind.grokCompatible)
                 Text("openai").tag(GatewayLocalLLMProviderKind.openAICompatible)
                 Text("anthropic").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
                 Text("minimax").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
-                Text("grok").tag(GatewayLocalLLMProviderKind.grokCompatible)
             }
             .pickerStyle(.segmented)
             .focused(self.$settingsFocus, equals: .llmProvider)
+            .onChange(of: self.settingsDraft.localLLMProvider) { _, newProvider in
+                guard newProvider != .disabled else { return }
+                if let url = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: newProvider) {
+                    self.settingsDraft.localLLMBaseURL = url
+                }
+                if let model = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: newProvider) {
+                    self.settingsDraft.localLLMModel = model
+                }
+            }
         }
 
         HStack(spacing: 14) {
             Text("Base URL")
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 200, alignment: .leading)
-            TextField("https://api.openai.com", text: self.$settingsDraft.localLLMBaseURL)
+            TextField("Base URL", text: self.$settingsDraft.localLLMBaseURL)
                 .tvosConfigInputFieldStyle()
                 .focused(self.$settingsFocus, equals: .llmBaseURL)
         }
@@ -1061,7 +1095,7 @@ struct TVOSGatewayHostView: View {
             Text("API Key")
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 200, alignment: .leading)
-            SecureField("Local LLM API key", text: self.$settingsDraft.localLLMAPIKey)
+            SecureField("API key", text: self.$settingsDraft.localLLMAPIKey)
                 .tvosConfigInputFieldStyle()
                 .focused(self.$settingsFocus, equals: .llmAPIKey)
         }
@@ -1070,7 +1104,7 @@ struct TVOSGatewayHostView: View {
             Text("Model")
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 200, alignment: .leading)
-            TextField("Model (e.g. gpt-4o-mini)", text: self.$settingsDraft.localLLMModel)
+            TextField("Model name", text: self.$settingsDraft.localLLMModel)
                 .tvosConfigInputFieldStyle()
                 .focused(self.$settingsFocus, equals: .llmModel)
         }
@@ -1442,12 +1476,18 @@ struct TVOSGatewayHostView: View {
             Text("All configurable parameters (listener auth, upstream, local LLM/API keys) are managed from Admin Web.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Text("Admin URL hint: \(self.htmlReadout)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.mint)
-            Text("Gateway WS endpoint: \(self.webSocketReadout)")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            if self.runtime.lanAccessEnabled {
+                Text("Admin URL hint: \(self.htmlReadout)")
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.mint)
+                Text("Gateway WS endpoint: \(self.webSocketReadout)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Enable LAN Access to use Admin Web from another device.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         .background(Color.white.opacity(0.06))

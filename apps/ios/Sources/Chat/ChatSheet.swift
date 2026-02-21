@@ -3,6 +3,10 @@ import OpenClawGatewayCore
 import OpenClawKit
 import SwiftUI
 
+extension Notification.Name {
+    static let openclawOpenSettings = Notification.Name("openclawOpenSettings")
+}
+
 struct ChatSheet: View {
     private enum LastThreadStore {
         static let defaultsKey = "chat.lastSessionKey"
@@ -34,13 +38,14 @@ struct ChatSheet: View {
     @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
     @Environment(GatewayConnectionController.self) private var gatewayController: GatewayConnectionController
     @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime: TVOSLocalGatewayRuntime
-    @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = true
+    @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = false
     @AppStorage("chat.autoRetryAttemptsOnError") private var autoRetryAttemptsOnError: Int = 1
     @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
     private var mainChatZoomLevelRaw: String = OpenClawChatTextScaleLevel.defaultLevel.rawValue
     @State private var viewModel: OpenClawChatViewModel
     @State private var showsTranscriptViewer = false
     @State private var showsSettings = false
+    @State private var settingsAutoAddProvider = false
     @State private var transcriptMessageAnchor: UUID?
     @State private var savedProviders: [SavedLLMProvider] = []
     @State private var activeProviderID: String?
@@ -52,10 +57,11 @@ struct ChatSheet: View {
     init(gateway: GatewayNodeSession, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil, allowDismiss: Bool = true) {
         let transport = IOSGatewayChatTransport(gateway: gateway)
         let resolvedSessionKey = LastThreadStore.resolve(initial: sessionKey)
-        self._viewModel = State(
-            initialValue: OpenClawChatViewModel(
-                sessionKey: resolvedSessionKey,
-                transport: transport))
+        let vm = OpenClawChatViewModel(
+            sessionKey: resolvedSessionKey,
+            transport: transport)
+        vm.appName = "AnemllClaw"
+        self._viewModel = State(initialValue: vm)
         self.userAccent = userAccent
         self.agentName = agentName
         self.allowDismiss = allowDismiss
@@ -63,10 +69,11 @@ struct ChatSheet: View {
 
     init(transport: any OpenClawChatTransport, sessionKey: String, agentName: String? = nil, userAccent: Color? = nil, allowDismiss: Bool = true) {
         let resolvedSessionKey = LastThreadStore.resolve(initial: sessionKey)
-        self._viewModel = State(
-            initialValue: OpenClawChatViewModel(
-                sessionKey: resolvedSessionKey,
-                transport: transport))
+        let vm = OpenClawChatViewModel(
+            sessionKey: resolvedSessionKey,
+            transport: transport)
+        vm.appName = "AnemllClaw"
+        self._viewModel = State(initialValue: vm)
         self.userAccent = userAccent
         self.agentName = agentName
         self.allowDismiss = allowDismiss
@@ -101,6 +108,10 @@ struct ChatSheet: View {
                 .onChange(of: self.viewModel.sessionKey) { _, newValue in
                     LastThreadStore.save(newValue)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .openclawOpenSettings)) { note in
+                    self.settingsAutoAddProvider = (note.userInfo?["addProvider"] as? Bool) == true
+                    self.showsSettings = true
+                }
                 .fullScreenCover(isPresented: self.$showsTranscriptViewer) {
                     ChatTranscriptViewerSheet(
                         viewModel: self.viewModel,
@@ -112,8 +123,9 @@ struct ChatSheet: View {
                 .sheet(isPresented: self.$showsSettings, onDismiss: {
                     self.savedProviders = LLMProviderStore.load()
                     self.activeProviderID = LLMProviderStore.activeID()
+                    self.settingsAutoAddProvider = false
                 }) {
-                    SettingsTab()
+                    SettingsTab(autoAddProvider: self.settingsAutoAddProvider)
                         .environment(self.appModel)
                         .environment(self.voiceWake)
                         .environment(self.gatewayController)
@@ -136,6 +148,15 @@ struct ChatSheet: View {
 
     private var usesMacTopBarLayout: Bool {
         ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
+    private var usesEnlargedControls: Bool {
+        #if os(visionOS)
+        return true
+        #else
+        if ProcessInfo.processInfo.isiOSAppOnMac { return true }
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #endif
     }
 
     private var compactTopBar: some View {
@@ -183,11 +204,17 @@ struct ChatSheet: View {
     }
 
     private var compactTopBarHeight: CGFloat {
-        self.usesMacTopBarLayout ? 26 : 34
+        if self.usesEnlargedControls {
+            return self.usesMacTopBarLayout ? 52 : 68
+        }
+        return 34
     }
 
     private var compactTopBarFontSize: CGFloat {
-        self.usesMacTopBarLayout ? 13 : 15
+        if self.usesEnlargedControls {
+            return self.usesMacTopBarLayout ? 26 : 30
+        }
+        return 15
     }
 
     private var mainZoomMenu: some View {

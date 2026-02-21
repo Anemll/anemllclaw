@@ -264,6 +264,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func showAboutPanelWithCredits(_ sender: Any?) {
+        let credits = Self.acknowledgmentsAttributedString()
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [
+            .credits: credits,
+        ])
+        // Bring the About panel to front even when running as a menu bar app.
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private static func acknowledgmentsAttributedString() -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.paragraphSpacing = 4
+
+        let heading: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: style,
+        ]
+        let body: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+            .paragraphStyle: style,
+        ]
+
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(string: "Acknowledgments\n", attributes: heading))
+
+        let libs: [(String, String)] = [
+            ("Textual", "MIT"),
+            ("SwiftUI Math", "MIT"),
+            ("ElevenLabsKit", "MIT"),
+            ("Swift Concurrency Extras", "MIT"),
+            ("Commander", "MIT"),
+            ("Swift Snapshot Testing", "MIT"),
+            ("SQLite3", "Public Domain"),
+        ]
+        for (name, license) in libs {
+            result.append(NSAttributedString(string: "\(name) — \(license)\n", attributes: body))
+        }
+        result.append(NSAttributedString(string: "\n\u{00A9} 2025 Peter Steinberger — MIT License", attributes: body))
+        return result
+    }
+
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
         if self.isDuplicateInstance() {
@@ -287,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await PortGuardian.shared.sweep(mode: AppStateStore.shared.connectionMode) }
         Task { await PeekabooBridgeHostCoordinator.shared.setEnabled(AppStateStore.shared.peekabooBridgeEnabled) }
         self.scheduleFirstRunOnboardingIfNeeded()
+        self.retargetAboutMenuItem()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             CLIInstallPrompter.shared.checkAndPromptIfNeeded(reason: "launch")
         }
@@ -315,6 +360,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await RemoteTunnelManager.shared.stopAll() }
         Task { await GatewayConnection.shared.shutdown() }
         Task { await PeekabooBridgeHostCoordinator.shared.stop() }
+    }
+
+    /// Retarget the system "About" menu item so it opens our custom About panel with credits.
+    /// MenuBarExtra apps don't support `CommandGroup(replacing: .appInfo)`, so we patch the
+    /// existing menu item's action/target directly.
+    @MainActor
+    private func retargetAboutMenuItem() {
+        // The menu may not be ready immediately; try once after a short delay.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            guard let mainMenu = NSApp.mainMenu else { return }
+            for item in mainMenu.items {
+                guard let submenu = item.submenu else { continue }
+                for subItem in submenu.items {
+                    if subItem.action == #selector(NSApplication.orderFrontStandardAboutPanel(_:)) {
+                        subItem.target = self
+                        subItem.action = #selector(self.showAboutPanelWithCredits(_:))
+                        return
+                    }
+                }
+            }
+        }
     }
 
     @MainActor

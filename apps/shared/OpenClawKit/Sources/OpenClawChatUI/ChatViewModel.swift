@@ -26,6 +26,7 @@ public final class OpenClawChatViewModel {
     public var errorText: String?
     public var autoRetryAttemptsOnError: Int = 1
     public var attachments: [OpenClawPendingAttachment] = []
+    public var appName: String = "OpenClaw"
     public private(set) var healthOK: Bool = false
     public private(set) var pendingRunCount: Int = 0
 
@@ -38,6 +39,8 @@ public final class OpenClawChatViewModel {
 
     @ObservationIgnored
     private nonisolated(unsafe) var eventTask: Task<Void, Never>?
+    @ObservationIgnored
+    private nonisolated(unsafe) var sendTask: Task<Void, Never>?
     private var pendingRuns = Set<String>() {
         didSet { self.pendingRunCount = self.pendingRuns.count }
     }
@@ -73,6 +76,7 @@ public final class OpenClawChatViewModel {
 
     deinit {
         self.eventTask?.cancel()
+        self.sendTask?.cancel()
         for (_, task) in self.pendingRunTimeoutTasks {
             task.cancel()
         }
@@ -87,7 +91,7 @@ public final class OpenClawChatViewModel {
     }
 
     public func send() {
-        Task { await self.performSend() }
+        self.sendTask = Task { await self.performSend() }
     }
 
     public func abort() {
@@ -364,6 +368,7 @@ public final class OpenClawChatViewModel {
         var currentAttachments = encodedAttachments
 
         while true {
+            guard !Task.isCancelled else { break }
             do {
                 let response = try await self.transport.sendMessage(
                     sessionKey: self.sessionKey,
@@ -410,6 +415,7 @@ public final class OpenClawChatViewModel {
         }
 
         self.isSending = false
+        self.sendTask = nil
     }
 
     private func performAbort() async {
@@ -418,7 +424,19 @@ public final class OpenClawChatViewModel {
         self.isAborting = true
         defer { self.isAborting = false }
 
+        // Cancel the in-flight send task so performSend() exits immediately.
+        self.sendTask?.cancel()
+        self.sendTask = nil
+
         let runIds = Array(self.pendingRuns)
+
+        // Clear local state immediately so the user can type again.
+        self.clearPendingRuns(reason: nil)
+        self.isSending = false
+        self.streamingAssistantText = nil
+        self.pendingToolCallsById = [:]
+
+        // Best-effort: tell the gateway to abort each run.
         for runId in runIds {
             do {
                 try await self.transport.abortRun(sessionKey: self.sessionKey, runId: runId)
@@ -426,6 +444,9 @@ public final class OpenClawChatViewModel {
                 // Best-effort.
             }
         }
+
+        // Refresh history to pick up whatever the gateway committed before the abort.
+        await self.refreshHistoryAfterRun()
     }
 
     private func fetchSessions(limit: Int?) async {

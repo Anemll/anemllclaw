@@ -80,14 +80,14 @@ final class NodeAppModel {
         let agentId = (self.selectedAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let defaultId = (self.gatewayDefaultAgentId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedId = agentId.isEmpty ? defaultId : agentId
-        if resolvedId.isEmpty { return "OpenClaw" }
+        if resolvedId.isEmpty { return "AnemllClaw" }
         if let match = self.gatewayAgents.first(where: { $0.id == resolvedId }) {
             let name = (match.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !name.isEmpty { return name }
-            if match.id.lowercased() == "main" { return "OpenClaw" }
+            if match.id.lowercased() == "main" { return "AnemllClaw" }
             return match.id
         }
-        if resolvedId.lowercased() == "main" { return "OpenClaw" }
+        if resolvedId.lowercased() == "main" { return "AnemllClaw" }
         return resolvedId
     }
 
@@ -1100,7 +1100,7 @@ final class NodeAppModel {
         if finalStatus == .authorized || finalStatus == .provisional || finalStatus == .ephemeral {
             let addResult = await self.runNotificationCall(timeoutSeconds: 2.0) { [notificationCenter] in
                 let content = UNMutableNotificationContent()
-                content.title = "OpenClaw"
+                content.title = "AnemllClaw"
                 content.body = text
                 content.sound = .default
                 content.userInfo = ["messageId": messageId]

@@ -36,7 +36,7 @@ struct LLMProviderEditorSheet: View {
         self.providerID = provider.id
         self.isNew = isNew
         self._name = State(initialValue: provider.name)
-        self._provider = State(initialValue: isNew ? .openAICompatible : provider.provider)
+        self._provider = State(initialValue: isNew ? .disabled : provider.provider)
         self._baseURL = State(initialValue: provider.baseURL)
         self._apiKey = State(initialValue: provider.apiKey)
         self._model = State(initialValue: provider.model)
@@ -53,10 +53,11 @@ struct LLMProviderEditorSheet: View {
                             .textInputAutocapitalization(.words)
 
                         Picker("Type", selection: self.$provider) {
+                            Text("None").tag(GatewayLocalLLMProviderKind.disabled)
+                            Text("Grok-compatible").tag(GatewayLocalLLMProviderKind.grokCompatible)
                             Text("OpenAI-compatible").tag(GatewayLocalLLMProviderKind.openAICompatible)
                             Text("Anthropic-compatible").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
                             Text("MiniMax-compatible").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
-                            Text("Grok-compatible").tag(GatewayLocalLLMProviderKind.grokCompatible)
                         }
                     }
 
@@ -79,6 +80,9 @@ struct LLMProviderEditorSheet: View {
                             Text("On").tag(GatewayLocalLLMToolCallingMode.on)
                             Text("Off").tag(GatewayLocalLLMToolCallingMode.off)
                         }
+                        Text(self.toolCallingMode.helpText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
 
                     if !self.canSave {

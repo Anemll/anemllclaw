@@ -28,7 +28,7 @@ struct RootCanvas: View {
     @State private var showRestoreConfirmAlert: Bool = false
     @State private var backupOperationInFlight: Bool = false
     @State private var backupExportDocument = OpenClawBackupExportDocument(data: Data())
-    @State private var backupExportFileName: String = "OpenClaw-Backup.ocbackup"
+    @State private var backupExportFileName: String = "AnemllClaw-Backup.ocbackup"
     @State private var showBackupExporter: Bool = false
     @State private var backupStatusAlert: BackupStatusAlert?
 
@@ -162,7 +162,7 @@ struct RootCanvas: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Export or import local OpenClaw data.")
+                Text("Export or import local AnemllClaw data.")
             }
             .alert("Create Backup?", isPresented: self.$showBackupConfirmAlert) {
                 Button("Backup") {
@@ -380,9 +380,16 @@ struct RootCanvas: View {
         guard !self.showOnboarding else { return }
 
         self.didEvaluateLLMSetupPromptOnLaunch = true
-        guard !self.llmSetupPromptSuppressed else { return }
-        guard !self.localGatewayRuntime.localLLMConfigured else { return }
+        guard !self.llmSetupPromptSuppressed else {
+            NSLog("[OpenClaw] LLM setup prompt suppressed by user preference")
+            return
+        }
+        guard !self.localGatewayRuntime.localLLMConfigured else {
+            NSLog("[OpenClaw] LLM setup prompt skipped: LLM already configured")
+            return
+        }
 
+        NSLog("[OpenClaw] LLM setup prompt: showing (LLM not configured)")
         self.llmSetupPromptDontShowAgain = false
         self.showLLMSetupPrompt = true
     }
@@ -401,6 +408,12 @@ struct RootCanvas: View {
     private func handleLLMSetupPromptOpenSettings() {
         self.persistLLMSetupPromptPreferenceIfNeeded()
         self.showLLMSetupPrompt = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            NotificationCenter.default.post(
+                name: .openclawOpenSettings,
+                object: nil,
+                userInfo: ["addProvider": true])
+        }
     }
 
     private func maybeShowQuickSetup() {
@@ -420,13 +433,19 @@ private struct LLMSetupPromptSheet: View {
     var onSkip: () -> Void
     var onOpenSettings: () -> Void
 
+    private var appName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "AnemllClaw"
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 Label("Set up your LLM provider", systemImage: "sparkles.rectangle.stack.fill")
                     .font(.title3.weight(.semibold))
                 Text(
-                    "OpenClaw chat needs an LLM provider. "
+                    "\(self.appName) needs an LLM provider. "
                         + "Tap the gear icon in the top bar to open Settings, then choose provider, "
                         + "base URL, API key, and model, and tap Apply, Restart & Test."
                 )

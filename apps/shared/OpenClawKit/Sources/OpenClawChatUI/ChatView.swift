@@ -200,7 +200,7 @@ public struct OpenClawChatView: View {
 
         if self.viewModel.pendingRunCount > 0 || self.viewModel.isSending {
             HStack {
-                ChatTypingIndicatorBubble(style: self.style, assistantName: self.assistantName)
+                ChatTypingIndicatorBubble(style: self.style, assistantName: self.assistantName ?? self.viewModel.appName)
                     .equatable()
                 Spacer(minLength: 0)
             }

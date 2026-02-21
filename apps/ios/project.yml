@@ -195,6 +195,11 @@ targets:
       properties:
         CFBundleDisplayName: OpenClaw
         CFBundleIconName: AppIcon
+        CFBundleIcons:
+          CFBundlePrimaryIcon: "App Icon & Top Shelf Image"
+        TVTopShelfImage:
+          TVTopShelfPrimaryImage: "Top Shelf Image"
+          TVTopShelfPrimaryImageWide: "Top Shelf Image Wide"
         CFBundleShortVersionString: "2026.2.16"
         CFBundleVersion: "20260216"
         UILaunchScreen: {}

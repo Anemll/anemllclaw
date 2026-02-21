@@ -134,7 +134,7 @@ enum OpenClawBackupManager {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let fileName = "OpenClaw-Backup-\(formatter.string(from: now)).ocbackup"
+        let fileName = "AnemllClaw-Backup-\(formatter.string(from: now)).ocbackup"
 
         let defaultsCount = (try? self.decodeDefaultsDomain(defaultsData).count) ?? 0
         return OpenClawBackupArtifact(
@@ -145,15 +145,27 @@ enum OpenClawBackupManager {
             keychainCount: keychainItems.count)
     }
 
-    static func restoreBackupArchive(from payload: Data) throws -> OpenClawBackupRestoreResult {
+    /// Peek at the archive metadata without restoring.  Returns `nil` when the
+    /// payload cannot be decoded (invalid magic / compression / JSON).
+    static func peekArchiveMetadata(from payload: Data) -> (bundleIdentifier: String, version: Int)? {
+        guard let archive = try? self.decodeArchive(payload) else { return nil }
+        return (archive.appBundleIdentifier, archive.version)
+    }
+
+    static func restoreBackupArchive(
+        from payload: Data,
+        ignoreBundleIDMismatch: Bool = false
+    ) throws -> OpenClawBackupRestoreResult {
         let archive = try self.decodeArchive(payload)
         guard archive.version == self.archiveVersion else {
             throw OpenClawBackupError.unsupportedArchiveVersion(archive.version)
         }
 
         let currentBundleId = Bundle.main.bundleIdentifier ?? "ai.openclaw.ios"
-        guard archive.appBundleIdentifier == currentBundleId else {
-            throw OpenClawBackupError.unsupportedApp(archive.appBundleIdentifier)
+        if !ignoreBundleIDMismatch {
+            guard archive.appBundleIdentifier == currentBundleId else {
+                throw OpenClawBackupError.unsupportedApp(archive.appBundleIdentifier)
+            }
         }
 
         let fileManager = FileManager.default

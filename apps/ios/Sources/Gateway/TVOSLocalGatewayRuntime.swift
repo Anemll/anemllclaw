@@ -90,6 +90,13 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMToolCallingMode: .auto,
         telegramBotToken: "",
         telegramDefaultChatID: "")
+
+    /// Suggested LLM defaults shown in the provider editor when no provider
+    /// has been configured yet.  Kept separate from `default` so that a fresh
+    /// install starts unconfigured (triggering the setup prompt).
+    static let suggestedLLMProvider: GatewayLocalLLMProviderKind = .grokCompatible
+    static let suggestedLLMBaseURL = "https://api.x.ai/v1"
+    static let suggestedLLMModel = "grok-4-1-fast-non-reasoning"
 }
 
 private struct TVOSTelegramPairingRequest: Codable, Sendable, Equatable {
@@ -264,7 +271,7 @@ final class TVOSLocalGatewayRuntime {
     private(set) var lastAgentRunID: String?
     private(set) var chatSessionKey: String
     var chatAssistantName: String {
-        Self.bootstrapAssistantName(workspacePath: Self.defaultBootstrapWorkspacePath()) ?? "OpenClaw"
+        Self.bootstrapAssistantName(workspacePath: Self.defaultBootstrapWorkspacePath()) ?? "AnemllClaw"
     }
     private(set) var showExternalTelegramMessagesInChat: Bool
     private(set) var chatTurns: [TVOSGatewayChatTurn]
@@ -873,7 +880,7 @@ final class TVOSLocalGatewayRuntime {
             role: "user",
             senderID: senderID,
             text: text,
-            directionPrefix: "Telegram -> OpenClaw")
+            directionPrefix: "Telegram -> AnemllClaw")
     }
 
     private func mirrorTelegramOutboundChatReply(senderID: String, text: String) {
@@ -881,7 +888,7 @@ final class TVOSLocalGatewayRuntime {
             role: "assistant",
             senderID: senderID,
             text: text,
-            directionPrefix: "OpenClaw -> Telegram")
+            directionPrefix: "AnemllClaw -> Telegram")
     }
 
     private func appendMirroredTelegramChatTurn(
@@ -2176,7 +2183,7 @@ final class TVOSLocalGatewayRuntime {
 
         let sendResult = await self.sendTelegramMessage(
             chatID: approved.id,
-            text: "OpenClaw tvOS pairing approved. You are now linked.")
+            text: "AnemllClaw tvOS pairing approved. You are now linked.")
         if let sendError = sendResult {
             self.appendLog("telegram pairing approval notice failed: \(sendError)", level: .warning)
         }
@@ -2936,19 +2943,20 @@ final class TVOSLocalGatewayRuntime {
             Self.trimmed(defaults.string(forKey: "gateway.tvos.upstream.scopes"))
             ?? ""
 
-        let localProviderRaw =
-            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.provider"))
-            ?? GatewayLocalLLMProviderKind.disabled.rawValue
-        settings.localLLMProvider = GatewayLocalLLMProviderKind(rawValue: localProviderRaw) ?? .disabled
-        settings.localLLMBaseURL =
-            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.baseURL"))
-            ?? ""
-        settings.localLLMAPIKey =
-            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.apiKey"))
-            ?? ""
-        settings.localLLMModel =
-            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
-            ?? ""
+        let persistedProviderRaw = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.provider"))
+        let persistedBaseURL = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.baseURL"))
+        let persistedAPIKey = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.apiKey"))
+        let persistedModel = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
+
+        let localProviderRaw = persistedProviderRaw
+            ?? TVOSGatewayControlPlaneSettings.default.localLLMProvider.rawValue
+        settings.localLLMProvider = GatewayLocalLLMProviderKind(rawValue: localProviderRaw)
+            ?? TVOSGatewayControlPlaneSettings.default.localLLMProvider
+        settings.localLLMBaseURL = persistedBaseURL
+            ?? TVOSGatewayControlPlaneSettings.default.localLLMBaseURL
+        settings.localLLMAPIKey = persistedAPIKey ?? ""
+        settings.localLLMModel = persistedModel
+            ?? TVOSGatewayControlPlaneSettings.default.localLLMModel
         let localToolCallingModeRaw =
             Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.toolCallingMode"))
             ?? GatewayLocalLLMToolCallingMode.auto.rawValue
@@ -3130,7 +3138,7 @@ final class TVOSLocalGatewayRuntime {
                 let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: update.chatID,
                     senderID: senderID,
-                    text: "OpenClaw tvOS currently supports Telegram replies in private chats only.")
+                    text: "AnemllClaw tvOS currently supports Telegram replies in private chats only.")
                 if let sendError {
                     self.appendLog("telegram non-private notice failed: \(sendError)", level: .warning)
                 }
@@ -3155,7 +3163,7 @@ final class TVOSLocalGatewayRuntime {
                 let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: approved.id,
                     senderID: senderID,
-                    text: "OpenClaw tvOS pairing approved. You are now linked.")
+                    text: "AnemllClaw tvOS pairing approved. You are now linked.")
                 if let sendError {
                     self.appendLog("telegram /pair reply failed: \(sendError)", level: .warning)
                 }
@@ -3247,7 +3255,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "OpenClaw tvOS is linked. Send a message and I will reply.")
+                text: "AnemllClaw tvOS is linked. Send a message and I will reply.")
             if let sendError {
                 self.appendLog("telegram start reply failed: \(sendError)", level: .warning)
             }
@@ -3258,7 +3266,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "OpenClaw tvOS runtime is not running.")
+                text: "AnemllClaw tvOS runtime is not running.")
             if let sendError {
                 self.appendLog("telegram runtime-not-running reply failed: \(sendError)", level: .warning)
             }
@@ -3268,7 +3276,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "OpenClaw tvOS runtime host is unavailable.")
+                text: "AnemllClaw tvOS runtime host is unavailable.")
             if let sendError {
                 self.appendLog("telegram host-unavailable reply failed: \(sendError)", level: .warning)
             }
@@ -3796,6 +3804,10 @@ final class TVOSLocalGatewayRuntime {
             ? "(missing)"
             : Self.redacted(self.controlPlaneSettings.authPassword)
 
+        let localAPIKeyState = self.controlPlaneSettings.localLLMAPIKey.isEmpty
+            ? "(missing)"
+            : Self.redacted(self.controlPlaneSettings.localLLMAPIKey)
+
         self.appendLog(
             "config dump [\(context)] authMode=\(self.controlPlaneSettings.authMode.rawValue)"
                 + " authToken=\(authTokenState)"
@@ -3805,6 +3817,8 @@ final class TVOSLocalGatewayRuntime {
                 + " llm=\(self.controlPlaneSettings.localLLMProvider.rawValue)"
                 + " model=\(localModel)"
                 + " baseURL=\(localBaseURL)"
+                + " apiKey=\(localAPIKeyState)"
+                + " llmConfigured=\(self.localLLMConfigured)"
                 + " tools=\(self.controlPlaneSettings.localLLMToolCallingMode.rawValue)"
                 + " telegramChat=\(telegramDefaultChatID)"
                 + " telegramToken=\(telegramTokenState)"
@@ -4020,7 +4034,7 @@ final class TVOSLocalGatewayRuntime {
     }
 
     private func appendLog(_ message: String, level: TVOSGatewayRuntimeLogEntry.Level = .info) {
-        let formattedMessage = "[OpenClaw tvOS][\(level.rawValue.uppercased())] \(message)"
+        let formattedMessage = "[AnemllClaw tvOS][\(level.rawValue.uppercased())] \(message)"
 #if DEBUG
         print(formattedMessage)
 #endif

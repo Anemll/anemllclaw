@@ -1,7 +1,15 @@
 {
   "images" : [
-    { "idiom" : "tv", "scale" : "1x", "filename" : "front-large.png" },
-    { "idiom" : "tv", "scale" : "2x", "filename" : "front-large@2x.png" }
+    {
+      "filename" : "front-large.png",
+      "idiom" : "tv",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "front-large@2x.png",
+      "idiom" : "tv",
+      "scale" : "2x"
+    }
   ],
   "info" : {
     "author" : "xcode",

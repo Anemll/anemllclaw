@@ -168,7 +168,8 @@ final class GatewayDiscoveryModel {
 
     private static func prettifyInstanceName(_ decodedName: String) -> String {
         let normalized = decodedName.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let stripped = normalized.replacingOccurrences(of: " (OpenClaw)", with: "")
+        let stripped = normalized.replacingOccurrences(of: " (AnemllClaw)", with: "")
+            .replacingOccurrences(of: " (OpenClaw)", with: "")
             .replacingOccurrences(of: #"\s+\(\d+\)$"#, with: "", options: .regularExpression)
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
     }

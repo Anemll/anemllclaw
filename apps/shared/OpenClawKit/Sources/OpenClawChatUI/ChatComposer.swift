@@ -321,7 +321,7 @@ struct OpenClawChatComposer: View {
     private var editorOverlay: some View {
         ZStack(alignment: .topLeading) {
             if self.viewModel.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Message OpenClaw…")
+                Text("Message \(self.viewModel.appName)…")
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 4)
@@ -400,25 +400,42 @@ struct OpenClawChatComposer: View {
 
     private var sendButtonVisualSize: CGFloat {
         #if os(macOS)
-        32
+        64
+        #elseif os(visionOS)
+        52
         #else
-        26
+        self.usesEnlargedControls ? 52 : 26
         #endif
     }
 
     private var sendButtonHitTarget: CGFloat {
         #if os(macOS)
-        42
+        84
+        #elseif os(visionOS)
+        64
         #else
-        self.sendButtonVisualSize
+        self.usesEnlargedControls ? 64 : self.sendButtonVisualSize
         #endif
     }
 
     private var sendButtonSymbolSize: CGFloat {
         #if os(macOS)
-        15
+        30
+        #elseif os(visionOS)
+        26
         #else
-        13
+        self.usesEnlargedControls ? 26 : 13
+        #endif
+    }
+
+    private var usesEnlargedControls: Bool {
+        #if os(macOS) || os(visionOS)
+        return true
+        #elseif os(iOS)
+        if ProcessInfo.processInfo.isiOSAppOnMac { return true }
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        return false
         #endif
     }
 

@@ -6,6 +6,7 @@ import os
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import UserNotifications
 
 struct SettingsTab: View {
     @Environment(NodeAppModel.self) private var appModel: NodeAppModel
@@ -33,7 +34,7 @@ struct SettingsTab: View {
     @AppStorage("gateway.manual.tls") private var manualGatewayTLS: Bool = true
     @AppStorage("gateway.discovery.debugLogs") private var discoveryDebugLogsEnabled: Bool = false
     @AppStorage("canvas.debugStatusEnabled") private var canvasDebugStatusEnabled: Bool = false
-    @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = true
+    @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = false
     @AppStorage("chat.autoRetryAttemptsOnError") private var chatAutoRetryAttemptsOnError: Int = 1
     @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
 
@@ -66,6 +67,11 @@ struct SettingsTab: View {
     @State private var savedProviders: [SavedLLMProvider] = []
     @State private var activeProviderID: String?
     @State private var editingProvider: SavedLLMProvider?
+    private let autoAddProvider: Bool
+
+    init(autoAddProvider: Bool = false) {
+        self.autoAddProvider = autoAddProvider
+    }
 
     @State private var showBackupConfirmAlert: Bool = false
     @State private var showRestoreImporter: Bool = false
@@ -73,49 +79,24 @@ struct SettingsTab: View {
     @State private var showRestoreConfirmAlert: Bool = false
     @State private var backupOperationInFlight: Bool = false
     @State private var backupExportDocument = OpenClawBackupExportDocument(data: Data())
-    @State private var backupExportFileName: String = "OpenClaw-Backup.ocbackup"
+    @State private var backupExportFileName: String = "AnemllClaw-Backup.ocbackup"
     @State private var showBackupExporter: Bool = false
     @State private var backupStatusMessage: String?
     @State private var showBackupStatusAlert: Bool = false
+    @State private var showBundleIDMismatchAlert: Bool = false
+    @State private var mismatchBundleID: String = ""
+    @State private var pendingRestoreData: Data?
+    @State private var showRestoreRestartAlert: Bool = false
+    @State private var restoreRestartMessage: String = ""
+    @State private var showAcknowledgments: Bool = false
+
+    private static let showsRemoteGatewaySection = false
 
     private let gatewayLogger = Logger(subsystem: "ai.openclaw.ios", category: "GatewaySettings")
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    LabeledContent("Status") {
-                        Text(self.localGatewayRuntime.state == .running ? "Running" : "Stopped")
-                            .foregroundStyle(self.localGatewayRuntime.state == .running ? .green : .orange)
-                    }
-                    if let port = self.localGatewayRuntime.listenerPort {
-                        LabeledContent("Port", value: "\(port)")
-                    }
-                    LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
-
-                    Toggle("LAN Access (Debug)", isOn: Binding(
-                        get: { self.localGatewayRuntime.lanAccessEnabled },
-                        set: { newValue in
-                            Task { await self.localGatewayRuntime.setLanAccessEnabled(newValue) }
-                        }))
-                    if self.localGatewayRuntime.lanAccessEnabled {
-                        Text("Server is reachable from your local network. This reduces security — use only for debugging.")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text("Server only accepts connections from this device (localhost).")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
-                            .frame(width: 10, height: 10)
-                        Text("Local Server")
-                    }
-                }
-
                 Section {
                     if self.savedProviders.isEmpty {
                         Text("No LLM providers configured.")
@@ -155,25 +136,6 @@ struct SettingsTab: View {
                             get: { !self.llmSetupPromptSuppressed },
                             set: { self.llmSetupPromptSuppressed = !$0 }))
 
-                    LabeledContent {
-                        Picker("Tool Calls", selection: self.$llmToolCallingMode) {
-                            ForEach(GatewayLocalLLMToolCallingMode.allCases, id: \.self) { mode in
-                                Text(mode.displayLabel).tag(mode)
-                            }
-                        }
-                        .labelsHidden()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text("Tool Calls")
-                            Text("(i)")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text(self.llmToolCallingMode.helpText)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
                     if let error = self.localGatewayRuntime.localLLMConfigErrorText {
                         Text(error)
                             .font(.footnote)
@@ -204,187 +166,222 @@ struct SettingsTab: View {
                 }
 
                 Section {
-                    DisclosureGroup(isExpanded: self.$gatewayExpanded) {
-                        if !self.isGatewayConnected {
-                            Text(
-                                "1. Open Telegram and message your bot: /pair\n"
-                                    + "2. Copy the setup code it returns\n"
-                                    + "3. Paste here and tap Connect\n"
-                                    + "4. Back in Telegram, run /pair approve")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                    LabeledContent("Status") {
+                        Text(self.localGatewayRuntime.state == .running ? "Running" : "Stopped")
+                            .foregroundStyle(self.localGatewayRuntime.state == .running ? .green : .orange)
+                    }
+                    if let port = self.localGatewayRuntime.listenerPort {
+                        LabeledContent("Port", value: "\(port)")
+                    }
+                    LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
 
-                            if let warning = self.tailnetWarningText {
-                                Text(warning)
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(.orange)
-                            }
+                    Toggle("LAN Access (Debug)", isOn: Binding(
+                        get: { self.localGatewayRuntime.lanAccessEnabled },
+                        set: { newValue in
+                            Task { await self.localGatewayRuntime.setLanAccessEnabled(newValue) }
+                        }))
+                    if self.localGatewayRuntime.lanAccessEnabled {
+                        Text("Server is reachable from your local network. This reduces security — use only for debugging.")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Server only accepts connections from this device (localhost).")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
+                            .frame(width: 10, height: 10)
+                        Text("Local Server")
+                    }
+                }
 
-                            TextField("Paste setup code", text: self.$setupCode)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
+                if Self.showsRemoteGatewaySection {
+                    Section {
+                        DisclosureGroup(isExpanded: self.$gatewayExpanded) {
+                            if !self.isGatewayConnected {
+                                Text(
+                                    "1. Open Telegram and message your bot: /pair\n"
+                                        + "2. Copy the setup code it returns\n"
+                                        + "3. Paste here and tap Connect\n"
+                                        + "4. Back in Telegram, run /pair approve")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
 
-                            Button {
-                                Task { await self.applySetupCodeAndConnect() }
-                            } label: {
-                                if self.connectingGatewayID == "manual" {
-                                    HStack(spacing: 8) {
-                                        ProgressView()
-                                            .progressViewStyle(.circular)
-                                        Text("Connecting…")
+                                if let warning = self.tailnetWarningText {
+                                    Text(warning)
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(.orange)
+                                }
+
+                                TextField("Paste setup code", text: self.$setupCode)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+
+                                Button {
+                                    Task { await self.applySetupCodeAndConnect() }
+                                } label: {
+                                    if self.connectingGatewayID == "manual" {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .progressViewStyle(.circular)
+                                            Text("Connecting…")
+                                        }
+                                    } else {
+                                        Text("Connect with setup code")
                                     }
-                                } else {
-                                    Text("Connect with setup code")
+                                }
+                                .disabled(self.connectingGatewayID != nil
+                                    || self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                                if let status = self.setupStatusLine {
+                                    Text(status)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
-                            .disabled(self.connectingGatewayID != nil
-                                || self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                            if let status = self.setupStatusLine {
-                                Text(status)
+                            if self.isGatewayConnected {
+                                Picker("Bot", selection: self.$selectedAgentPickerId) {
+                                    Text("Default").tag("")
+                                    let defaultId = (self.appModel.gatewayDefaultAgentId ?? "")
+                                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    ForEach(self.appModel.gatewayAgents.filter { $0.id != defaultId }, id: \.id) { agent in
+                                        let name = (agent.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                        Text(name.isEmpty ? agent.id : name).tag(agent.id)
+                                    }
+                                }
+                                Text("Controls which bot Chat and Talk speak to.")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
-                        }
 
-                        if self.isGatewayConnected {
-                            Picker("Bot", selection: self.$selectedAgentPickerId) {
-                                Text("Default").tag("")
-                                let defaultId = (self.appModel.gatewayDefaultAgentId ?? "")
+                            if self.appModel.gatewayServerName == nil {
+                                LabeledContent("Discovery", value: self.gatewayController.discoveryStatusText)
+                            }
+                            LabeledContent("Status", value: self.appModel.gatewayStatusText)
+                            Toggle("Auto-connect on launch", isOn: self.$gatewayAutoConnect)
+
+                            if let serverName = self.appModel.gatewayServerName {
+                                LabeledContent("Server", value: serverName)
+                                if let addr = self.appModel.gatewayRemoteAddress {
+                                    let parts = Self.parseHostPort(from: addr)
+                                    let urlString = Self.httpURLString(host: parts?.host, port: parts?.port, fallback: addr)
+                                    LabeledContent("Address") {
+                                        Text(urlString)
+                                    }
+                                    .contextMenu {
+                                        Button {
+                                            UIPasteboard.general.string = urlString
+                                        } label: {
+                                            Label("Copy URL", systemImage: "doc.on.doc")
+                                        }
+
+                                        if let parts {
+                                            Button {
+                                                UIPasteboard.general.string = parts.host
+                                            } label: {
+                                                Label("Copy Host", systemImage: "doc.on.doc")
+                                            }
+
+                                            Button {
+                                                UIPasteboard.general.string = "\(parts.port)"
+                                            } label: {
+                                                Label("Copy Port", systemImage: "doc.on.doc")
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Button("Disconnect", role: .destructive) {
+                                    self.appModel.disconnectGateway()
+                                }
+                            } else {
+                                self.gatewayList(showing: .all)
+                            }
+
+                            DisclosureGroup("Advanced") {
+                                Toggle("Use Manual Gateway", isOn: self.$manualGatewayEnabled)
+
+                                TextField("Host", text: self.$manualGatewayHost)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+
+                                TextField("Port (optional)", text: self.manualPortBinding)
+                                    .keyboardType(.numberPad)
+
+                                Toggle("Use TLS", isOn: self.$manualGatewayTLS)
+
+                                Button {
+                                    Task { await self.connectManual() }
+                                } label: {
+                                    if self.connectingGatewayID == "manual" {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                                .progressViewStyle(.circular)
+                                            Text("Connecting…")
+                                        }
+                                    } else {
+                                        Text("Connect (Manual)")
+                                    }
+                                }
+                                .disabled(self.connectingGatewayID != nil || self.manualGatewayHost
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                                ForEach(self.appModel.gatewayAgents.filter { $0.id != defaultId }, id: \.id) { agent in
-                                    let name = (agent.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                                    Text(name.isEmpty ? agent.id : name).tag(agent.id)
-                                }
-                            }
-                            Text("Controls which bot Chat and Talk speak to.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
+                                    .isEmpty || !self.manualPortIsValid)
 
-                        if self.appModel.gatewayServerName == nil {
-                            LabeledContent("Discovery", value: self.gatewayController.discoveryStatusText)
-                        }
-                        LabeledContent("Status", value: self.appModel.gatewayStatusText)
-                        Toggle("Auto-connect on launch", isOn: self.$gatewayAutoConnect)
-
-                        if let serverName = self.appModel.gatewayServerName {
-                            LabeledContent("Server", value: serverName)
-                            if let addr = self.appModel.gatewayRemoteAddress {
-                                let parts = Self.parseHostPort(from: addr)
-                                let urlString = Self.httpURLString(host: parts?.host, port: parts?.port, fallback: addr)
-                                LabeledContent("Address") {
-                                    Text(urlString)
-                                }
-                                .contextMenu {
-                                    Button {
-                                        UIPasteboard.general.string = urlString
-                                    } label: {
-                                        Label("Copy URL", systemImage: "doc.on.doc")
-                                    }
-
-                                    if let parts {
-                                        Button {
-                                            UIPasteboard.general.string = parts.host
-                                        } label: {
-                                            Label("Copy Host", systemImage: "doc.on.doc")
-                                        }
-
-                                        Button {
-                                            UIPasteboard.general.string = "\(parts.port)"
-                                        } label: {
-                                            Label("Copy Port", systemImage: "doc.on.doc")
-                                        }
-                                    }
-                                }
-                            }
-
-                            Button("Disconnect", role: .destructive) {
-                                self.appModel.disconnectGateway()
-                            }
-                        } else {
-                            self.gatewayList(showing: .all)
-                        }
-
-                        DisclosureGroup("Advanced") {
-                            Toggle("Use Manual Gateway", isOn: self.$manualGatewayEnabled)
-
-                            TextField("Host", text: self.$manualGatewayHost)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-
-                            TextField("Port (optional)", text: self.manualPortBinding)
-                                .keyboardType(.numberPad)
-
-                            Toggle("Use TLS", isOn: self.$manualGatewayTLS)
-
-                            Button {
-                                Task { await self.connectManual() }
-                            } label: {
-                                if self.connectingGatewayID == "manual" {
-                                    HStack(spacing: 8) {
-                                        ProgressView()
-                                            .progressViewStyle(.circular)
-                                        Text("Connecting…")
-                                    }
-                                } else {
-                                    Text("Connect (Manual)")
-                                }
-                            }
-                            .disabled(self.connectingGatewayID != nil || self.manualGatewayHost
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                                .isEmpty || !self.manualPortIsValid)
-
-                            Text(
-                                "Use this when mDNS/Bonjour discovery is blocked. "
-                                    + "Leave port empty for 443 on tailnet DNS (TLS) or 18789 otherwise.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-
-                            Toggle("Discovery Debug Logs", isOn: self.$discoveryDebugLogsEnabled)
-                                .onChange(of: self.discoveryDebugLogsEnabled) { _, newValue in
-                                    self.gatewayController.setDiscoveryDebugLoggingEnabled(newValue)
-                                }
-
-                            NavigationLink("Discovery Logs") {
-                                GatewayDiscoveryDebugLogView()
-                            }
-
-                            Toggle("Debug Canvas Status", isOn: self.$canvasDebugStatusEnabled)
-                            self.tvOSGatewayCapabilityMatrixSection()
-
-                            TextField("Gateway Auth Token", text: self.$gatewayToken)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-
-                            SecureField("Gateway Password", text: self.$gatewayPassword)
-
-                            Button("Reset Onboarding", role: .destructive) {
-                                self.showResetOnboardingAlert = true
-                            }
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Debug")
-                                    .font(.footnote.weight(.semibold))
+                                Text(
+                                    "Use this when mDNS/Bonjour discovery is blocked. "
+                                        + "Leave port empty for 443 on tailnet DNS (TLS) or 18789 otherwise.")
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
-                                Text(self.gatewayDebugText())
-                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(10)
-                                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                                Toggle("Discovery Debug Logs", isOn: self.$discoveryDebugLogsEnabled)
+                                    .onChange(of: self.discoveryDebugLogsEnabled) { _, newValue in
+                                        self.gatewayController.setDiscoveryDebugLoggingEnabled(newValue)
+                                    }
+
+                                NavigationLink("Discovery Logs") {
+                                    GatewayDiscoveryDebugLogView()
+                                }
+
+                                Toggle("Debug Canvas Status", isOn: self.$canvasDebugStatusEnabled)
+                                self.tvOSGatewayCapabilityMatrixSection()
+
+                                TextField("Gateway Auth Token", text: self.$gatewayToken)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+
+                                SecureField("Gateway Password", text: self.$gatewayPassword)
+
+                                Button("Reset Onboarding", role: .destructive) {
+                                    self.showResetOnboardingAlert = true
+                                }
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Debug")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(self.gatewayDebugText())
+                                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(10)
+                                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
                             }
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(self.isGatewayConnected ? Color.green : Color.secondary.opacity(0.35))
-                                .frame(width: 10, height: 10)
-                            Text("Remote Gateway")
-                            Spacer()
-                            Text(self.isGatewayConnected ? self.gatewaySummaryText : "Optional")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(self.isGatewayConnected ? Color.green : Color.secondary.opacity(0.35))
+                                    .frame(width: 10, height: 10)
+                                Text("Remote Gateway")
+                                Spacer()
+                                Text(self.isGatewayConnected ? self.gatewaySummaryText : "Optional")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -447,7 +444,7 @@ struct SettingsTab: View {
                             .foregroundStyle(.secondary)
 
                         Toggle("Prevent Sleep", isOn: self.$preventSleep)
-                        Text("Keeps the screen awake while OpenClaw is open.")
+                        Text("Keeps the screen awake while AnemllClaw is open.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -470,6 +467,14 @@ struct SettingsTab: View {
                         LabeledContent("Platform", value: self.platformString())
                         LabeledContent("Version", value: self.appVersion())
                         LabeledContent("Model", value: self.modelIdentifier())
+                    }
+                }
+
+                Section("About") {
+                    Button {
+                        self.showAcknowledgments = true
+                    } label: {
+                        Label("Acknowledgments", systemImage: "doc.text")
                     }
                 }
             }
@@ -512,6 +517,15 @@ struct SettingsTab: View {
                 let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
                 self.savedProviders = migrated.providers
                 self.activeProviderID = migrated.activeID
+            }
+            .onAppear {
+                if self.autoAddProvider {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if self.editingProvider == nil {
+                            self.editingProvider = SavedLLMProvider()
+                        }
+                    }
+                }
             }
             .onChange(of: self.selectedAgentPickerId) { _, newValue in
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -629,6 +643,27 @@ struct SettingsTab: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(self.backupStatusMessage ?? "")
+        }
+        .alert("Bundle ID Mismatch", isPresented: self.$showBundleIDMismatchAlert) {
+            Button("Restore Anyway", role: .destructive) {
+                Task { await self.performRestoreFromData(ignoreBundleIDMismatch: true) }
+            }
+            Button("Cancel", role: .cancel) {
+                self.pendingRestoreData = nil
+                self.pendingRestoreFileURL = nil
+            }
+        } message: {
+            Text("This backup was created by \"\(self.mismatchBundleID)\" but this app is \"\(Bundle.main.bundleIdentifier ?? "unknown")\". Restore anyway?")
+        }
+        .alert("Restart Required", isPresented: self.$showRestoreRestartAlert) {
+            Button("Exit Now") {
+                Self.scheduleReopenNotificationAndExit()
+            }
+        } message: {
+            Text(self.restoreRestartMessage + "\nThe app will close. Tap the notification to reopen.")
+        }
+        .sheet(isPresented: self.$showAcknowledgments) {
+            AcknowledgmentsSheet()
         }
     }
 
@@ -774,12 +809,12 @@ struct SettingsTab: View {
             let quickTestLogLine = "llm editor quick test start"
                 + " provider=\(saved.provider.rawValue)"
                 + " model=\(saved.model)"
-            print("[OpenClaw iOS] \(quickTestLogLine)")
+            print("[AnemllClaw iOS] \(quickTestLogLine)")
             self.gatewayLogger.info("\(quickTestLogLine, privacy: .public)")
             await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
             let passed = self.localGatewayRuntime.lastLocalLLMProbeSucceeded == true
             let outcome = passed ? "passed" : "failed"
-            print("[OpenClaw iOS] llm editor quick test \(outcome)")
+            print("[AnemllClaw iOS] llm editor quick test \(outcome)")
             self.gatewayLogger.info("llm editor quick test \(outcome, privacy: .public)")
         }
     }
@@ -1322,7 +1357,6 @@ extension SettingsTab {
         guard let url = self.pendingRestoreFileURL else { return }
 
         self.pendingRestoreFileURL = nil
-        self.backupOperationInFlight = true
 
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
@@ -1336,38 +1370,74 @@ extension SettingsTab {
                 try Data(contentsOf: url, options: [.mappedIfSafe])
             }.value
 
-            let wasRunning = self.localGatewayRuntime.state == .running
-            if wasRunning {
-                await self.localGatewayRuntime.stop()
+            // Check for bundle ID mismatch before restoring.
+            let currentBundleID = Bundle.main.bundleIdentifier ?? "ai.openclaw.ios"
+            if let meta = OpenClawBackupManager.peekArchiveMetadata(from: archiveData),
+               meta.bundleIdentifier != currentBundleID
+            {
+                self.mismatchBundleID = meta.bundleIdentifier
+                self.pendingRestoreData = archiveData
+                self.showBundleIDMismatchAlert = true
+                return
             }
 
-            do {
-                let restored = try await Task.detached(priority: .userInitiated) {
-                    try OpenClawBackupManager.restoreBackupArchive(from: archiveData)
-                }.value
-
-                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
-                self.loadLLMSettingsFromRuntime()
-                let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
-                self.savedProviders = migrated.providers
-                self.activeProviderID = migrated.activeID
-
-                self.backupOperationInFlight = false
-                self.backupStatusMessage =
-                    "Restored \(restored.restoredFileCount) files, "
-                    + "\(restored.restoredDefaultsCount) settings, "
-                    + "\(restored.restoredKeychainCount) keychain entries."
-                self.showBackupStatusAlert = true
-            } catch {
-                await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
-                self.backupOperationInFlight = false
-                self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
-                self.showBackupStatusAlert = true
-            }
+            await self.performRestoreFromData(archiveData: archiveData, ignoreBundleIDMismatch: false)
         } catch {
             self.backupOperationInFlight = false
             self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
             self.showBackupStatusAlert = true
+        }
+    }
+
+    func performRestoreFromData(ignoreBundleIDMismatch: Bool) async {
+        guard let data = self.pendingRestoreData else { return }
+        self.pendingRestoreData = nil
+        await self.performRestoreFromData(archiveData: data, ignoreBundleIDMismatch: ignoreBundleIDMismatch)
+    }
+
+    private func performRestoreFromData(archiveData: Data, ignoreBundleIDMismatch: Bool) async {
+        guard !self.backupOperationInFlight else { return }
+        self.backupOperationInFlight = true
+
+        let wasRunning = self.localGatewayRuntime.state == .running
+        if wasRunning {
+            await self.localGatewayRuntime.stop()
+        }
+
+        do {
+            let restored = try await Task.detached(priority: .userInitiated) {
+                try OpenClawBackupManager.restoreBackupArchive(
+                    from: archiveData,
+                    ignoreBundleIDMismatch: ignoreBundleIDMismatch)
+            }.value
+
+            self.backupOperationInFlight = false
+            self.restoreRestartMessage =
+                "Restored \(restored.restoredFileCount) files, "
+                + "\(restored.restoredDefaultsCount) settings, "
+                + "\(restored.restoredKeychainCount) keychain entries."
+            self.showRestoreRestartAlert = true
+        } catch {
+            await self.localGatewayRuntime.reloadPersistedControlPlaneSettings(startIfStopped: wasRunning)
+            self.backupOperationInFlight = false
+            self.backupStatusMessage = "Restore failed: \(error.localizedDescription)"
+            self.showBackupStatusAlert = true
+        }
+    }
+
+    private static func scheduleReopenNotificationAndExit() {
+        let content = UNMutableNotificationContent()
+        content.title = "Backup Restored"
+        content.body = "Tap to reopen the app."
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1.5, repeats: false)
+        let request = UNNotificationRequest(identifier: "openclaw-restore-reopen", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                exit(0)
+            }
         }
     }
 
@@ -1423,7 +1493,7 @@ extension SettingsTab {
     }
 }
 
-private extension GatewayLocalLLMToolCallingMode {
+extension GatewayLocalLLMToolCallingMode {
     static let allCases: [GatewayLocalLLMToolCallingMode] = [.auto, .on, .off]
 
     var displayLabel: String {
@@ -1463,5 +1533,139 @@ private struct SettingsFormWidthModifier: ViewModifier {
         #else
         content
         #endif
+    }
+}
+
+// MARK: - Acknowledgments
+
+private struct AcknowledgmentsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("OpenClaw uses the following open-source libraries. We are grateful to the authors and contributors of these projects.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                self.librarySection(
+                    name: "OpenClawGatewayCore",
+                    description: "Local gateway runtime with embedded SQLite memory store, WebSocket/TCP servers, and agentic method router.",
+                    license: "Proprietary",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "OpenClawKit",
+                    description: "Shared UI components, chat transport protocol, and client-side utilities for OpenClaw apps.",
+                    license: "Proprietary",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "Textual",
+                    description: "A Swift package for rendering rich text content including Markdown, LaTeX, and code blocks in SwiftUI.",
+                    license: "MIT",
+                    author: "Guille Gonzalez",
+                    url: "https://github.com/gonzalezreal/textual")
+
+                self.librarySection(
+                    name: "SwiftUI Math",
+                    description: "Mathematical expression rendering for SwiftUI, used by Textual for LaTeX support.",
+                    license: "MIT",
+                    author: "Guille Gonzalez, SwiftMath contributors",
+                    url: "https://github.com/gonzalezreal/swiftui-math")
+
+                self.librarySection(
+                    name: "ElevenLabsKit",
+                    description: "Swift SDK for the ElevenLabs text-to-speech and voice synthesis API.",
+                    license: "MIT",
+                    author: "Peter Steinberger",
+                    url: "https://github.com/steipete/ElevenLabsKit")
+
+                self.librarySection(
+                    name: "Swift Concurrency Extras",
+                    description: "Useful utilities for working with Swift concurrency, including serial executors and async streams.",
+                    license: "MIT",
+                    author: "Point-Free",
+                    url: "https://github.com/pointfreeco/swift-concurrency-extras")
+
+                self.librarySection(
+                    name: "SwabbleKit",
+                    description: "Lightweight test-double and mock generation toolkit for Swift.",
+                    license: "MIT",
+                    author: "OpenClaw contributors")
+
+                self.librarySection(
+                    name: "Commander",
+                    description: "A Swift framework for composing command-line interfaces.",
+                    license: "MIT",
+                    author: "Peter Steinberger",
+                    url: "https://github.com/steipete/Commander")
+
+                self.librarySection(
+                    name: "Swift Snapshot Testing",
+                    description: "Delightful Swift snapshot testing framework with support for multiple strategies.",
+                    license: "MIT",
+                    author: "Point-Free",
+                    url: "https://github.com/pointfreeco/swift-snapshot-testing")
+
+                self.librarySection(
+                    name: "SQLite3",
+                    description: "Embedded SQL database engine. Used via system library for the gateway memory store.",
+                    license: "Public Domain",
+                    author: "D. Richard Hipp and contributors",
+                    url: "https://www.sqlite.org")
+
+                Section {
+                    Text("All trademarks are the property of their respective owners. License texts are available in each library's repository.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.grouped)
+            .navigationTitle("Acknowledgments")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        self.dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func librarySection(
+        name: String,
+        description: String,
+        license: String,
+        author: String,
+        url: String? = nil) -> some View
+    {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(name)
+                    .font(.headline)
+                Text(description)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 16) {
+                    Label(license, systemImage: "doc.text")
+                        .font(.caption)
+                        .foregroundStyle(.mint)
+                    Label(author, systemImage: "person")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let url {
+                    Text(url)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.blue)
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }

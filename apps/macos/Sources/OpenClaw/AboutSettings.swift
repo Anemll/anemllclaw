@@ -7,7 +7,8 @@ struct AboutSettings: View {
     @State private var didLoadUpdaterState = false
 
     var body: some View {
-        VStack(spacing: 8) {
+        ScrollView(.vertical) {
+            VStack(spacing: 8) {
             let appIcon = NSApplication.shared.applicationIconImage ?? CritterIconRenderer.makeIcon(blink: 0)
             Button {
                 if let url = URL(string: "https://github.com/openclaw/openclaw") {
@@ -77,17 +78,92 @@ struct AboutSettings: View {
                 }
             }
 
+            Divider()
+                .padding(.vertical, 8)
+
+            DisclosureGroup("Acknowledgments") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("OpenClaw uses the following open-source libraries.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    Self.libraryRow(
+                        name: "OpenClawGatewayCore",
+                        description: "Local gateway runtime with embedded SQLite memory store, WebSocket/TCP servers, and agentic method router.",
+                        license: "Proprietary",
+                        author: "OpenClaw contributors")
+                    Self.libraryRow(
+                        name: "OpenClawKit",
+                        description: "Shared UI components, chat transport protocol, and client-side utilities for OpenClaw apps.",
+                        license: "Proprietary",
+                        author: "OpenClaw contributors")
+                    Self.libraryRow(
+                        name: "Textual",
+                        description: "A Swift package for rendering rich text content including Markdown, LaTeX, and code blocks in SwiftUI.",
+                        license: "MIT",
+                        author: "Guille Gonzalez",
+                        url: "https://github.com/gonzalezreal/textual")
+                    Self.libraryRow(
+                        name: "SwiftUI Math",
+                        description: "Mathematical expression rendering for SwiftUI, used by Textual for LaTeX support.",
+                        license: "MIT",
+                        author: "Guille Gonzalez, SwiftMath contributors",
+                        url: "https://github.com/gonzalezreal/swiftui-math")
+                    Self.libraryRow(
+                        name: "ElevenLabsKit",
+                        description: "Swift SDK for the ElevenLabs text-to-speech and voice synthesis API.",
+                        license: "MIT",
+                        author: "Peter Steinberger",
+                        url: "https://github.com/steipete/ElevenLabsKit")
+                    Self.libraryRow(
+                        name: "Swift Concurrency Extras",
+                        description: "Useful utilities for working with Swift concurrency, including serial executors and async streams.",
+                        license: "MIT",
+                        author: "Point-Free",
+                        url: "https://github.com/pointfreeco/swift-concurrency-extras")
+                    Self.libraryRow(
+                        name: "SwabbleKit",
+                        description: "Lightweight test-double and mock generation toolkit for Swift.",
+                        license: "MIT",
+                        author: "OpenClaw contributors")
+                    Self.libraryRow(
+                        name: "Commander",
+                        description: "A Swift framework for composing command-line interfaces.",
+                        license: "MIT",
+                        author: "Peter Steinberger",
+                        url: "https://github.com/steipete/Commander")
+                    Self.libraryRow(
+                        name: "Swift Snapshot Testing",
+                        description: "Delightful Swift snapshot testing framework with support for multiple strategies.",
+                        license: "MIT",
+                        author: "Point-Free",
+                        url: "https://github.com/pointfreeco/swift-snapshot-testing")
+                    Self.libraryRow(
+                        name: "SQLite3",
+                        description: "Embedded SQL database engine. Used via system library for the gateway memory store.",
+                        license: "Public Domain",
+                        author: "D. Richard Hipp and contributors",
+                        url: "https://www.sqlite.org")
+
+                    Text("All trademarks are the property of their respective owners.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 6)
+            }
+
             Text("© 2025 Peter Steinberger — MIT License.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
 
-            Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 4)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
         .onAppear {
             guard let updater, !self.didLoadUpdaterState else { return }
             // Keep Sparkle’s auto-check setting in sync with the persisted toggle.
@@ -144,6 +220,33 @@ struct AboutSettings: View {
         #endif
         suffix += ")"
         return suffix
+    }
+
+    @ViewBuilder
+    private static func libraryRow(
+        name: String,
+        description: String,
+        license: String,
+        author: String,
+        url: String? = nil) -> some View
+    {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name).font(.callout.weight(.semibold))
+            Text(description).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Label(license, systemImage: "doc.text").font(.caption2).foregroundStyle(.mint)
+                Label(author, systemImage: "person").font(.caption2).foregroundStyle(.secondary)
+            }
+            if let url {
+                Button(url) {
+                    if let link = URL(string: url) { NSWorkspace.shared.open(link) }
+                }
+                .buttonStyle(.plain)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.blue)
+                .pointingHandCursor()
+            }
+        }
     }
 }
 

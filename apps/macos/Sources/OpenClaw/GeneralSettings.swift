@@ -15,6 +15,7 @@ struct GeneralSettings: View {
     @State private var gatewayStatus: GatewayEnvironmentStatus = .checking
     @State private var remoteStatus: RemoteStatus = .idle
     @State private var showRemoteAdvanced = false
+    private static let showsRemoteGatewayOption = false
     private let isPreview = ProcessInfo.processInfo.isPreview
     private var isNixMode: Bool {
         ProcessInfo.processInfo.isNixMode
@@ -110,14 +111,16 @@ struct GeneralSettings: View {
             Picker("Mode", selection: self.$state.connectionMode) {
                 Text("Not configured").tag(AppState.ConnectionMode.unconfigured)
                 Text("Local (this Mac)").tag(AppState.ConnectionMode.local)
-                Text("Remote (another host)").tag(AppState.ConnectionMode.remote)
+                if Self.showsRemoteGatewayOption {
+                    Text("Remote (another host)").tag(AppState.ConnectionMode.remote)
+                }
             }
             .pickerStyle(.menu)
             .labelsHidden()
             .frame(width: 260, alignment: .leading)
 
             if self.state.connectionMode == .unconfigured {
-                Text("Pick Local or Remote to start the Gateway.")
+                Text("Pick Local to start the Gateway.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -134,7 +137,7 @@ struct GeneralSettings: View {
                 self.healthRow
             }
 
-            if self.state.connectionMode == .remote {
+            if Self.showsRemoteGatewayOption, self.state.connectionMode == .remote {
                 self.remoteCard
             }
         }

@@ -96,3 +96,4 @@ skills/.private/
 package-lock.json
 apps/shared/OpenClawGatewayCore/.build
 apps/shared/OpenClawGatewayCore/.swiftpm/
+git-hooks/pre-commit
