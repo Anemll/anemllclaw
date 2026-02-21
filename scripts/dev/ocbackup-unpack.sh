@@ -48,7 +48,7 @@ print(f\"Keychain items  : {len(a['keychainItems'])}\")
 
 # Extract workspace files
 TMPJSON="$TMPJSON" OUTDIR="$OUTDIR" python3 << 'PYEOF'
-import json, base64, os
+import json, base64, os, sys
 
 tmpjson = os.environ["TMPJSON"]
 outdir = os.environ["OUTDIR"]
@@ -61,7 +61,10 @@ files_dir = os.path.join(outdir, "files")
 for entry in archive["files"]:
     token = entry["pathToken"]
     data = base64.b64decode(entry["data"])
-    dest = os.path.join(files_dir, token)
+    dest = os.path.normpath(os.path.join(files_dir, token))
+    if not dest.startswith(os.path.normpath(files_dir) + os.sep) and dest != os.path.normpath(files_dir):
+        print(f"  SKIPPED (path traversal): {token}", file=sys.stderr)
+        continue
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "wb") as out:
         out.write(data)

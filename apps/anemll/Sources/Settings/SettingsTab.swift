@@ -109,6 +109,9 @@ struct SettingsTab: View {
                             let deletedIDs = indexSet.map { self.savedProviders[$0].id }
                             self.savedProviders.remove(atOffsets: indexSet)
                             LLMProviderStore.save(self.savedProviders)
+                            for id in deletedIDs {
+                                LLMProviderStore.deleteAPIKey(forProviderID: id)
+                            }
                             if let activeID = self.activeProviderID, deletedIDs.contains(activeID) {
                                 self.activeProviderID = nil
                                 LLMProviderStore.setActiveID(nil)

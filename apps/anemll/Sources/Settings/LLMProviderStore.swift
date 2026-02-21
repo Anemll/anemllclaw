@@ -7,9 +7,36 @@ struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
     var name: String
     var provider: GatewayLocalLLMProviderKind
     var baseURL: String
+    /// API key is NOT persisted via Codable — stored in Keychain instead.
     var apiKey: String
     var model: String
     var toolCallingMode: GatewayLocalLLMToolCallingMode
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, provider, baseURL, model, toolCallingMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.provider = try c.decode(GatewayLocalLLMProviderKind.self, forKey: .provider)
+        self.baseURL = try c.decode(String.self, forKey: .baseURL)
+        self.model = try c.decode(String.self, forKey: .model)
+        self.toolCallingMode = try c.decodeIfPresent(GatewayLocalLLMToolCallingMode.self, forKey: .toolCallingMode) ?? .auto
+        self.apiKey = "" // hydrated from Keychain by LLMProviderStore.load()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.provider, forKey: .provider)
+        try c.encode(self.baseURL, forKey: .baseURL)
+        try c.encode(self.model, forKey: .model)
+        try c.encode(self.toolCallingMode, forKey: .toolCallingMode)
+        // apiKey intentionally omitted — lives in Keychain
+    }
 
     init(
         id: String = UUID().uuidString,
@@ -127,15 +154,41 @@ extension GatewayLocalLLMProviderKind {
 enum LLMProviderStore {
     private static let defaultsKey = "llm.savedProviders"
     private static let activeIDKey = "llm.activeProviderID"
+    private static let keychainService = "ai.openclaw.llm"
 
     static func load(defaults: UserDefaults = .standard) -> [SavedLLMProvider] {
         guard let data = defaults.data(forKey: defaultsKey) else { return [] }
-        return (try? JSONDecoder().decode([SavedLLMProvider].self, from: data)) ?? []
+        var providers = (try? JSONDecoder().decode([SavedLLMProvider].self, from: data)) ?? []
+        // Hydrate API keys from Keychain
+        for i in providers.indices {
+            providers[i].apiKey = KeychainStore.loadString(
+                service: Self.keychainService,
+                account: providers[i].id) ?? ""
+        }
+        // One-time migration: if Keychain is empty but UserDefaults still has
+        // apiKey encoded (from the pre-Keychain format), migrate it over.
+        Self.migrateKeysFromDefaults(&providers, defaults: defaults)
+        return providers
     }
 
     static func save(_ providers: [SavedLLMProvider], defaults: UserDefaults = .standard) {
+        // Persist API keys in Keychain (not UserDefaults)
+        for provider in providers {
+            let key = provider.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.isEmpty {
+                _ = KeychainStore.delete(service: Self.keychainService, account: provider.id)
+            } else {
+                _ = KeychainStore.saveString(key, service: Self.keychainService, account: provider.id)
+            }
+        }
+        // Encode without apiKey (excluded by CodingKeys)
         guard let data = try? JSONEncoder().encode(providers) else { return }
         defaults.set(data, forKey: Self.defaultsKey)
+    }
+
+    /// Remove a provider's Keychain entry when the provider is deleted.
+    static func deleteAPIKey(forProviderID id: String) {
+        _ = KeychainStore.delete(service: Self.keychainService, account: id)
     }
 
     static func activeID(defaults: UserDefaults = .standard) -> String? {
@@ -185,6 +238,39 @@ enum LLMProviderStore {
         Self.save(providers, defaults: defaults)
         Self.setActiveID(migrated.id, defaults: defaults)
         return (providers, migrated.id)
+    }
+
+    // MARK: - Internal migration helper
+
+    /// One-time migration: older builds stored apiKey inside the JSON blob in
+    /// UserDefaults. If we find a provider whose Keychain entry is empty but
+    /// the raw JSON still contains an "apiKey" field, move it to Keychain and
+    /// re-save without the key.
+    private static func migrateKeysFromDefaults(
+        _ providers: inout [SavedLLMProvider],
+        defaults: UserDefaults)
+    {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return }
+
+        var didMigrate = false
+        for i in providers.indices where providers[i].apiKey.isEmpty {
+            guard i < raw.count,
+                  let legacyKey = raw[i]["apiKey"] as? String,
+                  !legacyKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            let trimmed = legacyKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            providers[i].apiKey = trimmed
+            _ = KeychainStore.saveString(trimmed, service: Self.keychainService, account: providers[i].id)
+            didMigrate = true
+        }
+        // Re-save without the apiKey field in UserDefaults
+        if didMigrate {
+            if let cleanData = try? JSONEncoder().encode(providers) {
+                defaults.set(cleanData, forKey: Self.defaultsKey)
+            }
+        }
     }
 }
 
