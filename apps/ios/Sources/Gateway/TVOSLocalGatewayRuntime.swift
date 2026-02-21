@@ -977,6 +977,21 @@ final class TVOSLocalGatewayRuntime {
         }
 
         let sessionKey = "tvos-agentic-llm-probe-\(UUID().uuidString.lowercased())"
+
+        // Clean up the probe session when done so it doesn't appear as a ghost thread.
+        defer {
+            Task { [host] in
+                let deleteRequest = GatewayRequestFrame(
+                    id: UUID().uuidString,
+                    method: "sessions.delete",
+                    params: .object([
+                        "key": .string(sessionKey),
+                        "deleteTranscript": .bool(true),
+                    ]))
+                _ = try? await host.invoke(deleteRequest)
+            }
+        }
+
         let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Who are you?"
             : prompt.trimmingCharacters(in: .whitespacesAndNewlines)
