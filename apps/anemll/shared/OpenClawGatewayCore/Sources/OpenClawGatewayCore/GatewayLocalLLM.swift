@@ -147,6 +147,7 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
     public let provider: GatewayLocalLLMProviderKind
     public let usageInputTokens: Int?
     public let usageOutputTokens: Int?
+    public let requestBodyBytes: Int?
 
     public init(
         text: String,
@@ -154,7 +155,8 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
         model: String,
         provider: GatewayLocalLLMProviderKind,
         usageInputTokens: Int? = nil,
-        usageOutputTokens: Int? = nil)
+        usageOutputTokens: Int? = nil,
+        requestBodyBytes: Int? = nil)
     {
         self.text = text
         self.toolCalls = toolCalls
@@ -162,6 +164,7 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
         self.provider = provider
         self.usageInputTokens = usageInputTokens
         self.usageOutputTokens = usageOutputTokens
+        self.requestBodyBytes = requestBodyBytes
     }
 }
 
@@ -187,19 +190,22 @@ public struct GatewayLocalLLMResponse: Sendable, Equatable {
     public let provider: GatewayLocalLLMProviderKind
     public let usageInputTokens: Int?
     public let usageOutputTokens: Int?
+    public let requestBodyBytes: Int?
 
     public init(
         text: String,
         model: String,
         provider: GatewayLocalLLMProviderKind,
         usageInputTokens: Int? = nil,
-        usageOutputTokens: Int? = nil)
+        usageOutputTokens: Int? = nil,
+        requestBodyBytes: Int? = nil)
     {
         self.text = text
         self.model = model
         self.provider = provider
         self.usageInputTokens = usageInputTokens
         self.usageOutputTokens = usageOutputTokens
+        self.requestBodyBytes = requestBodyBytes
     }
 }
 
@@ -404,7 +410,9 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         urlRequest.timeoutInterval = self.config.effectiveRequestTimeoutSeconds
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        urlRequest.httpBody = try Self.makeJSONBody(body)
+        let jsonBody = try Self.makeJSONBody(body)
+        let bodyBytes = jsonBody.count
+        urlRequest.httpBody = jsonBody
 
         let (data, response) = try await self.session.data(for: urlRequest)
         let httpResponse = response as? HTTPURLResponse
@@ -441,7 +449,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             model: self.model,
             provider: self.kind,
             usageInputTokens: input,
-            usageOutputTokens: output)
+            usageOutputTokens: output,
+            requestBodyBytes: bodyBytes)
     }
 
     public func completeWithTools(_ request: GatewayLocalLLMToolRequest) async throws -> GatewayLocalLLMToolResponse {
@@ -543,7 +552,9 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         urlRequest.timeoutInterval = self.config.effectiveRequestTimeoutSeconds
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        urlRequest.httpBody = try Self.makeJSONBody(body)
+        let jsonBody = try Self.makeJSONBody(body)
+        let bodyBytes = jsonBody.count
+        urlRequest.httpBody = jsonBody
 
         let (data, response) = try await self.session.data(for: urlRequest)
         let httpResponse = response as? HTTPURLResponse
@@ -584,7 +595,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             model: self.model,
             provider: self.kind,
             usageInputTokens: input,
-            usageOutputTokens: output)
+            usageOutputTokens: output,
+            requestBodyBytes: bodyBytes)
     }
 
     private var shouldRemapSystemRole: Bool {
@@ -722,7 +734,9 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        urlRequest.httpBody = try Self.makeJSONBody(body)
+        let jsonBody = try Self.makeJSONBody(body)
+        let bodyBytes = jsonBody.count
+        urlRequest.httpBody = jsonBody
 
         let (data, response) = try await self.session.data(for: urlRequest)
         let httpResponse = response as? HTTPURLResponse
@@ -752,7 +766,8 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
             model: self.model,
             provider: self.kind,
             usageInputTokens: input,
-            usageOutputTokens: output)
+            usageOutputTokens: output,
+            requestBodyBytes: bodyBytes)
     }
 
     public func completeWithTools(_ request: GatewayLocalLLMToolRequest) async throws -> GatewayLocalLLMToolResponse {
@@ -890,7 +905,9 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        urlRequest.httpBody = try Self.makeJSONBody(body)
+        let jsonBody = try Self.makeJSONBody(body)
+        let bodyBytes = jsonBody.count
+        urlRequest.httpBody = jsonBody
 
         let (data, response) = try await self.session.data(for: urlRequest)
         let httpResponse = response as? HTTPURLResponse
@@ -923,7 +940,8 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
             model: self.model,
             provider: self.kind,
             usageInputTokens: input,
-            usageOutputTokens: output)
+            usageOutputTokens: output,
+            requestBodyBytes: bodyBytes)
     }
 
     private static func resolveEndpoint(baseURL: URL?) -> URL {

@@ -25,18 +25,24 @@ AnemllClaw keeps all the original OpenClaw workspace files, so the agent adapts 
 
 **OpenClaw Server on tvOS** -- Run a full OpenClaw server natively on Apple TV. Includes TCP and WebSocket transport, local method routing, session management, SQLite-backed memory store, and a web-based admin panel for diagnostics and control.
 
-**New Local Tools** -- AnemllClaw adds two tools that are not part of standard OpenClaw:
+**New Local Tools** -- AnemllClaw adds tools that are not part of standard OpenClaw:
 
 - `web.render` -- fetches a URL, renders JavaScript, and returns clean extracted text with links and metadata. Also accepts raw HTML or text input.
 - `web.extract` -- lightweight content extraction from HTML, text, or a URL without JS rendering.
+- `ls` -- list files and directories inside the workspace (with optional recursive mode, sandboxed, capped at 500 entries).
+- `credentials.get` / `credentials.set` / `credentials.delete` -- securely store and retrieve per-skill API keys in the iOS Keychain. When a key is missing, a "Set up API key" button appears automatically in the chat UI.
 
-**Skills** -- One skill is pre-installed: `skills/JS_NEWS.md`, a JavaScript-based web-site processor for agentic news collection and content research. Additional skills can be added to the `skills/` directory. The ability to modify and add skills allows for multiple workflows. Active development is underway to port and validate tools from the mainline OpenClaw repo for iOS, as well as adding settings to enable or disable individual skills and tools.
+**Tool Management** -- Individual tools can be enabled or disabled from Settings > Tools, letting you reduce noise for workflows that don't need certain capabilities.
+
+**Skills** -- Several skills are pre-installed (JS News, Notion, Trello, X/Twitter API Search, GitHub, and more). Additional skills can be added to the `skills/` directory. Skills can be inspected, copied, and deleted from Settings > Skills. Each skill's credential requirements are shown in the inspector with one-tap setup.
 
 **Backup and Restore** -- Create and restore compressed, encrypted backups of chat history, workspace files, settings, and keychain credentials.
 
 **Full-Screen Message View** -- Tap any message to open it in a full-screen view for easier reading of long or markdown-rich responses on iOS.
 
 **Text Scaling** -- Adjustable text zoom across the chat UI with five scale levels for improved readability.
+
+**Copy & Clear** -- Every chat bubble has a copy button for quick clipboard access. A "Clear Conversation" option in the composer menu permanently deletes all messages in the current session. A "Continue" button resumes interrupted tool-calling loops.
 
 **macOS Support** -- A macOS chat interface with integrated settings, provider management, and text scaling.
 
@@ -145,6 +151,10 @@ All Swift packages are included in the repo under `apps/anemll/shared/`:
 - **OpenClawGatewayCore** -- On-device gateway server
 
 No `pod install` or `swift package resolve` needed -- SPM dependencies resolve automatically on first build.
+
+## Release Notes
+
+See [release-notes/](release-notes/) for per-date changelogs. Latest: [2026-02-22](release-notes/2026-02-22.md).
 
 ## Notes
 

@@ -158,6 +158,21 @@
         "wait": { "label": "wait" }
       }
     },
+    "credentials.get": {
+      "emoji": "🔑",
+      "title": "Get Credential",
+      "detailKeys": ["service"]
+    },
+    "credentials.set": {
+      "emoji": "🔑",
+      "title": "Store Credential",
+      "detailKeys": ["service"]
+    },
+    "credentials.delete": {
+      "emoji": "🔑",
+      "title": "Delete Credential",
+      "detailKeys": ["service"]
+    },
     "discord": {
       "emoji": "💬",
       "title": "Discord",

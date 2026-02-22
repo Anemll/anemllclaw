@@ -31,6 +31,7 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
     public let llmToolCallingMode: GatewayLocalLLMToolCallingMode
     public let enableAutoProfileRewrite: Bool
     public let adminBridge: (any GatewayLocalMethodRouterAdminBridge)?
+    public let disabledToolNames: Set<String>
 
     public init(
         hostLabel: String = "tvos-local",
@@ -46,7 +47,8 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         deviceToolBridge: (any GatewayDeviceToolBridge)? = nil,
         llmToolCallingMode: GatewayLocalLLMToolCallingMode = .auto,
         enableAutoProfileRewrite: Bool = false,
-        adminBridge: (any GatewayLocalMethodRouterAdminBridge)? = nil)
+        adminBridge: (any GatewayLocalMethodRouterAdminBridge)? = nil,
+        disabledToolNames: Set<String> = [])
     {
         self.hostLabel = hostLabel
         self.upstreamConfigured = upstreamConfigured
@@ -62,6 +64,7 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         self.llmToolCallingMode = llmToolCallingMode
         self.enableAutoProfileRewrite = enableAutoProfileRewrite
         self.adminBridge = adminBridge
+        self.disabledToolNames = disabledToolNames
     }
 }
 
@@ -103,8 +106,8 @@ public struct GatewayBootstrapConfig: Sendable, Equatable {
             "MEMORY.md",
             "memory.md",
         ],
-        perFileMaxChars: 5000,
-        totalMaxChars: 16000,
+        perFileMaxChars: 8000,
+        totalMaxChars: 48000,
         includeMissingMarkers: false)
 }
 
@@ -133,6 +136,14 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     private struct ChatExecutionResult: Sendable {
         let response: GatewayLocalLLMResponse
         let toolAudits: [ChatToolExecutionAudit]
+        /// Total HTTP body bytes sent across all LLM round-trips
+        /// (accumulated over tool-calling loop iterations).
+        let totalRequestBodyBytes: Int?
+        /// Total tokens used across all LLM round-trips.
+        let totalInputTokens: Int?
+        let totalOutputTokens: Int?
+        /// Number of LLM API calls made (1 for plain, 1+ for tool loops).
+        let llmRoundTrips: Int
     }
 
     private enum ParsedChatDirective: Sendable {
@@ -391,6 +402,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     }
 
     private let config: GatewayLocalMethodRouterConfig
+    /// Files dropped from the bootstrap prompt due to budget exhaustion.
+    /// Updated on each `chat.send` call.
+    public private(set) var lastBootstrapDroppedFiles: [String] = []
     private let sessionStore: GatewaySessionStore
     private let memoryStore: GatewaySQLiteMemoryStore
     private let llmProvider: (any GatewayLocalLLMProvider)?
@@ -515,6 +529,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleDirectSafeTool(request, command: "edit", params: request.params)
         case "tools.apply_patch", "apply_patch":
             return await self.handleDirectSafeTool(request, command: "apply_patch", params: request.params)
+        case "tools.ls", "ls":
+            return await self.handleDirectSafeTool(request, command: "ls", params: request.params)
         case "capabilities.get", "gateway.capabilities", "capability.map":
             return self.handleCapabilitiesGet(request, nowMs: nowMs)
         default:
@@ -558,7 +574,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 hint: "local LLM is not configured")
         }
 
-        let systemPrompt = params.skipPreamble == true ? nil : self.composeBootstrapPrompt()
+        let bootstrapResult = params.skipPreamble == true
+            ? BootstrapPromptResult(prompt: nil, droppedFiles: [])
+            : self.composeBootstrapPrompt()
+        let systemPrompt = bootstrapResult.prompt
+        if !bootstrapResult.droppedFiles.isEmpty {
+            self.lastBootstrapDroppedFiles = bootstrapResult.droppedFiles
+        }
         let disableTools = params.disableTools == true
         let runID = Self.normalizedID(params.idempotencyKey, fallback: request.id)
         let historyLimit = max(12, min(params.historyLimit ?? 64, 200))
@@ -622,7 +644,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                                     messages: llmMessages,
                                     thinkingLevel: parsedPrompt.thinking,
                                     systemPrompt: systemPrompt))
-                            chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                            chatResult = ChatExecutionResult(
+                                response: llmResponse,
+                                toolAudits: [],
+                                totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                                totalInputTokens: llmResponse.usageInputTokens,
+                                totalOutputTokens: llmResponse.usageOutputTokens,
+                                llmRoundTrips: 1)
                             _ = try await self.memoryStore.appendTurn(
                                 sessionKey: sessionKey,
                                 role: "system",
@@ -643,7 +671,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                                 messages: llmMessages,
                                 thinkingLevel: parsedPrompt.thinking,
                                 systemPrompt: systemPrompt))
-                        chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                        chatResult = ChatExecutionResult(
+                                response: llmResponse,
+                                toolAudits: [],
+                                totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                                totalInputTokens: llmResponse.usageInputTokens,
+                                totalOutputTokens: llmResponse.usageOutputTokens,
+                                llmRoundTrips: 1)
                         _ = try await self.memoryStore.appendTurn(
                             sessionKey: sessionKey,
                             role: "system",
@@ -660,7 +694,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                             messages: llmMessages,
                             thinkingLevel: parsedPrompt.thinking,
                             systemPrompt: systemPrompt))
-                    chatResult = ChatExecutionResult(response: llmResponse, toolAudits: [])
+                    chatResult = ChatExecutionResult(
+                                response: llmResponse,
+                                toolAudits: [],
+                                totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                                totalInputTokens: llmResponse.usageInputTokens,
+                                totalOutputTokens: llmResponse.usageOutputTokens,
+                                llmRoundTrips: 1)
                 }
 
                 _ = try await self.memoryStore.appendTurn(
@@ -676,12 +716,16 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             }
 
             var usageObject: [String: GatewayJSONValue] = [:]
-            if let inputTokens = completion.response.usageInputTokens {
+            if let inputTokens = completion.totalInputTokens {
                 usageObject["input"] = .integer(Int64(inputTokens))
             }
-            if let outputTokens = completion.response.usageOutputTokens {
+            if let outputTokens = completion.totalOutputTokens {
                 usageObject["output"] = .integer(Int64(outputTokens))
             }
+            if let bodyBytes = completion.totalRequestBodyBytes, bodyBytes > 0 {
+                usageObject["requestBodyBytes"] = .integer(Int64(bodyBytes))
+            }
+            usageObject["llmRoundTrips"] = .integer(Int64(completion.llmRoundTrips))
 
             var payloadObject: [String: GatewayJSONValue] = [
                 "runId": .string(runID),
@@ -737,7 +781,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     messages: llmMessages,
                     thinkingLevel: thinkingLevel,
                     systemPrompt: systemPrompt))
-            return ChatExecutionResult(response: llmResponse, toolAudits: [])
+            return ChatExecutionResult(
+                response: llmResponse,
+                toolAudits: [],
+                totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                totalInputTokens: llmResponse.usageInputTokens,
+                totalOutputTokens: llmResponse.usageOutputTokens,
+                llmRoundTrips: 1)
         }
 
         var conversation = llmMessages.map { message in
@@ -751,6 +801,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
         var toolAudits: [ChatToolExecutionAudit] = []
         var deferredToolNudgesRemaining = 1
+        var accumulatedBodyBytes = 0
+        var accumulatedInputTokens = 0
+        var accumulatedOutputTokens = 0
+        var llmRoundTrips = 0
 
         for _ in 0..<6 {
             let completion = try await provider.completeWithTools(
@@ -759,6 +813,11 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     tools: toolDefinitions,
                     thinkingLevel: thinkingLevel,
                     systemPrompt: systemPrompt))
+
+            llmRoundTrips += 1
+            accumulatedBodyBytes += completion.requestBodyBytes ?? 0
+            accumulatedInputTokens += completion.usageInputTokens ?? 0
+            accumulatedOutputTokens += completion.usageOutputTokens ?? 0
 
             let assistantText = completion.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if completion.toolCalls.isEmpty {
@@ -795,7 +854,13 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     provider: completion.provider,
                     usageInputTokens: completion.usageInputTokens,
                     usageOutputTokens: completion.usageOutputTokens)
-                return ChatExecutionResult(response: response, toolAudits: toolAudits)
+                return ChatExecutionResult(
+                    response: response,
+                    toolAudits: toolAudits,
+                    totalRequestBodyBytes: accumulatedBodyBytes,
+                    totalInputTokens: accumulatedInputTokens > 0 ? accumulatedInputTokens : nil,
+                    totalOutputTokens: accumulatedOutputTokens > 0 ? accumulatedOutputTokens : nil,
+                    llmRoundTrips: llmRoundTrips)
             }
 
             conversation.append(
@@ -1179,12 +1244,16 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             tools.append(
                 GatewayLocalLLMToolDefinition(
                     name: "write",
-                    description: "Write full UTF-8 file content in workspace",
+                    description: "Write full UTF-8 file content in workspace. "
+                        + "Skill files MUST be written to skills/<name>/SKILL.md",
                     parameters: .object([
                         "type": .string("object"),
                         "properties": .object([
                             "path": .object([
                                 "type": .string("string"),
+                                "description": .string(
+                                    "Relative path from workspace root. "
+                                        + "Use skills/<name>/SKILL.md for skill files."),
                             ]),
                             "content": .object([
                                 "type": .string("string"),
@@ -1216,6 +1285,23 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                             "input": .object(["type": .string("string")]),
                         ]),
                         "required": .array([.string("input")]),
+                    ])))
+            tools.append(
+                GatewayLocalLLMToolDefinition(
+                    name: "ls",
+                    description: "List files and directories in the workspace. Returns name, type (file/directory), and size.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "path": .object([
+                                "type": .string("string"),
+                                "description": .string("Relative path inside workspace. Defaults to root (\".\")."),
+                            ]),
+                            "recursive": .object([
+                                "type": .string("boolean"),
+                                "description": .string("If true, list all files recursively. Default false."),
+                            ]),
+                        ]),
                     ])))
         }
 
@@ -1392,8 +1478,62 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                         ]),
                     ])))
             }
+
+            // -- Credential tools (secure API key storage) --
+            if supported.contains("credentials.get") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "credentials.get",
+                    description: "Retrieve a stored API key from the device keychain. Returns hasKey and key if found.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "service": .object([
+                                "type": .string("string"),
+                                "description": .string("Service identifier (e.g. notion, trello.key, trello.token)"),
+                            ]),
+                        ]),
+                        "required": .array([.string("service")]),
+                    ])))
+            }
+            if supported.contains("credentials.set") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "credentials.set",
+                    description: "Store an API key securely in the device keychain. Persists across sessions.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "service": .object([
+                                "type": .string("string"),
+                                "description": .string("Service identifier (e.g. notion, trello.key)"),
+                            ]),
+                            "key": .object([
+                                "type": .string("string"),
+                                "description": .string("The API key or token to store"),
+                            ]),
+                        ]),
+                        "required": .array([.string("service"), .string("key")]),
+                    ])))
+            }
+            if supported.contains("credentials.delete") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "credentials.delete",
+                    description: "Remove a stored API key from the device keychain.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "service": .object([
+                                "type": .string("string"),
+                                "description": .string("Service identifier to remove"),
+                            ]),
+                        ]),
+                        "required": .array([.string("service")]),
+                    ])))
+            }
         }
 
+        if !self.config.disabledToolNames.isEmpty {
+            tools.removeAll { self.config.disabledToolNames.contains($0.name) }
+        }
         return tools
     }
 
@@ -3697,14 +3837,20 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     - **Notes:**
     """
 
-    private func composeBootstrapPrompt() -> String? {
+    struct BootstrapPromptResult {
+        let prompt: String?
+        /// Files that existed on disk but were dropped because the budget ran out.
+        let droppedFiles: [String]
+    }
+
+    private func composeBootstrapPrompt() -> BootstrapPromptResult {
         guard self.config.bootstrapConfig.enabled else {
-            return nil
+            return BootstrapPromptResult(prompt: nil, droppedFiles: [])
         }
 
         let workspacePath = self.config.bootstrapConfig.workspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !workspacePath.isEmpty else {
-            return nil
+            return BootstrapPromptResult(prompt: nil, droppedFiles: [])
         }
 
         let workspaceURL = URL(fileURLWithPath: workspacePath)
@@ -3737,7 +3883,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let onboardingState = bootstrapIsPresent && bootstrapHasContent ? "pending" : "completed"
         var remainingBudget = max(0, self.config.bootstrapConfig.totalMaxChars)
         if remainingBudget <= 0 {
-            return nil
+            return BootstrapPromptResult(prompt: nil, droppedFiles: [])
         }
 
         var sections: [String] = [
@@ -3765,9 +3911,15 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             "",
             "Project Context",
         ]
+        var droppedFiles: [String] = []
         for filename in prioritizedFileNames {
             if remainingBudget <= 0 {
-                break
+                // All remaining files are dropped.
+                let filePath = workspaceURL.appendingPathComponent(filename).path
+                if FileManager.default.fileExists(atPath: filePath) {
+                    droppedFiles.append(filename)
+                }
+                continue
             }
 
             let filePath = workspaceURL.appendingPathComponent(filename).path
@@ -3784,6 +3936,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     budget: remainingBudget)
 
                 if injected.isEmpty {
+                    droppedFiles.append(filename)
                     continue
                 }
                 let section = [
@@ -3792,6 +3945,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 ].joined(separator: "\n\n")
                 let sectionBudget = section.utf16.count
                 if sectionBudget > remainingBudget {
+                    droppedFiles.append(filename)
                     continue
                 }
                 sections.append(section)
@@ -3813,9 +3967,11 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
 
         if sections.count <= 1 {
-            return nil
+            return BootstrapPromptResult(prompt: nil, droppedFiles: droppedFiles)
         }
-        return sections.joined(separator: "\n\n")
+        return BootstrapPromptResult(
+            prompt: sections.joined(separator: "\n\n"),
+            droppedFiles: droppedFiles)
     }
 
     private func searchWorkspaceMemory(query: String, limit: Int) -> [WorkspaceMemoryHit] {

@@ -301,6 +301,8 @@ enum TVOSBootstrapWorkspaceSeeder {
         "summarize": "Summarize or extract text from URLs, articles, and web pages",
         "notion": "Create and manage Notion pages, databases, and blocks via API",
         "trello": "Manage Trello boards, lists, and cards via REST API",
+        "x-twitter-api-search": "Search recent tweets and user profiles on X (Twitter) via API",
+        "github": "Browse GitHub repos, issues, PRs, and notifications via API",
         "blogwatcher": "Monitor blogs and RSS/Atom feeds for updates",
     ]
 

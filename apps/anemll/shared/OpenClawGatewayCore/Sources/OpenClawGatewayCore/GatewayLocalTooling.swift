@@ -83,6 +83,11 @@ public enum GatewayLocalTooling {
         let replaceAll: Bool?
     }
 
+    private struct LsParams: Codable {
+        let path: String?
+        let recursive: Bool?
+    }
+
     private struct ApplyPatchParams: Codable {
         let input: String
     }
@@ -129,6 +134,7 @@ public enum GatewayLocalTooling {
         "write",
         "edit",
         "apply_patch",
+        "ls",
     ]
 
     static let deviceCommands: [String] = [
@@ -143,6 +149,9 @@ public enum GatewayLocalTooling {
         "camera.snap",
         "motion.activity",
         "motion.pedometer",
+        "credentials.get",
+        "credentials.set",
+        "credentials.delete",
     ]
 
     static var localCommands: [String] {
@@ -276,6 +285,12 @@ public enum GatewayLocalTooling {
                 return ToolResult(payload: .null, error: "workspace root is unavailable")
             }
             return self.handleApplyPatch(command: command, params: params, workspaceRoot: workspaceRoot)
+
+        case "ls":
+            guard let workspaceRoot else {
+                return ToolResult(payload: .null, error: "workspace root is unavailable")
+            }
+            return self.handleLs(command: command, params: params, workspaceRoot: workspaceRoot)
 
         default:
             return ToolResult(payload: .null, error: "unsupported local command: \(command)")
@@ -1134,6 +1149,188 @@ public enum GatewayLocalTooling {
         }
     }
 
+    private static func handleLs(
+        command: String,
+        params: GatewayJSONValue?,
+        workspaceRoot: URL) -> ToolResult
+    {
+        let lsParams = GatewayPayloadCodec.decode(
+            params, as: LsParams.self)
+        let relativePath = (lsParams?.path ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetURL: URL = if relativePath.isEmpty
+            || relativePath == "."
+        {
+            workspaceRoot
+        } else {
+            workspaceRoot
+                .appendingPathComponent(relativePath)
+        }
+
+        // Verify inside workspace
+        let stdRoot = workspaceRoot.standardizedFileURL.path
+        let rootPrefix = stdRoot.hasSuffix("/")
+            ? stdRoot : stdRoot + "/"
+        let stdTarget = targetURL.standardizedFileURL.path
+        guard stdTarget == stdRoot
+            || stdTarget.hasPrefix(rootPrefix)
+        else {
+            return ToolResult(
+                payload: .null,
+                error: "path escapes workspace root")
+        }
+
+        let fm = FileManager.default
+        let recursive = lsParams?.recursive ?? false
+
+        var entries: [GatewayJSONValue] = []
+        let maxEntries = 500
+
+        if recursive {
+            guard let enumerator = fm.enumerator(
+                at: targetURL,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey,
+                    .isDirectoryKey,
+                    .fileSizeKey,
+                ],
+                options: [.skipsHiddenFiles])
+            else {
+                return ToolResult(
+                    payload: .null,
+                    error: "cannot enumerate directory")
+            }
+            for case let fileURL as URL in enumerator {
+                if entries.count >= maxEntries { break }
+                let fullPath =
+                    fileURL.standardizedFileURL.path
+                guard fullPath.hasPrefix(rootPrefix) else {
+                    continue
+                }
+                let rel = String(
+                    fullPath.dropFirst(rootPrefix.count))
+                let values = try? fileURL.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .fileSizeKey,
+                    ])
+                let isDir =
+                    values?.isDirectory ?? false
+                var entry: [String: GatewayJSONValue] = [
+                    "name": .string(rel),
+                    "type": .string(
+                        isDir ? "directory" : "file"),
+                ]
+                if !isDir,
+                   let size = values?.fileSize
+                {
+                    entry["size"] = .integer(Int64(size))
+                }
+                entries.append(.object(entry))
+            }
+        } else {
+            guard
+                let contents = try? fm
+                    .contentsOfDirectory(
+                        at: targetURL,
+                        includingPropertiesForKeys: [
+                            .isDirectoryKey,
+                            .fileSizeKey,
+                        ],
+                        options: .skipsHiddenFiles)
+            else {
+                return ToolResult(
+                    payload: .null,
+                    error: "cannot list directory")
+            }
+            for fileURL in contents
+                .sorted(by: {
+                    $0.lastPathComponent
+                        < $1.lastPathComponent
+                })
+            {
+                if entries.count >= maxEntries { break }
+                let values = try? fileURL.resourceValues(
+                    forKeys: [
+                        .isDirectoryKey, .fileSizeKey,
+                    ])
+                let isDir =
+                    values?.isDirectory ?? false
+                var entry: [String: GatewayJSONValue] = [
+                    "name": .string(
+                        fileURL.lastPathComponent),
+                    "type": .string(
+                        isDir ? "directory" : "file"),
+                ]
+                if !isDir,
+                   let size = values?.fileSize
+                {
+                    entry["size"] = .integer(Int64(size))
+                }
+                entries.append(.object(entry))
+            }
+        }
+
+        return ToolResult(
+            payload: .object([
+                "ok": .bool(true),
+                "command": .string(command),
+                "path": .string(
+                    relativePath.isEmpty
+                        ? "." : relativePath),
+                "entries": .array(entries),
+                "count": .integer(Int64(entries.count)),
+            ]),
+            error: nil)
+    }
+
+    /// Detect skill files written to the workspace root and redirect
+    /// them to `skills/<name>/SKILL.md` so the app discovers them.
+    private static func autoCorrectSkillPath(
+        path: String,
+        content: String,
+        workspaceRoot: URL) -> String
+    {
+        let trimmed = path.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+
+        // Only redirect root-level .md files (no directory separators).
+        guard trimmed.hasSuffix(".md"),
+              !trimmed.contains("/"),
+              !trimmed.contains("\\")
+        else { return path }
+
+        // Skip known root files.
+        let knownRootFiles: Set<String> = [
+            "AGENTS.md", "SOUL.md", "TOOLS.md",
+            "IDENTITY.md", "USER.md", "HEARTBEAT.md",
+            "BOOTSTRAP.md", "MEMORY.md", "NOTES.md",
+            "README.md",
+        ]
+        if knownRootFiles.contains(trimmed) { return path }
+
+        // Heuristic: file content looks like a skill definition.
+        let upper = content.uppercased()
+        let looksLikeSkill =
+            upper.contains("## API") || upper.contains("## ENDPOINT")
+            || upper.contains("## SETUP") || upper.contains("## WHEN TO USE")
+            || upper.contains("SKILL.MD") || upper.contains("## OVERVIEW")
+            || upper.contains("CREDENTIAL") || upper.contains("API KEY")
+            || upper.contains("## PARAMETERS")
+
+        guard looksLikeSkill else { return path }
+
+        // Derive skill name: "brave_search.md" → "brave_search"
+        let base = String(
+            trimmed.dropLast(3))  // strip ".md"
+            .lowercased()
+            .replacingOccurrences(
+                of: "[^a-z0-9_]",
+                with: "_",
+                options: .regularExpression)
+
+        return "skills/\(base)/SKILL.md"
+    }
+
     private static func handleWrite(
         command: String,
         params: GatewayJSONValue?,
@@ -1143,18 +1340,30 @@ public enum GatewayLocalTooling {
             return ToolResult(payload: .null, error: "invalid write params")
         }
         do {
-            let fileURL = try self.resolveWorkspaceFileURL(rawPath: toolParams.path, workspaceRoot: workspaceRoot)
+            let correctedPath = self.autoCorrectSkillPath(
+                path: toolParams.path,
+                content: toolParams.content,
+                workspaceRoot: workspaceRoot)
+            let wasRedirected = correctedPath != toolParams.path
+            let fileURL = try self.resolveWorkspaceFileURL(rawPath: correctedPath, workspaceRoot: workspaceRoot)
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
             try toolParams.content.write(to: fileURL, atomically: true, encoding: .utf8)
+            var result: [String: GatewayJSONValue] = [
+                "ok": .bool(true),
+                "command": .string(command),
+                "path": .string(self.relativePath(fileURL: fileURL, workspaceRoot: workspaceRoot)),
+                "bytesWritten": .integer(Int64(toolParams.content.utf8.count)),
+            ]
+            if wasRedirected {
+                result["redirectedFrom"] = .string(toolParams.path)
+                result["note"] = .string(
+                    "Skill file auto-redirected to skills/ directory. "
+                        + "Always use skills/<name>/SKILL.md for skill files.")
+            }
             return ToolResult(
-                payload: .object([
-                    "ok": .bool(true),
-                    "command": .string(command),
-                    "path": .string(self.relativePath(fileURL: fileURL, workspaceRoot: workspaceRoot)),
-                    "bytesWritten": .integer(Int64(toolParams.content.utf8.count)),
-                ]),
+                payload: .object(result),
                 error: nil)
         } catch {
             return ToolResult(payload: .null, error: "write failed: \(error.localizedDescription)")

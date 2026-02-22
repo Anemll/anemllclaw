@@ -47,6 +47,12 @@ public struct GatewaySkillRegistry: Sendable, Codable, Equatable {
         self.skills[idx].enabled = enabled
     }
 
+    public mutating func removeSkill(
+        _ skillID: String)
+    {
+        self.skills.removeAll { $0.id == skillID }
+    }
+
     // MARK: - Persistence
 
     public static func load(

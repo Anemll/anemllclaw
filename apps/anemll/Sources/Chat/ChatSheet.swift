@@ -108,6 +108,12 @@ struct ChatSheet: View {
                 }
             }
             .navigationTitle(self.agentName ?? "Chat")
+            .environment(\.openClawCredentialSave) { service, key in
+                KeychainStore.saveString(
+                    key,
+                    service: "ai.openclaw.skill.\(service)",
+                    account: "api_key")
+            }
             .onAppear {
                 self.viewModel.autoRetryAttemptsOnError = max(0, self.autoRetryAttemptsOnError)
                 LastThreadStore.save(self.viewModel.sessionKey)

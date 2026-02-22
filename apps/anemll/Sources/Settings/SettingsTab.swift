@@ -8,6 +8,7 @@ import UIKit
 import UniformTypeIdentifiers
 import UserNotifications
 
+// swiftlint:disable type_body_length
 struct SettingsTab: View {
     @Environment(NodeAppModel.self) private var appModel: NodeAppModel
     @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
@@ -91,6 +92,10 @@ struct SettingsTab: View {
     @State private var restoreRestartMessage: String = ""
     @State private var showAcknowledgments: Bool = false
     @State private var selectedSkillInfo: SkillEntryViewModel?
+    @State private var selectedToolInfo: ToolEntryViewModel?
+
+    @State private var bootstrapPerFileMaxChars: Int = GatewayBootstrapConfig.default.perFileMaxChars
+    @State private var bootstrapTotalMaxChars: Int = GatewayBootstrapConfig.default.totalMaxChars
 
     private static let showsRemoteGatewaySection = false
 
@@ -480,6 +485,12 @@ struct SettingsTab: View {
                             selectedSkillInfo: self.$selectedSkillInfo)
                     }
 
+                    DisclosureGroup("Tools") {
+                        ToolsSettingsView(
+                            localGatewayRuntime: self.localGatewayRuntime,
+                            selectedToolInfo: self.$selectedToolInfo)
+                    }
+
                     DisclosureGroup("Device Info") {
                         TextField("Name", text: self.$displayName)
                         Text(self.instanceId)
@@ -499,6 +510,8 @@ struct SettingsTab: View {
                         LabeledContent("Version", value: self.appVersion())
                         LabeledContent("Model", value: self.modelIdentifier())
                     }
+
+                    self.bootstrapBudgetSection()
                 }
 
                 Section("About") {
@@ -545,6 +558,7 @@ struct SettingsTab: View {
                 self.gatewayExpanded = !localRunning && !self.isGatewayConnected
                 self.selectedAgentPickerId = self.appModel.selectedAgentId ?? ""
                 self.loadLLMSettingsFromRuntime()
+                self.loadBootstrapBudgetFromRuntime()
                 let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
                 self.savedProviders = migrated.providers
                 self.activeProviderID = migrated.activeID
@@ -632,6 +646,10 @@ struct SettingsTab: View {
                     await self.localGatewayRuntime.applyControlPlaneSettings(settings)
                 }
             }
+            .modifier(BootstrapBudgetChangeModifier(
+                perFile: self.$bootstrapPerFileMaxChars,
+                total: self.$bootstrapTotalMaxChars,
+                runtime: self.localGatewayRuntime))
         }
         .gatewayTrustPromptAlert()
         .sheet(item: self.$editingProvider) { editing in
@@ -711,8 +729,36 @@ struct SettingsTab: View {
                             .bootstrapWorkspacePath,
                         onDismiss: {
                             self.selectedSkillInfo = nil
+                        },
+                        onDelete: { deleted in
+                            self.deleteSkill(deleted)
+                            self.selectedSkillInfo = nil
                         })
                 }
+                .sheet(item: self.$selectedToolInfo) { entry in
+                    ToolInfoSheet(
+                        entry: entry,
+                        onDismiss: {
+                            self.selectedToolInfo = nil
+                        })
+                }
+    }
+
+    private func deleteSkill(_ entry: SkillEntryViewModel) {
+        let workspacePath = self.localGatewayRuntime
+            .bootstrapWorkspacePath
+        guard !workspacePath.isEmpty else { return }
+        let workspaceURL = URL(
+            fileURLWithPath: workspacePath,
+            isDirectory: true)
+        var registry = GatewaySkillRegistry.load(
+            from: workspaceURL)
+            ?? GatewaySkillRegistry()
+        registry.removeSkill(entry.id)
+        try? registry.save(to: workspaceURL)
+        Task {
+            await self.localGatewayRuntime.reloadSkills()
+        }
     }
 
     @ViewBuilder
@@ -917,6 +963,50 @@ struct SettingsTab: View {
             || self.llmToolCallingMode != settings.localLLMToolCallingMode
     }
 
+    private func bootstrapBudgetSection() -> some View {
+        DisclosureGroup("Bootstrap Budget") {
+            Stepper(
+                value: self.$bootstrapPerFileMaxChars,
+                in: 1000...50000,
+                step: 1000)
+            {
+                LabeledContent(
+                    "Per-File Max Chars",
+                    value: Self.formatChars(self.bootstrapPerFileMaxChars))
+            }
+            Text(
+                "Maximum characters injected per bootstrap file "
+                    + "(skill definitions, AGENTS.md, etc). "
+                    + "Files exceeding this limit are truncated.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Stepper(
+                value: self.$bootstrapTotalMaxChars,
+                in: 4000...200_000,
+                step: 4000)
+            {
+                LabeledContent(
+                    "Total Budget",
+                    value: Self.formatChars(self.bootstrapTotalMaxChars))
+            }
+            Text(
+                "Total character budget for all bootstrap-injected "
+                    + "files combined. When exhausted, remaining "
+                    + "files are dropped and a warning is logged.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Button("Reset to Defaults") {
+                self.bootstrapPerFileMaxChars =
+                    GatewayBootstrapConfig.default.perFileMaxChars
+                self.bootstrapTotalMaxChars =
+                    GatewayBootstrapConfig.default.totalMaxChars
+            }
+            .foregroundStyle(.blue)
+        }
+    }
+
     private func loadLLMSettingsFromRuntime() {
         let settings = self.localGatewayRuntime.controlPlaneSettings
         self.llmProvider = settings.localLLMProvider
@@ -926,87 +1016,10 @@ struct SettingsTab: View {
         self.llmToolCallingMode = settings.localLLMToolCallingMode
     }
 
-    private func applyRecommendedLLMDefaultsIfNeeded(for provider: GatewayLocalLLMProviderKind) {
-        guard provider != .disabled else { return }
-
-        if self.llmBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let recommendedBaseURL = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: provider)
-        {
-            self.llmBaseURL = recommendedBaseURL
-        }
-
-        if self.llmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let recommendedModel = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: provider)
-        {
-            self.llmModel = recommendedModel
-        }
-    }
-
-    private func applyLLMSettings(test: Bool) async {
-        self.llmApplying = true
-        var settings = self.localGatewayRuntime.controlPlaneSettings
-        settings.localLLMProvider = self.llmProvider
-        settings.localLLMBaseURL = self.llmBaseURL
-        settings.localLLMAPIKey = self.llmAPIKey
-        settings.localLLMModel = self.llmModel
-        settings.localLLMToolCallingMode = self.llmToolCallingMode
-        await self.localGatewayRuntime.applyControlPlaneSettings(settings)
-        if test {
-            await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
-        }
-        self.llmApplying = false
-    }
-
-    private func testLocalLLM() async {
-        self.llmApplying = true
-        await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
-        self.llmApplying = false
-    }
-
-    private static func formatLLMError(_ raw: String) -> String {
-        SettingsNetworkingHelpers.formatLLMError(raw)
-    }
-
-    private var gatewaySummaryText: String {
-        if let server = self.appModel.gatewayServerName, self.isGatewayConnected {
-            return server
-        }
-        let trimmed = self.appModel.gatewayStatusText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Not connected" : trimmed
-    }
-
-    private func platformString() -> String {
-        let v = ProcessInfo.processInfo.operatingSystemVersion
-        return "iOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
-    }
-
-    private var locationMode: OpenClawLocationMode {
-        OpenClawLocationMode(rawValue: self.locationEnabledModeRaw) ?? .off
-    }
-
-    private func appVersion() -> String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-    }
-
-    private func deviceFamily() -> String {
-        switch UIDevice.current.userInterfaceIdiom {
-        case .pad:
-            "iPad"
-        case .phone:
-            "iPhone"
-        default:
-            "iOS"
-        }
-    }
-
-    private func modelIdentifier() -> String {
-        var systemInfo = utsname()
-        uname(&systemInfo)
-        let machine = withUnsafeBytes(of: &systemInfo.machine) { ptr in
-            String(bytes: ptr.prefix { $0 != 0 }, encoding: .utf8)
-        }
-        let trimmed = machine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "unknown" : trimmed
+    private func loadBootstrapBudgetFromRuntime() {
+        let settings = self.localGatewayRuntime.controlPlaneSettings
+        self.bootstrapPerFileMaxChars = settings.bootstrapPerFileMaxChars
+        self.bootstrapTotalMaxChars = settings.bootstrapTotalMaxChars
     }
 
     private func connect(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) async {
@@ -1351,7 +1364,107 @@ struct SettingsTab: View {
     private static func httpURLString(host: String?, port: Int?, fallback: String) -> String {
         SettingsNetworkingHelpers.httpURLString(host: host, port: port, fallback: fallback)
     }
+
+    private static func formatChars(_ count: Int) -> String {
+        if count >= 1000 {
+            let k = Double(count) / 1000.0
+            if count % 1000 == 0 {
+                return "\(Int(k))k"
+            }
+            return String(format: "%.1fk", k)
+        }
+        return "\(count)"
+    }
+
+    private func applyRecommendedLLMDefaultsIfNeeded(
+        for provider: GatewayLocalLLMProviderKind)
+    {
+        guard provider != .disabled else { return }
+
+        if self.llmBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let recommendedBaseURL = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: provider)
+        {
+            self.llmBaseURL = recommendedBaseURL
+        }
+
+        if self.llmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let recommendedModel = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: provider)
+        {
+            self.llmModel = recommendedModel
+        }
+    }
+
+    private func applyLLMSettings(test: Bool) async {
+        self.llmApplying = true
+        var settings = self.localGatewayRuntime.controlPlaneSettings
+        settings.localLLMProvider = self.llmProvider
+        settings.localLLMBaseURL = self.llmBaseURL
+        settings.localLLMAPIKey = self.llmAPIKey
+        settings.localLLMModel = self.llmModel
+        settings.localLLMToolCallingMode = self.llmToolCallingMode
+        await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+        if test {
+            await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
+        }
+        self.llmApplying = false
+    }
+
+    private func testLocalLLM() async {
+        self.llmApplying = true
+        await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
+        self.llmApplying = false
+    }
+
+    private static func formatLLMError(_ raw: String) -> String {
+        SettingsNetworkingHelpers.formatLLMError(raw)
+    }
+
+    private var gatewaySummaryText: String {
+        if let server = self.appModel.gatewayServerName, self.isGatewayConnected {
+            return server
+        }
+        let trimmed = self.appModel.gatewayStatusText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Not connected" : trimmed
+    }
+
+    private func platformString() -> String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "iOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
+
+    private var locationMode: OpenClawLocationMode {
+        OpenClawLocationMode(rawValue: self.locationEnabledModeRaw) ?? .off
+    }
+
+    private func appVersion() -> String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    private func deviceFamily() -> String {
+        switch UIDevice.current.userInterfaceIdiom {
+        case .pad:
+            "iPad"
+        case .phone:
+            "iPhone"
+        default:
+            "iOS"
+        }
+    }
+
+    private func modelIdentifier() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { ptr in
+            String(bytes: ptr.prefix { $0 != 0 }, encoding: .utf8)
+        }
+        let trimmed = machine?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "unknown" : trimmed
+    }
 }
+
+// swiftlint:enable type_body_length
 
 // MARK: - Backup / Restore
 
@@ -1537,6 +1650,30 @@ extension SettingsTab {
         }
 
         return lines
+    }
+}
+
+private struct BootstrapBudgetChangeModifier: ViewModifier {
+    @Binding var perFile: Int
+    @Binding var total: Int
+    let runtime: TVOSLocalGatewayRuntime
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: self.perFile) { _, newValue in
+                Task {
+                    var settings = self.runtime.controlPlaneSettings
+                    settings.bootstrapPerFileMaxChars = newValue
+                    await self.runtime.applyControlPlaneSettings(settings)
+                }
+            }
+            .onChange(of: self.total) { _, newValue in
+                Task {
+                    var settings = self.runtime.controlPlaneSettings
+                    settings.bootstrapTotalMaxChars = newValue
+                    await self.runtime.applyControlPlaneSettings(settings)
+                }
+            }
     }
 }
 

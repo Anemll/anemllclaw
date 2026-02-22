@@ -13,6 +13,7 @@
 		0C3C9895F7D3E623B0C515C4 /* GatewayDiscoveryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D58B1998AD66E9AF20EE96E0 /* GatewayDiscoveryModelTests.swift */; };
 		0F7FC7EFF2DA12BB8244B5E0 /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1FF6F852810637578F7422 /* SettingsTab.swift */; };
 		0F7FC7EFF2DA12BB8244B5E1 /* SkillsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1FF6F852810637578F7423 /* SkillsSettingsView.swift */; };
+		0F7FC7EFF2DA12BB8244B5E2 /* ToolsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1FF6F852810637578F7424 /* ToolsSettingsView.swift */; };
 		1270A41C13BA983903BF413A /* RootCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDE130CB8404C97E9670BBE8 /* RootCanvas.swift */; };
 		163CE62CDFF73DF1B6776752 /* TVOSBootstrapTemplateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD4FD4DFDF7DDFB7BF1A608 /* TVOSBootstrapTemplateStore.swift */; };
 		17B9D8E2539BE8E29ED68E12 /* GatewayDiscoveryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */; };
@@ -210,6 +211,7 @@
 		C52A48EE4B708752317169C6 /* Info-tvOS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Info-tvOS.plist"; sourceTree = "<group>"; };
 		CB1FF6F852810637578F7422 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
 		CB1FF6F852810637578F7423 /* SkillsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillsSettingsView.swift; sourceTree = "<group>"; };
+		CB1FF6F852810637578F7424 /* ToolsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolsSettingsView.swift; sourceTree = "<group>"; };
 		CB307D5090DC22100E34962B /* GatewayHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayHealthMonitor.swift; sourceTree = "<group>"; };
 		CB6CF40216BE16DC6AB1E0DC /* NodeAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeAppModel.swift; sourceTree = "<group>"; };
 		CD8E73AE2B7E0350CD584C01 /* TCPProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPProbe.swift; sourceTree = "<group>"; };
@@ -494,6 +496,7 @@
 				BF37761CF83B854A13E1D4C6 /* SettingsNetworkingHelpers.swift */,
 				CB1FF6F852810637578F7422 /* SettingsTab.swift */,
 				CB1FF6F852810637578F7423 /* SkillsSettingsView.swift */,
+				CB1FF6F852810637578F7424 /* ToolsSettingsView.swift */,
 				4DEDB68AAD35FDF6FEA1FDFD /* VoiceWakeWordsSettingsView.swift */,
 			);
 			path = Settings;
@@ -834,6 +837,7 @@
 				BCF0959640C6C61835EFDBEA /* SettingsNetworkingHelpers.swift in Sources */,
 				0F7FC7EFF2DA12BB8244B5E0 /* SettingsTab.swift in Sources */,
 				0F7FC7EFF2DA12BB8244B5E1 /* SkillsSettingsView.swift in Sources */,
+				0F7FC7EFF2DA12BB8244B5E2 /* ToolsSettingsView.swift in Sources */,
 				F3B93A2E2912C8ED6251F142 /* SignificantLocationMonitor.swift in Sources */,
 				5B3FFC50CE121BC2BA55D9A2 /* StatusActivityBuilder.swift in Sources */,
 				40EA517862C4FCE286CF7474 /* StatusPill.swift in Sources */,

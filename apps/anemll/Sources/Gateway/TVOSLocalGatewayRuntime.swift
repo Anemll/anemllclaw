@@ -79,6 +79,12 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
     var telegramDefaultChatID: String
 
     var enableLocalDeviceTools: Bool
+    var disabledToolNames: Set<String>
+
+    /// Maximum characters injected per bootstrap file (skills, AGENTS.md, etc.).
+    var bootstrapPerFileMaxChars: Int
+    /// Total character budget for all bootstrap-injected files combined.
+    var bootstrapTotalMaxChars: Int
 
     static let `default` = TVOSGatewayControlPlaneSettings(
         authMode: .none,
@@ -96,7 +102,10 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMToolCallingMode: .auto,
         telegramBotToken: "",
         telegramDefaultChatID: "",
-        enableLocalDeviceTools: true)
+        enableLocalDeviceTools: true,
+        disabledToolNames: [],
+        bootstrapPerFileMaxChars: GatewayBootstrapConfig.default.perFileMaxChars,
+        bootstrapTotalMaxChars: GatewayBootstrapConfig.default.totalMaxChars)
 
     /// Suggested LLM defaults shown in the provider editor when no provider
     /// has been configured yet.  Kept separate from `default` so that a fresh
@@ -247,6 +256,8 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
             "photos.latest",
             "camera.snap",
             "motion.activity", "motion.pedometer",
+            "credentials.get", "credentials.set",
+            "credentials.delete",
         ]
     }
 
@@ -349,6 +360,84 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
                     ?? OpenClawPedometerParams()
                 let result = try await self.motion.pedometer(params: p)
                 return Self.encodeResult(command: command, payload: result)
+
+            case "credentials.get":
+                guard let service = params?.objectValue?["service"]?.stringValue,
+                      !service.isEmpty
+                else {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .null,
+                        error: "credentials.get: 'service' param required")
+                }
+                let key = KeychainStore.loadString(
+                    service: "ai.openclaw.skill.\(service)",
+                    account: "api_key")
+                if let key {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .object([
+                            "ok": .bool(true),
+                            "command": .string(command),
+                            "service": .string(service),
+                            "hasKey": .bool(true),
+                            "key": .string(key),
+                        ]), error: nil)
+                } else {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .object([
+                            "ok": .bool(true),
+                            "command": .string(command),
+                            "service": .string(service),
+                            "hasKey": .bool(false),
+                        ]), error: nil)
+                }
+
+            case "credentials.set":
+                guard let obj = params?.objectValue,
+                      let service = obj["service"]?.stringValue,
+                      !service.isEmpty,
+                      let key = obj["key"]?.stringValue,
+                      !key.isEmpty
+                else {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .null,
+                        error: "credentials.set: 'service' and 'key' params required")
+                }
+                let saved = KeychainStore.saveString(
+                    key,
+                    service: "ai.openclaw.skill.\(service)",
+                    account: "api_key")
+                if saved {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .object([
+                            "ok": .bool(true),
+                            "command": .string(command),
+                            "service": .string(service),
+                            "message": .string("API key stored securely"),
+                        ]), error: nil)
+                } else {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .null,
+                        error: "credentials.set: failed to save to keychain")
+                }
+
+            case "credentials.delete":
+                guard let service = params?.objectValue?["service"]?.stringValue,
+                      !service.isEmpty
+                else {
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .null,
+                        error: "credentials.delete: 'service' param required")
+                }
+                _ = KeychainStore.delete(
+                    service: "ai.openclaw.skill.\(service)",
+                    account: "api_key")
+                return GatewayLocalTooling.ToolResult(
+                    payload: .object([
+                        "ok": .bool(true),
+                        "command": .string(command),
+                        "service": .string(service),
+                        "message": .string("API key removed"),
+                    ]), error: nil)
 
             default:
                 return GatewayLocalTooling.ToolResult(
@@ -497,6 +586,10 @@ final class TVOSLocalGatewayRuntime {
     private var tcpRetryTask: Task<Void, Never>?
     private var chatHistoryPollTask: Task<Void, Never>?
     private var telegramPairingPollTask: Task<Void, Never>?
+    private var networkWatchdogTask: Task<Void, Never>?
+    /// Tracks the last known set of local IPv4 addresses so the watchdog
+    /// can detect interface changes (e.g. WiFi reconnect, new DHCP lease).
+    private var networkWatchdogLastAddresses: Set<String> = []
     private var sessionChatTurns: [TVOSGatewayChatTurn]
     private var mirroredTelegramChatTurns: [TVOSGatewayChatTurn]
     private var chatSendStartedAt: Date?
@@ -636,8 +729,7 @@ final class TVOSLocalGatewayRuntime {
     #if os(iOS)
     /// Inject native device service implementations into the runtime.
     /// Call this before ``start()`` so that device tools are available to the LLM.
-    /// The bridge is recreated on each call and will be picked up by the next
-    /// ``rebuildGatewayStack()``.
+    /// Triggers ``rebuildGatewayStack()`` so the router immediately picks up the bridge.
     func configureDeviceServices(
         reminders: any RemindersServicing,
         calendar: any CalendarServicing,
@@ -657,6 +749,8 @@ final class TVOSLocalGatewayRuntime {
             motion: motion)
         self.appendLog(
             "device tool bridge configured with \(self.deviceToolBridge?.supportedCommands().count ?? 0) commands")
+        // Rebuild so the router picks up the newly configured bridge.
+        self.rebuildGatewayStack()
     }
     #endif
 
@@ -707,16 +801,24 @@ final class TVOSLocalGatewayRuntime {
 
         self.refreshLocalNetworkAddresses()
         await self.host?.start()
+        await self.installListenerStateCallback()
         await self.startWebSocketListenerIfNeeded()
         guard self.listenerState == .listening else {
             self.state = .stopped
             self.appendLog("runtime start aborted: websocket listener failed")
             return
         }
+        // Log if we fell back to localhost.
+        if let ws = self.webSocketServer, await ws.isFallbackLoopback {
+            self.appendLog(
+                "websocket listener fell back to localhost — LAN access unavailable",
+                level: .warning)
+        }
         if self.exposeTCPListener {
             await self.startTCPListenerIfNeeded()
         }
         self.state = .running
+        self.startNetworkWatchdog()
         self.startTelegramPairingPollingIfNeeded()
         await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
         self.appendLog(
@@ -765,6 +867,7 @@ final class TVOSLocalGatewayRuntime {
 
         self.appendLog("runtime stop requested")
         self.stopChatProgressPolling()
+        self.stopNetworkWatchdog()
 
         self.webSocketRetryTask?.cancel()
         self.webSocketRetryTask = nil
@@ -1757,6 +1860,87 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
+    // MARK: - Network Watchdog
+
+    /// Poll interval for the network watchdog (seconds).
+    private static let networkWatchdogIntervalSeconds: UInt64 = 5
+
+    /// Installs the `onListenerStateChange` callback on the WebSocket
+    /// server so that NWListener failures (e.g. interface loss) trigger
+    /// an automatic listener restart.
+    private func installListenerStateCallback() async {
+        await self.webSocketServer?.setOnListenerStateChange { [weak self] failed in
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .running else { return }
+                self.appendLog(
+                    "NWListener state change detected (failed=\(failed)) — restarting listeners",
+                    level: .warning)
+                await self.restartWebSocketListener()
+                if self.exposeTCPListener {
+                    await self.restartTCPListener()
+                }
+            }
+        }
+    }
+
+    /// Starts a periodic watchdog that monitors local network addresses.
+    /// When the set of addresses changes (WiFi reconnect, DHCP renewal,
+    /// interface up/down), the watchdog restarts the listeners so they
+    /// bind to the current interfaces.  If LAN binding fails, the
+    /// listener automatically falls back to localhost.
+    private func startNetworkWatchdog() {
+        self.stopNetworkWatchdog()
+        self.networkWatchdogLastAddresses = Set(self.localIPv4Addresses)
+        self.appendLog(
+            "network watchdog started (addresses: \(self.localIPv4Addresses.joined(separator: ", ")))")
+
+        self.networkWatchdogTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, self.state == .running {
+                try? await Task.sleep(
+                    nanoseconds: Self.networkWatchdogIntervalSeconds * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self.networkWatchdogTick()
+            }
+        }
+    }
+
+    private func stopNetworkWatchdog() {
+        self.networkWatchdogTask?.cancel()
+        self.networkWatchdogTask = nil
+    }
+
+    private func networkWatchdogTick() async {
+        guard self.state == .running else { return }
+
+        self.refreshLocalNetworkAddresses()
+        let currentAddresses = Set(self.localIPv4Addresses)
+
+        guard currentAddresses != self.networkWatchdogLastAddresses else { return }
+
+        let added = currentAddresses.subtracting(self.networkWatchdogLastAddresses)
+        let removed = self.networkWatchdogLastAddresses.subtracting(currentAddresses)
+        self.appendLog(
+            "network watchdog: addresses changed"
+                + (added.isEmpty ? "" : " +[\(added.sorted().joined(separator: ", "))]")
+                + (removed.isEmpty ? "" : " -[\(removed.sorted().joined(separator: ", "))]")
+                + " — restarting listeners",
+            level: .warning)
+        self.networkWatchdogLastAddresses = currentAddresses
+
+        // Restart listeners so they bind to the current interfaces.
+        await self.restartWebSocketListener()
+        if let ws = self.webSocketServer, await ws.isFallbackLoopback {
+            self.appendLog(
+                "websocket listener fell back to localhost after network change",
+                level: .warning)
+        }
+        if self.exposeTCPListener {
+            await self.restartTCPListener()
+        }
+    }
+
+    // MARK: - TCP Retry
+
     private func scheduleTCPRetry() {
         self.scheduleTCPRetry(after: nil)
     }
@@ -1786,11 +1970,19 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
-    /// Reload skill registry and rebuild the gateway stack
-    /// without restarting the runtime.
+    /// Reload skill registry and rebuild the gateway stack.
+    /// If the runtime is currently running, the listeners are restarted
+    /// so the new transport (with updated skills) is fully wired up.
     func reloadSkills() async {
         await self.withRuntimeTransition("reload skills") {
+            let wasRunning = self.state == .running
+            if wasRunning {
+                await self.stopLocked()
+            }
             self.rebuildGatewayStack()
+            if wasRunning {
+                await self.startLocked()
+            }
             self.appendLog("skills reloaded")
         }
     }
@@ -1883,13 +2075,44 @@ final class TVOSLocalGatewayRuntime {
             }
         }
 
+        let resolvedPerFileMaxChars = self.controlPlaneSettings.bootstrapPerFileMaxChars
+        let resolvedTotalMaxChars = self.controlPlaneSettings.bootstrapTotalMaxChars
         let bootstrapConfig = GatewayBootstrapConfig(
             enabled: true,
             workspacePath: bootstrapWorkspacePath,
             fileNames: resolvedFileNames,
-            perFileMaxChars: GatewayBootstrapConfig.default.perFileMaxChars,
-            totalMaxChars: GatewayBootstrapConfig.default.totalMaxChars,
+            perFileMaxChars: resolvedPerFileMaxChars,
+            totalMaxChars: resolvedTotalMaxChars,
             includeMissingMarkers: false)
+
+        // Warn if total injection content exceeds the budget.
+        if !bootstrapWorkspacePath.isEmpty {
+            let workspaceURL = URL(fileURLWithPath: bootstrapWorkspacePath)
+            var totalBytes = 0
+            var fittingCount = 0
+            var droppedNames: [String] = []
+            for fileName in resolvedFileNames {
+                let fileURL = workspaceURL.appendingPathComponent(fileName)
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                      let size = attrs[.size] as? Int
+                else { continue }
+                let clamped = min(size, resolvedPerFileMaxChars)
+                if totalBytes + clamped <= resolvedTotalMaxChars {
+                    totalBytes += clamped
+                    fittingCount += 1
+                } else {
+                    droppedNames.append(fileName)
+                }
+            }
+            if !droppedNames.isEmpty {
+                self.appendLog(
+                    "bootstrap budget warning: \(droppedNames.count) file(s) will be dropped "
+                        + "(totalMaxChars=\(resolvedTotalMaxChars), "
+                        + "used=\(totalBytes)): "
+                        + droppedNames.joined(separator: ", "),
+                    level: .warning)
+            }
+        }
 
         let resolvedTransport: GatewayLoopbackTransport
         #if os(iOS)
@@ -1922,7 +2145,8 @@ final class TVOSLocalGatewayRuntime {
                         deviceToolBridge: resolvedDeviceToolBridge,
                         llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
                         enableAutoProfileRewrite: false,
-                        adminBridge: adminBridge))
+                        adminBridge: adminBridge,
+                        disabledToolNames: self.controlPlaneSettings.disabledToolNames))
             } catch {
                 let firstErrorText = "local router init failed: \(error.localizedDescription)"
                 self.localLLMConfigErrorText = firstErrorText
@@ -1949,7 +2173,8 @@ final class TVOSLocalGatewayRuntime {
                                 deviceToolBridge: resolvedDeviceToolBridge,
                                 llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
                                 enableAutoProfileRewrite: false,
-                                adminBridge: adminBridge))
+                                adminBridge: adminBridge,
+                                disabledToolNames: self.controlPlaneSettings.disabledToolNames))
                         self.localLLMConfigErrorText = nil
                         self.appendLog(
                             "local router recovered with fallback memory path",
@@ -2221,6 +2446,13 @@ final class TVOSLocalGatewayRuntime {
             next.telegramDefaultChatID = telegramDefaultChatID
         }
 
+        if let perFile = source["bootstrapPerFileMaxChars"]?.int64Value {
+            next.bootstrapPerFileMaxChars = Int(perFile)
+        }
+        if let total = source["bootstrapTotalMaxChars"]?.int64Value {
+            next.bootstrapTotalMaxChars = Int(total)
+        }
+
         return Self.normalizedSettings(next)
     }
 
@@ -2245,6 +2477,8 @@ final class TVOSLocalGatewayRuntime {
                 "botToken": .string(settings.telegramBotToken),
                 "defaultChatID": .string(settings.telegramDefaultChatID),
             ]),
+            "bootstrapPerFileMaxChars": .integer(Int64(settings.bootstrapPerFileMaxChars)),
+            "bootstrapTotalMaxChars": .integer(Int64(settings.bootstrapTotalMaxChars)),
         ]
     }
 
@@ -3227,8 +3461,32 @@ final class TVOSLocalGatewayRuntime {
         let persistedProviderRaw = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.provider"))
         let persistedBaseURL = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.baseURL"))
         // API key lives in Keychain, not UserDefaults.
-        let persistedAPIKey = Self.trimmed(
+        var persistedAPIKey = Self.trimmed(
             KeychainStore.loadString(service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey"))
+
+        // Migration: if the runtime Keychain entry is empty, recover the key
+        // from legacy sources so existing users don't lose their API key.
+        if persistedAPIKey == nil || persistedAPIKey!.isEmpty {
+            // 1) Try the old UserDefaults key (pre-Keychain builds).
+            if let legacyKey = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.apiKey")),
+               !legacyKey.isEmpty
+            {
+                persistedAPIKey = legacyKey
+                _ = KeychainStore.saveString(legacyKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
+                defaults.removeObject(forKey: "gateway.tvos.localLLM.apiKey")
+            }
+            // 2) Try the active LLMProviderStore provider (Keychain service "ai.openclaw.llm").
+            else if let activeID = LLMProviderStore.activeID(defaults: defaults) {
+                let providers = LLMProviderStore.load(defaults: defaults)
+                if let active = providers.first(where: { $0.id == activeID }),
+                   !active.apiKey.isEmpty
+                {
+                    persistedAPIKey = active.apiKey
+                    _ = KeychainStore.saveString(active.apiKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
+                }
+            }
+        }
+
         let persistedModel = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
 
         let localProviderRaw = persistedProviderRaw
@@ -3257,6 +3515,17 @@ final class TVOSLocalGatewayRuntime {
             settings.enableLocalDeviceTools = defaults.bool(forKey: "gateway.tvos.deviceTools.enabled")
         } else {
             settings.enableLocalDeviceTools = true
+        }
+
+        if let disabled = defaults.stringArray(forKey: "gateway.tvos.disabledToolNames") {
+            settings.disabledToolNames = Set(disabled)
+        }
+
+        if defaults.object(forKey: "gateway.tvos.bootstrap.perFileMaxChars") != nil {
+            settings.bootstrapPerFileMaxChars = defaults.integer(forKey: "gateway.tvos.bootstrap.perFileMaxChars")
+        }
+        if defaults.object(forKey: "gateway.tvos.bootstrap.totalMaxChars") != nil {
+            settings.bootstrapTotalMaxChars = defaults.integer(forKey: "gateway.tvos.bootstrap.totalMaxChars")
         }
 
         return Self.normalizedSettings(settings)
@@ -3305,6 +3574,9 @@ final class TVOSLocalGatewayRuntime {
             self.trimmed(settings.telegramDefaultChatID),
             forKey: "gateway.tvos.telegram.defaultChatID")
         defaults.set(settings.enableLocalDeviceTools, forKey: "gateway.tvos.deviceTools.enabled")
+        defaults.set(Array(settings.disabledToolNames), forKey: "gateway.tvos.disabledToolNames")
+        defaults.set(settings.bootstrapPerFileMaxChars, forKey: "gateway.tvos.bootstrap.perFileMaxChars")
+        defaults.set(settings.bootstrapTotalMaxChars, forKey: "gateway.tvos.bootstrap.totalMaxChars")
     }
 
     private func verifyPersistedControlPlaneSettings(_ expected: TVOSGatewayControlPlaneSettings) {
@@ -4048,7 +4320,10 @@ final class TVOSLocalGatewayRuntime {
             localLLMToolCallingMode: settings.localLLMToolCallingMode,
             telegramBotToken: Self.trimmed(settings.telegramBotToken) ?? "",
             telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "",
-            enableLocalDeviceTools: settings.enableLocalDeviceTools)
+            enableLocalDeviceTools: settings.enableLocalDeviceTools,
+            disabledToolNames: settings.disabledToolNames,
+            bootstrapPerFileMaxChars: max(1000, settings.bootstrapPerFileMaxChars),
+            bootstrapTotalMaxChars: max(4000, settings.bootstrapTotalMaxChars))
     }
 
     private static func makeAuthConfig(from settings: TVOSGatewayControlPlaneSettings) -> GatewayCoreAuthConfig {

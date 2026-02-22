@@ -1,5 +1,9 @@
 # 🦞 OpenClaw — Personal AI Assistant
 
+> **AnemllClaw Fork** — This is a fork of [OpenClaw](https://github.com/openclaw/openclaw) that runs a standalone OpenClaw server entirely inside the **iOS / tvOS / macOS** sandbox as a native Swift app — no external server, container, or Node runtime required. For AnemllClaw-specific documentation (build instructions, features, getting started), see the **[AnemllClaw README](apps/anemll/README.md)**.
+
+---
+
 <p align="center">
     <picture>
         <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text-dark.png">

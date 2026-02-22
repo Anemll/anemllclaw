@@ -13,6 +13,8 @@ enum TVOSBootstrapTemplateStore {
         "skills/summarize/SKILL.md",
         "skills/notion/SKILL.md",
         "skills/trello/SKILL.md",
+        "skills/x-twitter-api-search/SKILL.md",
+        "skills/github/SKILL.md",
         "skills/blogwatcher/SKILL.md",
         "IDENTITY.md",
         "USER.md",
@@ -75,6 +77,28 @@ enum TVOSBootstrapTemplateStore {
         - Don't run destructive commands without asking.
         - `trash` > `rm` (recoverable beats gone forever)
         - When in doubt, ask.
+
+        ## Credentials
+
+        Skills that need API keys use the credentials device tools. Keys are stored in the iOS Keychain and persist across sessions. **Never log, echo, or display API keys in chat.**
+
+        ### Tools
+
+        - `credentials.get({ "service": "<name>" })` — check if a key exists; returns `{ "hasKey": true, "key": "..." }` or `{ "hasKey": false, "service": "<name>" }`
+        - `credentials.set({ "service": "<name>", "key": "..." })` — store a key (only use if the user pastes a key directly in chat; prefer the button flow below)
+        - `credentials.delete({ "service": "<name>" })` — remove a stored key
+
+        ### When a skill needs a key — follow this exact flow
+
+        1. Call `credentials.get({ "service": "<name>" })`.
+        2. If the response has `"hasKey": true` → use the returned `key` in your API calls (e.g. `Authorization: Bearer <key>`). Done.
+        3. If the response has `"hasKey": false` → **a blue "Set up API key" button appears automatically in the chat**. You do NOT need to do anything to make the button appear — it is rendered by the chat UI whenever `credentials.get` returns `hasKey: false`.
+        4. Tell the user:
+           - Where to get the API key (e.g. "Go to https://notion.so/my-integrations and copy your key")
+           - To tap the blue **"Set up API key for \<name\>"** button that appeared in chat
+           - That the key will be stored securely on their device
+        5. **Stop and wait.** Do NOT ask the user to paste the key in chat. The button opens a secure entry sheet.
+        6. After the user saves the key, they will ask you to retry. Call `credentials.get` again — it will now return `hasKey: true`.
 
         ## External vs Internal
 
@@ -140,6 +164,18 @@ enum TVOSBootstrapTemplateStore {
         ## Tools
 
         Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
+
+        ### Creating a new skill
+
+        When the user asks you to create or save a new skill, **always** write it to:
+        ```
+        skills/<skill_name>/SKILL.md
+        ```
+        For example, to create a Brave Search skill:
+        ```
+        write({ "path": "skills/brave_search/SKILL.md", "content": "# Brave Search\n..." })
+        ```
+        **Never** write skill files to the workspace root (e.g. `brave_search.md`). The app only discovers skills inside the `skills/` directory. After writing, **always** run `ls({ "path": "skills", "recursive": true })` to confirm the file landed in the right place and show the user the result. The skill will appear in Settings → Skills on next reload.
 
         **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
@@ -677,28 +713,36 @@ enum TVOSBootstrapTemplateStore {
 
         ## Setup
 
-        The user needs a Notion API key (starts with `ntn_` or `secret_`). Ask for it if not provided.
+        Before making API calls, check for a stored key:
 
+        ```json
+        credentials.get({ "service": "notion" })
+        ```
+
+        If `hasKey` is `false`, a "Set up API key" button will appear in chat.
+        Tell the user to:
         1. Create an integration at https://notion.so/my-integrations
-        2. Copy the API key
+        2. Copy the API key (starts with `ntn_` or `secret_`)
         3. Share target pages/databases with the integration
+        4. Tap the "Set up API key for notion" button in chat to enter the key securely
+
+        The key persists across sessions in the device keychain.
 
         ## API Basics
 
-        All requests use `network.fetch` with authorization headers:
+        1. Retrieve the stored key: `credentials.get({ "service": "notion" })`
+        2. Use it in `network.fetch` headers:
 
         ```json
         network.fetch({
-          "url": "https://api.notion.com/v1/search",
+          "url": "https://api.notion.com/v1/pages/{page_id}",
           "headers": {
-            "Authorization": "Bearer USER_NOTION_KEY",
+            "Authorization": "Bearer <stored_key>",
             "Notion-Version": "2025-09-03",
             "Content-Type": "application/json"
           }
         })
         ```
-
-        > **Note:** Replace `USER_NOTION_KEY` with the user's API key. Ask for it if needed.
 
         > **Note:** `network.fetch` currently supports GET requests. For creating or updating content (POST/PATCH), use the upstream gateway if connected.
 
@@ -739,6 +783,7 @@ enum TVOSBootstrapTemplateStore {
         - Page/database IDs are UUIDs (with or without dashes)
         - Rate limit: ~3 requests/second average
         - The Notion-Version header is required (use `2025-09-03`)
+        - Never display API keys in chat — use `credentials.get/set` to handle them securely
         """#,
         "skills/trello/SKILL.md": #"""
         # Trello
@@ -747,46 +792,54 @@ enum TVOSBootstrapTemplateStore {
 
         ## Setup
 
-        The user needs two credentials:
-        1. API key: https://trello.com/app-key
-        2. Token: click "Token" link on that page
+        Trello needs two credentials. Check for stored keys first:
 
-        Ask the user for both if not provided.
+        ```json
+        credentials.get({ "service": "trello.key" })
+        credentials.get({ "service": "trello.token" })
+        ```
+
+        If either `hasKey` is `false`, a "Set up API key" button will appear in chat for each missing key.
+        Tell the user to:
+        1. Get the API key at https://trello.com/app-key
+        2. Click "Token" link on that page for the token
+        3. Tap each "Set up API key" button in chat to enter the credentials securely
+
+        Keys persist across sessions in the device keychain.
 
         ## Read Operations (GET — works on iOS)
 
-        All GET requests use `network.fetch`:
+        1. Retrieve stored keys: `credentials.get` for both `trello.key` and `trello.token`
+        2. Use them in `network.fetch` URLs:
 
         **List boards:**
         ```json
         network.fetch({
-          "url": "https://api.trello.com/1/members/me/boards?key=USER_API_KEY&token=USER_TOKEN&fields=name,id"
+          "url": "https://api.trello.com/1/members/me/boards?key=<stored_key>&token=<stored_token>&fields=name,id"
         })
         ```
 
         **List lists in a board:**
         ```json
         network.fetch({
-          "url": "https://api.trello.com/1/boards/{boardId}/lists?key=USER_API_KEY&token=USER_TOKEN"
+          "url": "https://api.trello.com/1/boards/{boardId}/lists?key=<stored_key>&token=<stored_token>"
         })
         ```
 
         **List cards in a list:**
         ```json
         network.fetch({
-          "url": "https://api.trello.com/1/lists/{listId}/cards?key=USER_API_KEY&token=USER_TOKEN"
+          "url": "https://api.trello.com/1/lists/{listId}/cards?key=<stored_key>&token=<stored_token>"
         })
         ```
 
         **Find a board by name:**
         ```json
         network.fetch({
-          "url": "https://api.trello.com/1/members/me/boards?key=USER_API_KEY&token=USER_TOKEN"
+          "url": "https://api.trello.com/1/members/me/boards?key=<stored_key>&token=<stored_token>"
         })
         ```
         Then filter results by name.
-
-        > **Note:** Replace `USER_API_KEY` and `USER_TOKEN` with the user's credentials.
 
         ## Write Operations (require upstream gateway)
 
@@ -795,9 +848,208 @@ enum TVOSBootstrapTemplateStore {
         ## Notes
 
         - Board/List/Card IDs can be found in Trello URLs or via the list commands
-        - Keep API key and token secret
+        - Never display API keys in chat — use `credentials.get/set` to handle them securely
         - Rate limits: 300 requests per 10 seconds per API key
         """#,
+        "skills/x-twitter-api-search/SKILL.md": #"""
+        # X (Twitter) Search
+
+        Search recent tweets and user profiles on X using the v2 API.
+
+        ## When to use
+
+        Use this skill when the user asks:
+        - "search X for ..." or "search Twitter for ..."
+        - "what are people saying about ...?"
+        - "find tweets about ..."
+        - "look up @username on X"
+
+        ## Setup
+
+        Before making API calls, check for a stored key:
+
+        ```json
+        credentials.get({ "service": "x" })
+        ```
+
+        If `hasKey` is `false`, a "Set up API key" button will appear in chat.
+        Tell the user to:
+        1. Go to https://developer.x.com/en/portal/dashboard
+        2. Create a project & app (or use an existing one)
+        3. Generate a **Bearer Token** under Settings → Keys and Tokens
+        4. Tap the **"Set up API key for x"** button in chat to enter it securely
+
+        The key persists across sessions in the device keychain.
+
+        ## API Basics
+
+        1. Retrieve the stored key: `credentials.get({ "service": "x" })`
+        2. Use it in `network.fetch` headers:
+
+        ### Search recent tweets
+
+        ```json
+        network.fetch({
+          "url": "https://api.x.com/2/tweets/search/recent?query=ANEMLL&max_results=10&tweet.fields=created_at,author_id,public_metrics",
+          "headers": {
+            "Authorization": "Bearer <stored_key>"
+          }
+        })
+        ```
+
+        ### Look up a user by username
+
+        ```json
+        network.fetch({
+          "url": "https://api.x.com/2/users/by/username/elonmusk?user.fields=description,public_metrics,created_at",
+          "headers": {
+            "Authorization": "Bearer <stored_key>"
+          }
+        })
+        ```
+
+        ### Get a user's recent tweets
+
+        ```json
+        network.fetch({
+          "url": "https://api.x.com/2/users/<user_id>/tweets?max_results=10&tweet.fields=created_at,public_metrics",
+          "headers": {
+            "Authorization": "Bearer <stored_key>"
+          }
+        })
+        ```
+
+        ## Query syntax
+
+        - `keyword` — simple keyword search
+        - `from:username` — tweets from a specific user
+        - `to:username` — replies to a user
+        - `#hashtag` — hashtag search
+        - `keyword -exclude` — exclude a term
+        - `keyword lang:en` — language filter
+        - `"exact phrase"` — exact match
+        - `keyword has:media` — only tweets with media
+        - `keyword is:verified` — only from verified accounts
+
+        Combine operators: `from:openai AI safety -is:retweet lang:en`
+
+        ## Notes
+
+        - The free tier allows **recent search** (last 7 days) only
+        - Rate limit: 450 requests per 15-minute window (app-level)
+        - `max_results` range: 10–100
+        - Use `tweet.fields` to request extra data: `created_at`, `public_metrics`, `author_id`
+        - Use `user.fields` for user lookups: `description`, `public_metrics`, `profile_image_url`
+        - Never display API keys in chat — use `credentials.get` to handle them securely
+        - Pagination: use `next_token` from response `meta` for more results
+        """#,
+
+        "skills/github/SKILL.md": #"""
+        # GitHub
+
+        Interact with GitHub repositories, issues, and pull requests via the REST API.
+
+        ## When to use
+
+        Use this skill when the user asks:
+        - "check my GitHub notifications"
+        - "list issues on [repo]"
+        - "show recent PRs on [repo]"
+        - "what's happening on [repo]?"
+        - "star this repo"
+
+        ## Setup
+
+        Before making API calls, check for a stored key:
+
+        ```json
+        credentials.get({ "service": "github" })
+        ```
+
+        If `hasKey` is `false`, a "Set up API key" button will appear in chat.
+        Tell the user to:
+        1. Go to https://github.com/settings/tokens
+        2. Generate a **Personal Access Token** (classic or fine-grained)
+        3. Select scopes: `repo`, `notifications` (for full access), or `public_repo` (for public repos only)
+        4. Tap the **"Set up API key for github"** button in chat to enter it securely
+
+        The key persists across sessions in the device keychain.
+
+        ## API Basics
+
+        1. Retrieve the stored key: `credentials.get({ "service": "github" })`
+        2. Use it in `network.fetch` headers:
+
+        ### List repository issues
+
+        ```json
+        network.fetch({
+          "url": "https://api.github.com/repos/OWNER/REPO/issues?state=open&per_page=10",
+          "headers": {
+            "Authorization": "Bearer <stored_key>",
+            "Accept": "application/vnd.github+json"
+          }
+        })
+        ```
+
+        ### List pull requests
+
+        ```json
+        network.fetch({
+          "url": "https://api.github.com/repos/OWNER/REPO/pulls?state=open&per_page=10",
+          "headers": {
+            "Authorization": "Bearer <stored_key>",
+            "Accept": "application/vnd.github+json"
+          }
+        })
+        ```
+
+        ### Get notifications
+
+        ```json
+        network.fetch({
+          "url": "https://api.github.com/notifications?all=false&per_page=20",
+          "headers": {
+            "Authorization": "Bearer <stored_key>",
+            "Accept": "application/vnd.github+json"
+          }
+        })
+        ```
+
+        ### Search repositories
+
+        ```json
+        network.fetch({
+          "url": "https://api.github.com/search/repositories?q=swift+language:swift&sort=stars&per_page=5",
+          "headers": {
+            "Authorization": "Bearer <stored_key>",
+            "Accept": "application/vnd.github+json"
+          }
+        })
+        ```
+
+        ### Get user profile
+
+        ```json
+        network.fetch({
+          "url": "https://api.github.com/users/USERNAME",
+          "headers": {
+            "Authorization": "Bearer <stored_key>",
+            "Accept": "application/vnd.github+json"
+          }
+        })
+        ```
+
+        ## Notes
+
+        - Rate limit: 5,000 requests/hour with authentication (60/hour without)
+        - Pagination: use `per_page` (max 100) and `page` parameters
+        - The `Accept` header should be `application/vnd.github+json`
+        - For repo-specific endpoints, replace `OWNER/REPO` with e.g. `apple/swift`
+        - Never display API keys in chat — use `credentials.get` to handle them securely
+        - `network.fetch` currently supports GET requests on iOS
+        """#,
+
         "skills/blogwatcher/SKILL.md": #"""
         # Blog Watcher
 

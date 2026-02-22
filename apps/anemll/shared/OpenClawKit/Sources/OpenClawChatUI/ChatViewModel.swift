@@ -94,6 +94,13 @@ public final class OpenClawChatViewModel {
         self.sendTask = Task { await self.performSend() }
     }
 
+    /// Send "Continue" to retry / resume the agent.
+    public func sendContinue() {
+        guard !self.isSending else { return }
+        self.input = "Continue"
+        self.send()
+    }
+
     public func abort() {
         Task { await self.performAbort() }
     }
@@ -112,6 +119,13 @@ public final class OpenClawChatViewModel {
         if self.sessionKey == key {
             await self.performSwitchSession(to: "main")
         }
+    }
+
+    /// Clear all messages in the current session without deleting the session itself.
+    public func clearCurrentSession() async throws {
+        try await self.transport.deleteSession(sessionKey: self.sessionKey)
+        self.messages = []
+        await self.fetchSessions(limit: nil)
     }
 
     public var sessionChoices: [OpenClawChatSessionEntry] {

@@ -444,6 +444,11 @@ public struct OpenClawChatView: View {
     private func isToolTraceOnlyMessage(_ message: OpenClawChatMessage) -> Bool {
         let role = message.role.lowercased()
         if role == "tool" || role == "toolresult" || role == "tool_result" {
+            // Keep credential prompt messages visible so the "Set up API key" button
+            // always shows, even when "Show Tool Calls" is off.
+            if Self.isCredentialPromptMessage(message) {
+                return false
+            }
             return true
         }
 
@@ -488,6 +493,33 @@ public struct OpenClawChatView: View {
     private func isLegacyToolTraceText(_ text: String) -> Bool {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized.hasPrefix("tool.call ") || normalized.hasPrefix("tool.result ")
+    }
+
+    /// Returns true when the message is a credentials.get tool result with hasKey: false.
+    /// These messages must remain visible so the credential prompt button always renders.
+    private static func isCredentialPromptMessage(_ message: OpenClawChatMessage) -> Bool {
+        let text = message.content.compactMap { content -> String? in
+            let kind = (content.type ?? "text").lowercased()
+            guard kind == "text" || kind.isEmpty else { return nil }
+            return content.text
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+
+        // Legacy format: "tool.result credentials.get {..."hasKey":false...}"
+        let prefix = "tool.result "
+        guard text.lowercased().hasPrefix(prefix) else { return false }
+        let payload = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let spaceIdx = payload.firstIndex(where: \.isWhitespace) else { return false }
+        let name = String(payload[..<spaceIdx]).lowercased()
+        guard name == "credentials.get" else { return false }
+        let jsonText = String(payload[spaceIdx...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = jsonText.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["hasKey"] as? Bool == false,
+              let service = json["service"] as? String,
+              !service.isEmpty
+        else { return false }
+        return true
     }
 }
 

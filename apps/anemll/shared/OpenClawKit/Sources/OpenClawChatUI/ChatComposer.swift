@@ -15,6 +15,7 @@ struct OpenClawChatComposer: View {
     let showsSessionSwitcher: Bool
     @Binding var showSessionsSheet: Bool
     @State private var showCreateConversation = false
+    @State private var showClearConfirmation = false
     @State private var newConversationName: String = ""
     #if os(macOS)
     @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
@@ -115,6 +116,14 @@ struct OpenClawChatComposer: View {
             } message: {
                 Text("Enter a name for this conversation.")
             }
+            .alert("Clear Conversation?", isPresented: self.$showClearConfirmation) {
+                Button("Clear", role: .destructive) {
+                    Task { try? await self.viewModel.clearCurrentSession() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete all messages in this conversation.")
+            }
         #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 self.isKeyboardVisible = true
@@ -168,6 +177,11 @@ struct OpenClawChatComposer: View {
                 self.showCreateConversation = true
             } label: {
                 Label("New Conversation", systemImage: "square.and.pencil")
+            }
+            Button(role: .destructive) {
+                self.showClearConfirmation = true
+            } label: {
+                Label("Clear Conversation", systemImage: "trash")
             }
             Button {
                 self.showSessionsSheet = true
@@ -441,13 +455,14 @@ struct OpenClawChatComposer: View {
 
     private var refreshButton: some View {
         Button {
-            self.viewModel.refresh()
+            self.viewModel.sendContinue()
         } label: {
             Image(systemName: "arrow.clockwise")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Refresh")
+        .disabled(self.viewModel.isSending)
+        .help("Continue")
     }
 
     #if os(macOS)

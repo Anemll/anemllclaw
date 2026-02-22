@@ -150,6 +150,8 @@ struct ChatMessageBubble: View {
     let markdownVariant: ChatMarkdownVariant
     let userAccent: Color?
 
+    @State private var showCopied = false
+
     var body: some View {
         ChatMessageBody(
             message: self.message,
@@ -158,6 +160,37 @@ struct ChatMessageBubble: View {
             style: self.style,
             markdownVariant: self.markdownVariant,
             userAccent: self.userAccent)
+            .overlay(alignment: .topTrailing) {
+                if !self.copyableText.isEmpty {
+                    Button {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(
+                            self.copyableText, forType: .string)
+                        #else
+                        UIPasteboard.general.string = self.copyableText
+                        #endif
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            self.showCopied = true
+                        }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                self.showCopied = false
+                            }
+                        }
+                    } label: {
+                        Image(systemName: self.showCopied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11))
+                            .foregroundStyle(self.showCopied ? .green.opacity(0.8) : .secondary.opacity(0.3))
+                            .padding(5)
+                            .background(.ultraThinMaterial.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(4)
+                }
+            }
             .frame(maxWidth: ChatUIConstants.bubbleMaxWidth, alignment: self.isUser ? .trailing : .leading)
             .frame(maxWidth: .infinity, alignment: self.isUser ? .trailing : .leading)
             .padding(.horizontal, 2)
@@ -165,6 +198,16 @@ struct ChatMessageBubble: View {
 
     private var isUser: Bool {
         self.message.role.lowercased() == "user"
+    }
+
+    private var copyableText: String {
+        let parts = self.message.content.compactMap { content -> String? in
+            let kind = (content.type ?? "text").lowercased()
+            guard kind == "text" || kind.isEmpty else { return nil }
+            return content.text
+        }
+        return parts.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -188,7 +231,11 @@ private struct ChatMessageBody: View {
         let textColor = self.isUser ? OpenClawChatTheme.userText : OpenClawChatTheme.assistantText
 
         VStack(alignment: .leading, spacing: 10) {
-            if self.isToolResultMessage {
+            // Credential prompt — always visible, even when tool calls are hidden.
+            // Checked first because legacy tool results use role "tool" (not "tool_result").
+            if let credPrompt = self.standaloneCredentialPrompt {
+                CredentialPromptCard(serviceName: credPrompt)
+            } else if self.isToolResultMessage {
                 if self.showsToolCalls, !text.isEmpty {
                     ToolResultCard(
                         title: self.toolResultTitle,
@@ -231,6 +278,11 @@ private struct ChatMessageBody: View {
                         text: toolResult.text ?? "",
                         isUser: self.isUser)
                 }
+            }
+
+            // Credential prompts always visible (even when tool calls are hidden)
+            ForEach(self.inlineCredentialPrompts, id: \.self) { service in
+                CredentialPromptCard(serviceName: service)
             }
         }
         .openClawTextSelectionEnabledCompat()
@@ -305,6 +357,48 @@ private struct ChatMessageBody: View {
         }
         let display = ToolDisplayRegistry.resolve(name: "tool", args: nil)
         return "\(display.emoji) \(display.title)"
+    }
+
+    // MARK: - Credential Prompts
+
+    /// For standalone tool-result messages (role == "tool_result" or legacy "tool"),
+    /// check if this is a credentials.get with hasKey: false.
+    private var standaloneCredentialPrompt: String? {
+        // Structured tool_result role with toolName
+        if self.isToolResultMessage {
+            let name = (self.message.toolName ?? "").lowercased()
+            if name == "credentials.get" {
+                return Self.parseCredentialService(from: self.primaryText)
+            }
+        }
+        // Legacy "tool" role with "tool.result credentials.get {...}" text
+        if case let .result(result)? = self.legacyToolTrace {
+            if (result.name ?? "").lowercased() == "credentials.get" {
+                return Self.parseCredentialService(from: result.text ?? "")
+            }
+        }
+        return nil
+    }
+
+    /// For inline tool results inside assistant messages,
+    /// extract credential prompts from results with hasKey: false.
+    private var inlineCredentialPrompts: [String] {
+        self.inlineToolResults.compactMap { result in
+            guard (result.name ?? "").lowercased() == "credentials.get" else { return nil }
+            return Self.parseCredentialService(from: result.text ?? "")
+        }
+    }
+
+    /// Parse JSON tool result text for `hasKey: false` and extract the service name.
+    private static func parseCredentialService(from text: String) -> String? {
+        guard !text.isEmpty,
+              let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["hasKey"] as? Bool == false,
+              let service = json["service"] as? String,
+              !service.isEmpty
+        else { return nil }
+        return service
     }
 
     private var legacyToolTrace: LegacyToolTrace? {
@@ -702,6 +796,126 @@ private struct ToolResultCard: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+}
+
+// MARK: - Credential Prompt Card
+
+@MainActor
+struct CredentialPromptCard: View {
+    let serviceName: String
+    @State private var showingEntry = false
+    @State private var saved = false
+    @Environment(\.openClawCredentialSave) private var credentialSave
+    @Environment(\.openClawChatTextScale) private var chatTextScale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if self.saved {
+                HStack(spacing: 8) {
+                    Image(systemName: "key.fill")
+                        .foregroundStyle(.green)
+                    Text("API key configured for \(self.serviceName)")
+                        .font(.system(size: 14 * self.chatTextScale, weight: .medium))
+                }
+                .padding(10)
+            } else {
+                Button {
+                    self.showingEntry = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "key")
+                        Text("Set up API key for \(self.serviceName)")
+                            .font(.system(size: 14 * self.chatTextScale, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 16)
+                    .background(.blue)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(OpenClawChatTheme.subtleCard)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)))
+        .sheet(isPresented: self.$showingEntry) {
+            CredentialEntrySheet(
+                serviceName: self.serviceName,
+                onSave: { key in
+                    let ok = self.credentialSave?(self.serviceName, key) ?? false
+                    if ok { self.saved = true }
+                    return ok
+                },
+                onDismiss: { self.showingEntry = false })
+        }
+    }
+}
+
+private struct CredentialEntrySheet: View {
+    let serviceName: String
+    let onSave: (String) -> Bool
+    let onDismiss: () -> Void
+    @State private var apiKey = ""
+    @State private var saveError = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("API Key", text: self.$apiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Enter API key for \(self.serviceName)")
+                } footer: {
+                    Text(
+                        "Stored securely in the device keychain."
+                            + " Never shared or displayed in chat.")
+                }
+
+                Section {
+                    Button {
+                        let trimmed = self.apiKey
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let ok = self.onSave(trimmed)
+                        if ok {
+                            self.onDismiss()
+                        } else {
+                            self.saveError = true
+                        }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Text("Save API Key")
+                                .fontWeight(.semibold)
+                            Spacer()
+                        }
+                    }
+                    .disabled(
+                        self.apiKey
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty)
+                }
+            }
+            .navigationTitle("API Key")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { self.onDismiss() }
+                }
+            }
+            .alert("Save Failed", isPresented: self.$saveError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Could not save the API key to the device keychain.")
+            }
+        }
     }
 }
 

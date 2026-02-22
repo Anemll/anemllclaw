@@ -24,6 +24,15 @@ public actor GatewayWebSocketServer {
     private var states: [ObjectIdentifier: ConnectionState] = [:]
     private var tickTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
+    /// Called when the NWListener transitions to `.failed` or `.waiting`
+    /// after it was already `.ready`.  The runtime uses this to trigger
+    /// a listener restart (e.g. after a network interface change).
+    private var onListenerStateChange: (@Sendable (_ failed: Bool) -> Void)?
+
+    public func setOnListenerStateChange(_ handler: (@Sendable (_ failed: Bool) -> Void)?) {
+        self.onListenerStateChange = handler
+    }
+
     public init(
         transport: any GatewayRPCTransport = GatewayLoopbackTransport(),
         tickIntervalMs: Int = GatewayCore.defaultTickIntervalMs)
@@ -32,41 +41,66 @@ public actor GatewayWebSocketServer {
         self.tickIntervalMs = max(250, tickIntervalMs)
     }
 
+    /// Whether the active listener is bound to loopback only (even if
+    /// the caller originally requested LAN access).  This is `true` when
+    /// LAN binding failed and we fell back to localhost.
+    public private(set) var isFallbackLoopback: Bool = false
+
     public func start(port: UInt16 = 0, localhostOnly: Bool = true) async throws -> UInt16 {
         guard self.listener == nil else {
             throw GatewayWebSocketServerError.alreadyRunning
         }
 
-        let tcpOptions = NWProtocolTCP.Options()
-        let wsOptions = NWProtocolWebSocket.Options()
-        wsOptions.autoReplyPing = true
-        wsOptions.maximumMessageSize = 16 * 1024 * 1024
-
-        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
-        parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
-        if localhostOnly {
-            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
-        }
+        self.isFallbackLoopback = false
 
         let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
-        let listener = try NWListener(using: parameters, on: nwPort)
+        let listener: NWListener
+        if localhostOnly {
+            listener = try Self.makeListener(port: nwPort, localhostOnly: true)
+        } else {
+            // Try LAN first; if binding fails, fall back to localhost so
+            // the on-device chat keeps working.
+            do {
+                listener = try Self.makeListener(port: nwPort, localhostOnly: false)
+            } catch {
+                self.isFallbackLoopback = true
+                listener = try Self.makeListener(port: nwPort, localhostOnly: true)
+            }
+        }
         listener.newConnectionHandler = { connection in
             Task { await self.accept(connection) }
         }
 
+        let onStateChange = self.onListenerStateChange
+        let resumeGuard = ListenerResumeGuard()
         let resolvedPort: UInt16 = try await withCheckedThrowingContinuation { continuation in
             listener.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    listener.stateUpdateHandler = nil
+                    guard resumeGuard.tryResume() else { return }
                     guard let resolved = listener.port?.rawValue else {
                         continuation.resume(throwing: GatewayWebSocketServerError.missingBoundPort)
                         return
                     }
                     continuation.resume(returning: resolved)
                 case let .failed(error):
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(throwing: error)
+                    if resumeGuard.tryResume() {
+                        continuation.resume(throwing: error)
+                    } else {
+                        // Listener failed after it was already running —
+                        // notify the runtime so it can restart.
+                        onStateChange?(true)
+                    }
+                case .waiting:
+                    // Network path became unavailable (e.g. WiFi dropped).
+                    if resumeGuard.didResume {
+                        onStateChange?(true)
+                    }
+                case .cancelled:
+                    if resumeGuard.tryResume() {
+                        continuation.resume(
+                            throwing: GatewayWebSocketServerError.missingBoundPort)
+                    }
                 default:
                     break
                 }
@@ -80,9 +114,11 @@ public actor GatewayWebSocketServer {
     }
 
     public func stop() {
+        self.listener?.stateUpdateHandler = nil
         self.listener?.cancel()
         self.listener = nil
         self.boundPort = nil
+        self.isFallbackLoopback = false
 
         for task in self.tickTasks.values {
             task.cancel()
@@ -297,11 +333,54 @@ public actor GatewayWebSocketServer {
         self.states[id] = nil
     }
 
+    private static func makeListener(
+        port: NWEndpoint.Port,
+        localhostOnly: Bool) throws -> NWListener
+    {
+        let tcpOptions = NWProtocolTCP.Options()
+        let wsOptions = NWProtocolWebSocket.Options()
+        wsOptions.autoReplyPing = true
+        wsOptions.maximumMessageSize = 16 * 1024 * 1024
+
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        if localhostOnly {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: .ipv4(.loopback), port: .any)
+        }
+        return try NWListener(using: parameters, on: port)
+    }
+
     private static func extractRequestID(_ frameData: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: frameData),
               let dict = object as? [String: Any],
               let id = dict["id"] as? String
         else { return nil }
         return id
+    }
+}
+
+/// Thread-safe one-shot flag used to guard `withCheckedThrowingContinuation`
+/// so the continuation is resumed exactly once, even when the NWListener
+/// state handler fires from arbitrary threads.
+private final class ListenerResumeGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _resumed = false
+
+    /// Atomically sets the flag and returns `true` the first time.
+    /// Subsequent calls return `false`.
+    func tryResume() -> Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        if self._resumed { return false }
+        self._resumed = true
+        return true
+    }
+
+    /// Non-mutating check — `true` after the first successful `tryResume()`.
+    var didResume: Bool {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self._resumed
     }
 }
