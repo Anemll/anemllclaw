@@ -71,7 +71,9 @@ apps/ios/*.dSYM.zip
 apps/ios/*.mobileprovision
 
 # AnemllClaw (apps/anemll/) build artifacts
-apps/anemll/*.xcodeproj/
+# Track xcodeproj but exclude user-specific data
+apps/anemll/*.xcodeproj/xcuserdata/
+apps/anemll/*.xcodeproj/project.xcworkspace/xcuserdata/
 apps/anemll/*.xcworkspace/
 apps/anemll/.swiftpm/
 apps/anemll/*.xcfilelist

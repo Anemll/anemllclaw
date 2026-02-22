@@ -1,0 +1,1237 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 63;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0125CFAAE4B615327F5F8347 /* GatewayConnectConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5267030A33EFC2DCC7ECC847 /* GatewayConnectConfig.swift */; };
+		0AFB5E22C611724B355EEB29 /* DeepLinkParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F2714F35AC5534D61624DE9 /* DeepLinkParserTests.swift */; };
+		0C3C9895F7D3E623B0C515C4 /* GatewayDiscoveryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D58B1998AD66E9AF20EE96E0 /* GatewayDiscoveryModelTests.swift */; };
+		0F7FC7EFF2DA12BB8244B5E0 /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB1FF6F852810637578F7422 /* SettingsTab.swift */; };
+		1270A41C13BA983903BF413A /* RootCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDE130CB8404C97E9670BBE8 /* RootCanvas.swift */; };
+		163CE62CDFF73DF1B6776752 /* TVOSBootstrapTemplateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD4FD4DFDF7DDFB7BF1A608 /* TVOSBootstrapTemplateStore.swift */; };
+		17B9D8E2539BE8E29ED68E12 /* GatewayDiscoveryModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */; };
+		1930106458BA948E0089A8B6 /* VoiceWakeManagerStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABD75353987AB7F00EF4F01F /* VoiceWakeManagerStateTests.swift */; };
+		1A65B013055E570B779CA6D7 /* OpenClawChatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 6AEB17BCFB008A155A307B8C /* OpenClawChatUI */; };
+		1AB0339366DB438149E660E6 /* TVOSGatewayHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F09FB0819241484F88D3B8E /* TVOSGatewayHostView.swift */; };
+		1B22917CE2E98AB0478EF1E4 /* RootTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9746A588F07C4DA9B542D54A /* RootTabs.swift */; };
+		1EF072776197F4EF7BA4CD2D /* VoiceWakePreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48FD65FC32B130BD96A22883 /* VoiceWakePreferencesTests.swift */; };
+		1F65944EB030C820975E87E1 /* TVOSBootstrapWorkspaceSeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83653C8C84C139D18454E09 /* TVOSBootstrapWorkspaceSeeder.swift */; };
+		1F692D9B0754F80623A460A2 /* TVOSBootstrapTemplateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD4FD4DFDF7DDFB7BF1A608 /* TVOSBootstrapTemplateStore.swift */; };
+		2299E660A9EA36FCC5CE3AFC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 00A7E77FE48968FD0A087C9C /* Assets.xcassets */; };
+		2413BAA6338793A5DEBD8945 /* NodeAppModel+Canvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01149CF1262BF8D3547DC46 /* NodeAppModel+Canvas.swift */; };
+		24704918A0CDD1FBADFA872E /* GatewayConnectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55FFD4A592F82897B9415680 /* GatewayConnectionController.swift */; };
+		26478404F5E02B602B3224C0 /* OpenClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 781B2850D3375A80938607A0 /* OpenClawApp.swift */; };
+		271F0EFDD58517F4D71FC862 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A012480A0E1D69C91FEC14 /* KeychainStore.swift */; };
+		2B3B9E094CD5BAFCAEC73BC0 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0646662CB681D7F14F09BE49 /* NotificationService.swift */; };
+		2DD6BD2A6A03CC8187B88FC2 /* CameraControllerClampTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 752A3AFB03C448938B793441 /* CameraControllerClampTests.swift */; };
+		31DD683C44072EBDA9FF2D93 /* PhotoLibraryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51520E24EA308E3C5B726E0B /* PhotoLibraryService.swift */; };
+		360AECB7D974C076D6DFFA83 /* GatewayHealthMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB307D5090DC22100E34962B /* GatewayHealthMonitor.swift */; };
+		377F320001C9538FCB5D34D3 /* ContactsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF8BFB0108A9F0984AB9136 /* ContactsService.swift */; };
+		3D822E6EE38FE2FC255A8E31 /* OnboardingWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 495D8F966645E2A1D22611D7 /* OnboardingWizardView.swift */; };
+		3EDBFFFA598ADEC7056417FC /* IOSGatewayChatTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E60B23E8BC921CA93089436 /* IOSGatewayChatTransport.swift */; };
+		3FB24756F7F51DF44A779BE3 /* NodeAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB6CF40216BE16DC6AB1E0DC /* NodeAppModel.swift */; };
+		40EA517862C4FCE286CF7474 /* StatusPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = E473C540E933A2BF506DC297 /* StatusPill.swift */; };
+		412A38DE49EE913C89F37EC5 /* OpenClawBackupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */; };
+		4970C3C8C4B267119BF5C6D5 /* GatewayConnectionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBBE6AFCC0526BB57DCCC40 /* GatewayConnectionControllerTests.swift */; };
+		49CD0B4AA7CFCE012AE77F11 /* GatewayHostCapabilityMatrix.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10472ACEBE57E4F7A7319E74 /* GatewayHostCapabilityMatrix.swift */; };
+		4AA05C9C0B83ADCA472AE476 /* GatewaySettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F05E9BEF9B4AB2D8E609E0 /* GatewaySettingsStore.swift */; };
+		4AE093E9BBFFD0CCB8F0AD82 /* TVOSBootstrapWorkspaceSeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83653C8C84C139D18454E09 /* TVOSBootstrapWorkspaceSeeder.swift */; };
+		55B73F9447429049E119F18A /* ScreenWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4487FF09FEBFA7858BCCA6C8 /* ScreenWebView.swift */; };
+		5B3FFC50CE121BC2BA55D9A2 /* StatusActivityBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D5623A5AE203BD3B947A64 /* StatusActivityBuilder.swift */; };
+		5D23CA72C97195B2CDA989D7 /* GatewayConnectionSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80371B3399237F68A0C90984 /* GatewayConnectionSecurityTests.swift */; };
+		5DC129A120218C65EBD08016 /* LocalGatewayChatTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42885FF8616B074D24501EF4 /* LocalGatewayChatTransport.swift */; };
+		602C6242398B943D221E18C4 /* SwabbleKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9261A8221DD14164526D4DFD /* SwabbleKit */; };
+		6294BEDC24DD80E3ACCB2997 /* NetworkStatusService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19CC67A4045E72814F5D441B /* NetworkStatusService.swift */; };
+		638127EB5447F45579309024 /* GatewayServiceResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = C41B9CEFED1F633B550569EE /* GatewayServiceResolver.swift */; };
+		668BD531A954E8C494D914D4 /* DeviceStatusService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94D3B96E29BB602FE72C7ECB /* DeviceStatusService.swift */; };
+		6A86D9849703609941F8612F /* CameraControllerErrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F49D5FFE8CD325F305CA625 /* CameraControllerErrorTests.swift */; };
+		6DF452AC134CB276EF520E96 /* GatewayDiscoveryDebugLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */; };
+		745E3B3A3E1662E73428B5D5 /* SwabbleKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9FE8E539EFB2EDC105D44FC4 /* SwabbleKit */; };
+		74FFA391ED65B74C8D67CADB /* ScreenControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 353606E551B2FB6A5E5CC1A5 /* ScreenControllerTests.swift */; };
+		77C30743E9FD10AD2A204368 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 00A7E77FE48968FD0A087C9C /* Assets.xcassets */; };
+		7BBD7B0EFCEAE58BCD7ECA8A /* VoiceWakeManagerExtractCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B133D6FD077EF16A7501D3F4 /* VoiceWakeManagerExtractCommandTests.swift */; };
+		826261AAA058812A0D324075 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A012480A0E1D69C91FEC14 /* KeychainStore.swift */; };
+		845A6B76A13AEFE16F22FC8B /* SessionKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02E6E54C0C87FD8FA332C7EE /* SessionKey.swift */; };
+		857AAE554568F05C90E3638E /* SwiftUIRenderSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8C2CFAEF0758BEE1E86FCD2 /* SwiftUIRenderSmokeTests.swift */; };
+		87AE8577109135BE29D07BE4 /* LocationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BE42A7ABB552547E267BA49 /* LocationService.swift */; };
+		8937D51FF67E3013EDCC458D /* MotionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBC54E8F6B3A8F7DEEABCDE /* MotionService.swift */; };
+		8974F849586C5F62C99AE427 /* GatewayQuickSetupSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D49FF2E5A64603ADA13ED8 /* GatewayQuickSetupSheet.swift */; };
+		8B39E014DFACE66FB322EE7E /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA42601AC26525BC9E4A9314 /* AppIntents.framework */; };
+		8D6BDA0A2B023EFEB2F73507 /* RemindersService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CD06A7C6EE31052A61E8A8A /* RemindersService.swift */; };
+		90EE2A048146804B30B42C43 /* TVOSGatewayHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F09FB0819241484F88D3B8E /* TVOSGatewayHostView.swift */; };
+		92391E7FB584DBD954600CF5 /* GatewaySetupCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FE3C479F9B0083F14AF9689 /* GatewaySetupCode.swift */; };
+		9A051CB1012C9218E52943A5 /* SettingsNetworkingHelpersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC6C09027B558C741B5716E4 /* SettingsNetworkingHelpersTests.swift */; };
+		A3C00F4E66E435711ABE537C /* VoiceWakeWordsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DEDB68AAD35FDF6FEA1FDFD /* VoiceWakeWordsSettingsView.swift */; };
+		A5733B5EB94111DCBE4F985A /* GatewayTrustPromptAlert.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECEF2271743EA368FFD789D4 /* GatewayTrustPromptAlert.swift */; };
+		A5CB43CA542BEB76E8322B44 /* NodeServiceProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6679E7A02D1276F12907BAA /* NodeServiceProtocols.swift */; };
+		A6D7B33E2F3A157F89346ACB /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA42601AC26525BC9E4A9314 /* AppIntents.framework */; };
+		A856FB74B5D8B33C63E3D058 /* TCPProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD8E73AE2B7E0350CD584C01 /* TCPProbe.swift */; };
+		AB2AFE704902A0DC2D36E5CA /* Info-tvOS.plist in Resources */ = {isa = PBXBuildFile; fileRef = C52A48EE4B708752317169C6 /* Info-tvOS.plist */; };
+		ACED365FE5D0BE13F97B0383 /* TVOSLocalGatewayRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6CD0A9D9D2234E8CE916FD /* TVOSLocalGatewayRuntime.swift */; };
+		AD6E639AB739DFB9A6F787BB /* VoiceWakeGatewaySyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525C3664486E9F9A885860E1 /* VoiceWakeGatewaySyncTests.swift */; };
+		AFD4BF746D3EE02FE3D4AC20 /* OpenClawGatewayCore in Frameworks */ = {isa = PBXBuildFile; productRef = EE9E5F3891FDAA45C71D672C /* OpenClawGatewayCore */; };
+		B8051E35594121BFBF36ED59 /* OpenClawGatewayCore in Frameworks */ = {isa = PBXBuildFile; productRef = 529C57C81CFB4B6F0EE7C780 /* OpenClawGatewayCore */; };
+		B906525826B4CFB9313778C6 /* LLMProviderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB690F1EBD6B859024E4D26D /* LLMProviderStore.swift */; };
+		B9185FB98738CA42D37CD7BE /* CameraController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B484D7234760F4513CC429EB /* CameraController.swift */; };
+		B92BCCAF30D2AF4EB92B5C78 /* OnboardingStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F26B2D6325FC510874722C87 /* OnboardingStateStoreTests.swift */; };
+		BAC248B617C96BF6B017F605 /* ScreenRecordServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B620B54B52D19495E57FC2E /* ScreenRecordServiceTests.swift */; };
+		BCF0959640C6C61835EFDBEA /* SettingsNetworkingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF37761CF83B854A13E1D4C6 /* SettingsNetworkingHelpers.swift */; };
+		BD2E4F5D544408D0DB6D28FC /* TalkOrbOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F8273F51124EF1835D1769D /* TalkOrbOverlay.swift */; };
+		BD6A0D80D340B3B39212D230 /* OpenClawKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5993EAABC0A4D42485F1F630 /* OpenClawKit */; };
+		BEC889A5048C1556E02140FA /* KeychainStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A72F8C0522730426BDBFF6 /* KeychainStoreTests.swift */; };
+		C06E0CC173F12BBA78A70ECA /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26342578D03944B3C4DBB292 /* QRScannerView.swift */; };
+		C09D60578A642B60DBA777A2 /* EventKitAuthorization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00C68B43BD77ABBC1CD5A447 /* EventKitAuthorization.swift */; };
+		C35B0FC62CD0307BC7F62A8B /* OpenClawBackupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */; };
+		C3EC71B9D200C25D6BBCB18D /* GatewayEndpointIDTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BAC4808473FD35D533FE487 /* GatewayEndpointIDTests.swift */; };
+		C41953D00154CB821A446938 /* TVOSLocalGatewayRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6CD0A9D9D2234E8CE916FD /* TVOSLocalGatewayRuntime.swift */; };
+		C52C734E98106E88172CAF35 /* GatewayConnectionIssue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E3E3A34C5AF6449F445DB88 /* GatewayConnectionIssue.swift */; };
+		CA28B82980ECBF66D24C86AE /* NodeCapabilityRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76752B7B2013C10E276BD0E9 /* NodeCapabilityRouter.swift */; };
+		CA3922A7B56668B136A70330 /* AppCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */; };
+		CB99CB44A2AABA542AF46E4D /* GatewayConnectionIssueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D42A8C3D213AD8216165F00F /* GatewayConnectionIssueTests.swift */; };
+		CC8D7545EE7B23D2132519D0 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F0215334CEEEB4A1CFD6D8 /* RootView.swift */; };
+		D13697C185596E202D625B2A /* IOSGatewayChatTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E78563884FA3B58C63BC99 /* IOSGatewayChatTransportTests.swift */; };
+		D19D1086BEBEA9D812C48008 /* GatewaySettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9FE9333EC4133FCF1DE1A2B /* GatewaySettingsStoreTests.swift */; };
+		D2B995515778687A1951DA63 /* VoiceTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B64A0D09B2BB34E367436A0 /* VoiceTab.swift */; };
+		D499441E0DB2726B7445AE9A /* OnboardingStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7650974C160E3E71890426F /* OnboardingStateStore.swift */; };
+		DD4DE0B1CC777342EA05A4EC /* VoiceWakePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54737144D2F85A4621F41BF8 /* VoiceWakePreferences.swift */; };
+		DDA612588ED5DF9588AE82FA /* VoiceWakeToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = C48B2978538D845C982D6983 /* VoiceWakeToast.swift */; };
+		DDD22D7CECAE5A9A47781B94 /* GatewayOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52207D3CB1045988BADDDCA0 /* GatewayOnboardingView.swift */; };
+		E20C17321985932F751F96E4 /* OpenClawApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 781B2850D3375A80938607A0 /* OpenClawApp.swift */; };
+		E70E697DADF232EC5E62845F /* ChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D5D77342D4441FDA65826B0 /* ChatSheet.swift */; };
+		E867FCBC351F61786F110AD1 /* NodeDisplayName.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED5628CD3C4D5D8871635E0C /* NodeDisplayName.swift */; };
+		E8E2D2F3DB51247F40930E89 /* VoiceWakeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B275C31AB48987F3582DCFEC /* VoiceWakeManager.swift */; };
+		EB48B22338AFAEDB182DA5FB /* TalkModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */; };
+		EC85A724C972E5762995C7EF /* OpenClawProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = 5901CD5BAA72A8EE9A965482 /* OpenClawProtocol */; };
+		ED5947FF5E5A30FC0EF407D9 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1160ED9A6303F3B11500BE8 /* CalendarService.swift */; };
+		F05A047562DEC8811997CEFC /* LLMProviderEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D5D938DB984538C587CE8D /* LLMProviderEditorSheet.swift */; };
+		F3B93A2E2912C8ED6251F142 /* SignificantLocationMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC4F76C076007CD19E1FC336 /* SignificantLocationMonitor.swift */; };
+		F3D936CB3B1A3BE489947F96 /* ScreenTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF7044E7BCBC044133D1191 /* ScreenTab.swift */; };
+		F4D53B3B49E5DA4A1ABC0BAA /* NodeAppModelInvokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CF199C7EAB952A9C184F01B /* NodeAppModelInvokeTests.swift */; };
+		FA4C8045CBD6E74B7FA901C2 /* ScreenRecordService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5776425ED3ADD23FBCB5E99 /* ScreenRecordService.swift */; };
+		FA7584774D361F6264882F5C /* ScreenController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2ECD7DE1793EC69DC59F272 /* ScreenController.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		FF31A66A0231C5EFCCC419FE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C8C7044880C1DF2EC732AA92 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 48353276A42B7316CD308F2A;
+			remoteInfo = AnemllClaw;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		00A7E77FE48968FD0A087C9C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		00C68B43BD77ABBC1CD5A447 /* EventKitAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventKitAuthorization.swift; sourceTree = "<group>"; };
+		02E6E54C0C87FD8FA332C7EE /* SessionKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionKey.swift; sourceTree = "<group>"; };
+		0646662CB681D7F14F09BE49 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		0B620B54B52D19495E57FC2E /* ScreenRecordServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordServiceTests.swift; sourceTree = "<group>"; };
+		0CF199C7EAB952A9C184F01B /* NodeAppModelInvokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeAppModelInvokeTests.swift; sourceTree = "<group>"; };
+		0DBBE6AFCC0526BB57DCCC40 /* GatewayConnectionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionControllerTests.swift; sourceTree = "<group>"; };
+		0DBC54E8F6B3A8F7DEEABCDE /* MotionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionService.swift; sourceTree = "<group>"; };
+		0F8273F51124EF1835D1769D /* TalkOrbOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkOrbOverlay.swift; sourceTree = "<group>"; };
+		10472ACEBE57E4F7A7319E74 /* GatewayHostCapabilityMatrix.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayHostCapabilityMatrix.swift; sourceTree = "<group>"; };
+		19CC67A4045E72814F5D441B /* NetworkStatusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusService.swift; sourceTree = "<group>"; };
+		1A6CD0A9D9D2234E8CE916FD /* TVOSLocalGatewayRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVOSLocalGatewayRuntime.swift; sourceTree = "<group>"; };
+		1E60B23E8BC921CA93089436 /* IOSGatewayChatTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSGatewayChatTransport.swift; sourceTree = "<group>"; };
+		1EF8BFB0108A9F0984AB9136 /* ContactsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsService.swift; sourceTree = "<group>"; };
+		245EA4C215B03D9375C8E6A3 /* AnemllClaw.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnemllClaw.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		24D5623A5AE203BD3B947A64 /* StatusActivityBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusActivityBuilder.swift; sourceTree = "<group>"; };
+		26342578D03944B3C4DBB292 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		28D49FF2E5A64603ADA13ED8 /* GatewayQuickSetupSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayQuickSetupSheet.swift; sourceTree = "<group>"; };
+		2DC7FAA1691E7B3C07B1CF5A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2FE3C479F9B0083F14AF9689 /* GatewaySetupCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySetupCode.swift; sourceTree = "<group>"; };
+		33A72F8C0522730426BDBFF6 /* KeychainStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStoreTests.swift; sourceTree = "<group>"; };
+		353606E551B2FB6A5E5CC1A5 /* ScreenControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenControllerTests.swift; sourceTree = "<group>"; };
+		3CD06A7C6EE31052A61E8A8A /* RemindersService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemindersService.swift; sourceTree = "<group>"; };
+		3E3E3A34C5AF6449F445DB88 /* GatewayConnectionIssue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionIssue.swift; sourceTree = "<group>"; };
+		41D5D938DB984538C587CE8D /* LLMProviderEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProviderEditorSheet.swift; sourceTree = "<group>"; };
+		42885FF8616B074D24501EF4 /* LocalGatewayChatTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalGatewayChatTransport.swift; sourceTree = "<group>"; };
+		4487FF09FEBFA7858BCCA6C8 /* ScreenWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenWebView.swift; sourceTree = "<group>"; };
+		48FD65FC32B130BD96A22883 /* VoiceWakePreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakePreferencesTests.swift; sourceTree = "<group>"; };
+		495D8F966645E2A1D22611D7 /* OnboardingWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingWizardView.swift; sourceTree = "<group>"; };
+		4BE42A7ABB552547E267BA49 /* LocationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationService.swift; sourceTree = "<group>"; };
+		4DEDB68AAD35FDF6FEA1FDFD /* VoiceWakeWordsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeWordsSettingsView.swift; sourceTree = "<group>"; };
+		50106F8F8E7F88F57E7E3291 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		51520E24EA308E3C5B726E0B /* PhotoLibraryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryService.swift; sourceTree = "<group>"; };
+		52207D3CB1045988BADDDCA0 /* GatewayOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayOnboardingView.swift; sourceTree = "<group>"; };
+		525C3664486E9F9A885860E1 /* VoiceWakeGatewaySyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeGatewaySyncTests.swift; sourceTree = "<group>"; };
+		5267030A33EFC2DCC7ECC847 /* GatewayConnectConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectConfig.swift; sourceTree = "<group>"; };
+		54737144D2F85A4621F41BF8 /* VoiceWakePreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakePreferences.swift; sourceTree = "<group>"; };
+		55FFD4A592F82897B9415680 /* GatewayConnectionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionController.swift; sourceTree = "<group>"; };
+		5BAC4808473FD35D533FE487 /* GatewayEndpointIDTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayEndpointIDTests.swift; sourceTree = "<group>"; };
+		604EB3A291A1A0204EA2F6EE /* AnemllClawTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = AnemllClawTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		6B64A0D09B2BB34E367436A0 /* VoiceTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceTab.swift; sourceTree = "<group>"; };
+		6D5D77342D4441FDA65826B0 /* ChatSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSheet.swift; sourceTree = "<group>"; };
+		752A3AFB03C448938B793441 /* CameraControllerClampTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraControllerClampTests.swift; sourceTree = "<group>"; };
+		76752B7B2013C10E276BD0E9 /* NodeCapabilityRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeCapabilityRouter.swift; sourceTree = "<group>"; };
+		77E78563884FA3B58C63BC99 /* IOSGatewayChatTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSGatewayChatTransportTests.swift; sourceTree = "<group>"; };
+		781B2850D3375A80938607A0 /* OpenClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawApp.swift; sourceTree = "<group>"; };
+		7F2714F35AC5534D61624DE9 /* DeepLinkParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkParserTests.swift; sourceTree = "<group>"; };
+		80371B3399237F68A0C90984 /* GatewayConnectionSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionSecurityTests.swift; sourceTree = "<group>"; };
+		80A012480A0E1D69C91FEC14 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkModeManager.swift; sourceTree = "<group>"; };
+		86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoverageTests.swift; sourceTree = "<group>"; };
+		9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawBackupManager.swift; sourceTree = "<group>"; };
+		93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryDebugLogView.swift; sourceTree = "<group>"; };
+		94D3B96E29BB602FE72C7ECB /* DeviceStatusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStatusService.swift; sourceTree = "<group>"; };
+		9746A588F07C4DA9B542D54A /* RootTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabs.swift; sourceTree = "<group>"; };
+		99F289C12EB5D12CF7407246 /* OpenClawKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpenClawKit; path = shared/OpenClawKit; sourceTree = SOURCE_ROOT; };
+		9AD4FD4DFDF7DDFB7BF1A608 /* TVOSBootstrapTemplateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVOSBootstrapTemplateStore.swift; sourceTree = "<group>"; };
+		9C02B6CF2B1287FC71E7F2B6 /* Swabble */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Swabble; path = ../../Swabble; sourceTree = SOURCE_ROOT; };
+		9D1D4771ED34DED836BECF71 /* AnemllClawTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnemllClawTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9F09FB0819241484F88D3B8E /* TVOSGatewayHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVOSGatewayHostView.swift; sourceTree = "<group>"; };
+		9F49D5FFE8CD325F305CA625 /* CameraControllerErrorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraControllerErrorTests.swift; sourceTree = "<group>"; };
+		A01149CF1262BF8D3547DC46 /* NodeAppModel+Canvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NodeAppModel+Canvas.swift"; sourceTree = "<group>"; };
+		A6679E7A02D1276F12907BAA /* NodeServiceProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeServiceProtocols.swift; sourceTree = "<group>"; };
+		A7650974C160E3E71890426F /* OnboardingStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStateStore.swift; sourceTree = "<group>"; };
+		A9F05E9BEF9B4AB2D8E609E0 /* GatewaySettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySettingsStore.swift; sourceTree = "<group>"; };
+		AB690F1EBD6B859024E4D26D /* LLMProviderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMProviderStore.swift; sourceTree = "<group>"; };
+		ABD75353987AB7F00EF4F01F /* VoiceWakeManagerStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeManagerStateTests.swift; sourceTree = "<group>"; };
+		B1160ED9A6303F3B11500BE8 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
+		B133D6FD077EF16A7501D3F4 /* VoiceWakeManagerExtractCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeManagerExtractCommandTests.swift; sourceTree = "<group>"; };
+		B275C31AB48987F3582DCFEC /* VoiceWakeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeManager.swift; sourceTree = "<group>"; };
+		B484D7234760F4513CC429EB /* CameraController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraController.swift; sourceTree = "<group>"; };
+		B5776425ED3ADD23FBCB5E99 /* ScreenRecordService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordService.swift; sourceTree = "<group>"; };
+		B9FE9333EC4133FCF1DE1A2B /* GatewaySettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewaySettingsStoreTests.swift; sourceTree = "<group>"; };
+		BCF7044E7BCBC044133D1191 /* ScreenTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenTab.swift; sourceTree = "<group>"; };
+		BF37761CF83B854A13E1D4C6 /* SettingsNetworkingHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNetworkingHelpers.swift; sourceTree = "<group>"; };
+		C2ECD7DE1793EC69DC59F272 /* ScreenController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenController.swift; sourceTree = "<group>"; };
+		C41B9CEFED1F633B550569EE /* GatewayServiceResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayServiceResolver.swift; sourceTree = "<group>"; };
+		C48B2978538D845C982D6983 /* VoiceWakeToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceWakeToast.swift; sourceTree = "<group>"; };
+		C52A48EE4B708752317169C6 /* Info-tvOS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Info-tvOS.plist"; sourceTree = "<group>"; };
+		CB1FF6F852810637578F7422 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
+		CB307D5090DC22100E34962B /* GatewayHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayHealthMonitor.swift; sourceTree = "<group>"; };
+		CB6CF40216BE16DC6AB1E0DC /* NodeAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeAppModel.swift; sourceTree = "<group>"; };
+		CD8E73AE2B7E0350CD584C01 /* TCPProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPProbe.swift; sourceTree = "<group>"; };
+		D1F0215334CEEEB4A1CFD6D8 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		D42A8C3D213AD8216165F00F /* GatewayConnectionIssueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionIssueTests.swift; sourceTree = "<group>"; };
+		D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryModel.swift; sourceTree = "<group>"; };
+		D58B1998AD66E9AF20EE96E0 /* GatewayDiscoveryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryModelTests.swift; sourceTree = "<group>"; };
+		DC6C09027B558C741B5716E4 /* SettingsNetworkingHelpersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNetworkingHelpersTests.swift; sourceTree = "<group>"; };
+		DCBB6E6EA59787AD0D722806 /* OpenClawGatewayCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpenClawGatewayCore; path = shared/OpenClawGatewayCore; sourceTree = SOURCE_ROOT; };
+		DDE130CB8404C97E9670BBE8 /* RootCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootCanvas.swift; sourceTree = "<group>"; };
+		E473C540E933A2BF506DC297 /* StatusPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusPill.swift; sourceTree = "<group>"; };
+		E83653C8C84C139D18454E09 /* TVOSBootstrapWorkspaceSeeder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVOSBootstrapWorkspaceSeeder.swift; sourceTree = "<group>"; };
+		E8C2CFAEF0758BEE1E86FCD2 /* SwiftUIRenderSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftUIRenderSmokeTests.swift; sourceTree = "<group>"; };
+		ECEF2271743EA368FFD789D4 /* GatewayTrustPromptAlert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayTrustPromptAlert.swift; sourceTree = "<group>"; };
+		ED5628CD3C4D5D8871635E0C /* NodeDisplayName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeDisplayName.swift; sourceTree = "<group>"; };
+		F26B2D6325FC510874722C87 /* OnboardingStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStateStoreTests.swift; sourceTree = "<group>"; };
+		FA42601AC26525BC9E4A9314 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		FC4F76C076007CD19E1FC336 /* SignificantLocationMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignificantLocationMonitor.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1AC984851D5B5CB112DD030A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BD6A0D80D340B3B39212D230 /* OpenClawKit in Frameworks */,
+				1A65B013055E570B779CA6D7 /* OpenClawChatUI in Frameworks */,
+				EC85A724C972E5762995C7EF /* OpenClawProtocol in Frameworks */,
+				AFD4BF746D3EE02FE3D4AC20 /* OpenClawGatewayCore in Frameworks */,
+				602C6242398B943D221E18C4 /* SwabbleKit in Frameworks */,
+				A6D7B33E2F3A157F89346ACB /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3610A0668892CEAD40D67BC2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				745E3B3A3E1662E73428B5D5 /* SwabbleKit in Frameworks */,
+				8B39E014DFACE66FB322EE7E /* AppIntents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ED9505917EAFA488B106F8D8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B8051E35594121BFBF36ED59 /* OpenClawGatewayCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		07BAC2187EE4B6167998AF57 /* Location */ = {
+			isa = PBXGroup;
+			children = (
+				4BE42A7ABB552547E267BA49 /* LocationService.swift */,
+				FC4F76C076007CD19E1FC336 /* SignificantLocationMonitor.swift */,
+			);
+			path = Location;
+			sourceTree = "<group>";
+		};
+		17D7DDCCEEC07C03C49BF6C3 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A6679E7A02D1276F12907BAA /* NodeServiceProtocols.swift */,
+				0646662CB681D7F14F09BE49 /* NotificationService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		228BE92DBCA2AA1E14FBB877 /* Motion */ = {
+			isa = PBXGroup;
+			children = (
+				0DBC54E8F6B3A8F7DEEABCDE /* MotionService.swift */,
+			);
+			path = Motion;
+			sourceTree = "<group>";
+		};
+		2D89F02B470DAF358C28FDBF /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */,
+				752A3AFB03C448938B793441 /* CameraControllerClampTests.swift */,
+				9F49D5FFE8CD325F305CA625 /* CameraControllerErrorTests.swift */,
+				7F2714F35AC5534D61624DE9 /* DeepLinkParserTests.swift */,
+				0DBBE6AFCC0526BB57DCCC40 /* GatewayConnectionControllerTests.swift */,
+				D42A8C3D213AD8216165F00F /* GatewayConnectionIssueTests.swift */,
+				80371B3399237F68A0C90984 /* GatewayConnectionSecurityTests.swift */,
+				D58B1998AD66E9AF20EE96E0 /* GatewayDiscoveryModelTests.swift */,
+				5BAC4808473FD35D533FE487 /* GatewayEndpointIDTests.swift */,
+				B9FE9333EC4133FCF1DE1A2B /* GatewaySettingsStoreTests.swift */,
+				2DC7FAA1691E7B3C07B1CF5A /* Info.plist */,
+				77E78563884FA3B58C63BC99 /* IOSGatewayChatTransportTests.swift */,
+				33A72F8C0522730426BDBFF6 /* KeychainStoreTests.swift */,
+				0CF199C7EAB952A9C184F01B /* NodeAppModelInvokeTests.swift */,
+				F26B2D6325FC510874722C87 /* OnboardingStateStoreTests.swift */,
+				353606E551B2FB6A5E5CC1A5 /* ScreenControllerTests.swift */,
+				0B620B54B52D19495E57FC2E /* ScreenRecordServiceTests.swift */,
+				DC6C09027B558C741B5716E4 /* SettingsNetworkingHelpersTests.swift */,
+				E8C2CFAEF0758BEE1E86FCD2 /* SwiftUIRenderSmokeTests.swift */,
+				525C3664486E9F9A885860E1 /* VoiceWakeGatewaySyncTests.swift */,
+				B133D6FD077EF16A7501D3F4 /* VoiceWakeManagerExtractCommandTests.swift */,
+				ABD75353987AB7F00EF4F01F /* VoiceWakeManagerStateTests.swift */,
+				48FD65FC32B130BD96A22883 /* VoiceWakePreferencesTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		2E5526151E74043272ADA012 /* TVOS */ = {
+			isa = PBXGroup;
+			children = (
+				9AD4FD4DFDF7DDFB7BF1A608 /* TVOSBootstrapTemplateStore.swift */,
+				E83653C8C84C139D18454E09 /* TVOSBootstrapWorkspaceSeeder.swift */,
+				9F09FB0819241484F88D3B8E /* TVOSGatewayHostView.swift */,
+			);
+			path = TVOS;
+			sourceTree = "<group>";
+		};
+		3729AEB8ECE62EB13B6DF3D2 /* Contacts */ = {
+			isa = PBXGroup;
+			children = (
+				1EF8BFB0108A9F0984AB9136 /* ContactsService.swift */,
+			);
+			path = Contacts;
+			sourceTree = "<group>";
+		};
+		3881D9EA93810095C934983F /* Capabilities */ = {
+			isa = PBXGroup;
+			children = (
+				10472ACEBE57E4F7A7319E74 /* GatewayHostCapabilityMatrix.swift */,
+				76752B7B2013C10E276BD0E9 /* NodeCapabilityRouter.swift */,
+			);
+			path = Capabilities;
+			sourceTree = "<group>";
+		};
+		51250974DBD620EDABA8BA9F /* EventKit */ = {
+			isa = PBXGroup;
+			children = (
+				00C68B43BD77ABBC1CD5A447 /* EventKitAuthorization.swift */,
+			);
+			path = EventKit;
+			sourceTree = "<group>";
+		};
+		61C54471CAF74F651DD007FD /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				245EA4C215B03D9375C8E6A3 /* AnemllClaw.app */,
+				604EB3A291A1A0204EA2F6EE /* AnemllClawTests.xctest */,
+				9D1D4771ED34DED836BECF71 /* AnemllClawTV.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6C51597D608B37DF375266E9 /* Screen */ = {
+			isa = PBXGroup;
+			children = (
+				C2ECD7DE1793EC69DC59F272 /* ScreenController.swift */,
+				B5776425ED3ADD23FBCB5E99 /* ScreenRecordService.swift */,
+				BCF7044E7BCBC044133D1191 /* ScreenTab.swift */,
+				4487FF09FEBFA7858BCCA6C8 /* ScreenWebView.swift */,
+			);
+			path = Screen;
+			sourceTree = "<group>";
+		};
+		7693BE963E18BA8D09AC0F82 /* Media */ = {
+			isa = PBXGroup;
+			children = (
+				51520E24EA308E3C5B726E0B /* PhotoLibraryService.swift */,
+			);
+			path = Media;
+			sourceTree = "<group>";
+		};
+		7DD390FAFE3E24ADAD7F223E /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				6D5D77342D4441FDA65826B0 /* ChatSheet.swift */,
+				1E60B23E8BC921CA93089436 /* IOSGatewayChatTransport.swift */,
+				42885FF8616B074D24501EF4 /* LocalGatewayChatTransport.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		7E16BB41C5AC1686877092B1 /* Reminders */ = {
+			isa = PBXGroup;
+			children = (
+				3CD06A7C6EE31052A61E8A8A /* RemindersService.swift */,
+			);
+			path = Reminders;
+			sourceTree = "<group>";
+		};
+		83791D7EEA65DE31A9E67751 /* Calendar */ = {
+			isa = PBXGroup;
+			children = (
+				B1160ED9A6303F3B11500BE8 /* CalendarService.swift */,
+			);
+			path = Calendar;
+			sourceTree = "<group>";
+		};
+		8884ED5A0C96803BCA2F2FB1 /* Voice */ = {
+			isa = PBXGroup;
+			children = (
+				85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */,
+				0F8273F51124EF1835D1769D /* TalkOrbOverlay.swift */,
+				6B64A0D09B2BB34E367436A0 /* VoiceTab.swift */,
+				B275C31AB48987F3582DCFEC /* VoiceWakeManager.swift */,
+				54737144D2F85A4621F41BF8 /* VoiceWakePreferences.swift */,
+			);
+			path = Voice;
+			sourceTree = "<group>";
+		};
+		8B9335235DC1F6073E4210C1 /* Device */ = {
+			isa = PBXGroup;
+			children = (
+				94D3B96E29BB602FE72C7ECB /* DeviceStatusService.swift */,
+				19CC67A4045E72814F5D441B /* NetworkStatusService.swift */,
+				ED5628CD3C4D5D8871635E0C /* NodeDisplayName.swift */,
+			);
+			path = Device;
+			sourceTree = "<group>";
+		};
+		987C396BB8E7CA6EFB3F0775 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				DCBB6E6EA59787AD0D722806 /* OpenClawGatewayCore */,
+				99F289C12EB5D12CF7407246 /* OpenClawKit */,
+				9C02B6CF2B1287FC71E7F2B6 /* Swabble */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		9B972123A9B83E66026E6713 = {
+			isa = PBXGroup;
+			children = (
+				987C396BB8E7CA6EFB3F0775 /* Packages */,
+				F7EB1301DADD8CB3465BD5A9 /* Sources */,
+				2D89F02B470DAF358C28FDBF /* Tests */,
+				D3028AB5719313EA82C678B0 /* Frameworks */,
+				61C54471CAF74F651DD007FD /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A90733653AC840F2E37399A5 /* Status */ = {
+			isa = PBXGroup;
+			children = (
+				24D5623A5AE203BD3B947A64 /* StatusActivityBuilder.swift */,
+				E473C540E933A2BF506DC297 /* StatusPill.swift */,
+				C48B2978538D845C982D6983 /* VoiceWakeToast.swift */,
+			);
+			path = Status;
+			sourceTree = "<group>";
+		};
+		C4C91DA2104FBA6357F1C586 /* Gateway */ = {
+			isa = PBXGroup;
+			children = (
+				5267030A33EFC2DCC7ECC847 /* GatewayConnectConfig.swift */,
+				55FFD4A592F82897B9415680 /* GatewayConnectionController.swift */,
+				3E3E3A34C5AF6449F445DB88 /* GatewayConnectionIssue.swift */,
+				93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */,
+				D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */,
+				CB307D5090DC22100E34962B /* GatewayHealthMonitor.swift */,
+				28D49FF2E5A64603ADA13ED8 /* GatewayQuickSetupSheet.swift */,
+				C41B9CEFED1F633B550569EE /* GatewayServiceResolver.swift */,
+				A9F05E9BEF9B4AB2D8E609E0 /* GatewaySettingsStore.swift */,
+				2FE3C479F9B0083F14AF9689 /* GatewaySetupCode.swift */,
+				ECEF2271743EA368FFD789D4 /* GatewayTrustPromptAlert.swift */,
+				80A012480A0E1D69C91FEC14 /* KeychainStore.swift */,
+				CD8E73AE2B7E0350CD584C01 /* TCPProbe.swift */,
+				1A6CD0A9D9D2234E8CE916FD /* TVOSLocalGatewayRuntime.swift */,
+			);
+			path = Gateway;
+			sourceTree = "<group>";
+		};
+		CC3162AEEADEAFC1879F5F0F /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				41D5D938DB984538C587CE8D /* LLMProviderEditorSheet.swift */,
+				AB690F1EBD6B859024E4D26D /* LLMProviderStore.swift */,
+				9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */,
+				BF37761CF83B854A13E1D4C6 /* SettingsNetworkingHelpers.swift */,
+				CB1FF6F852810637578F7422 /* SettingsTab.swift */,
+				4DEDB68AAD35FDF6FEA1FDFD /* VoiceWakeWordsSettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		D16BC91B0378CDC187003367 /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				CB6CF40216BE16DC6AB1E0DC /* NodeAppModel.swift */,
+				A01149CF1262BF8D3547DC46 /* NodeAppModel+Canvas.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		D3028AB5719313EA82C678B0 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				FA42601AC26525BC9E4A9314 /* AppIntents.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		E0524027D3BBE47D649E0DC8 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				52207D3CB1045988BADDDCA0 /* GatewayOnboardingView.swift */,
+				A7650974C160E3E71890426F /* OnboardingStateStore.swift */,
+				495D8F966645E2A1D22611D7 /* OnboardingWizardView.swift */,
+				26342578D03944B3C4DBB292 /* QRScannerView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		E9C7E3F5A6234E463F3FCFC3 /* Camera */ = {
+			isa = PBXGroup;
+			children = (
+				B484D7234760F4513CC429EB /* CameraController.swift */,
+			);
+			path = Camera;
+			sourceTree = "<group>";
+		};
+		F7EB1301DADD8CB3465BD5A9 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				00A7E77FE48968FD0A087C9C /* Assets.xcassets */,
+				C52A48EE4B708752317169C6 /* Info-tvOS.plist */,
+				50106F8F8E7F88F57E7E3291 /* Info.plist */,
+				781B2850D3375A80938607A0 /* OpenClawApp.swift */,
+				DDE130CB8404C97E9670BBE8 /* RootCanvas.swift */,
+				9746A588F07C4DA9B542D54A /* RootTabs.swift */,
+				D1F0215334CEEEB4A1CFD6D8 /* RootView.swift */,
+				02E6E54C0C87FD8FA332C7EE /* SessionKey.swift */,
+				83791D7EEA65DE31A9E67751 /* Calendar */,
+				E9C7E3F5A6234E463F3FCFC3 /* Camera */,
+				3881D9EA93810095C934983F /* Capabilities */,
+				7DD390FAFE3E24ADAD7F223E /* Chat */,
+				3729AEB8ECE62EB13B6DF3D2 /* Contacts */,
+				8B9335235DC1F6073E4210C1 /* Device */,
+				51250974DBD620EDABA8BA9F /* EventKit */,
+				C4C91DA2104FBA6357F1C586 /* Gateway */,
+				07BAC2187EE4B6167998AF57 /* Location */,
+				7693BE963E18BA8D09AC0F82 /* Media */,
+				D16BC91B0378CDC187003367 /* Model */,
+				228BE92DBCA2AA1E14FBB877 /* Motion */,
+				E0524027D3BBE47D649E0DC8 /* Onboarding */,
+				7E16BB41C5AC1686877092B1 /* Reminders */,
+				6C51597D608B37DF375266E9 /* Screen */,
+				17D7DDCCEEC07C03C49BF6C3 /* Services */,
+				CC3162AEEADEAFC1879F5F0F /* Settings */,
+				A90733653AC840F2E37399A5 /* Status */,
+				2E5526151E74043272ADA012 /* TVOS */,
+				8884ED5A0C96803BCA2F2FB1 /* Voice */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		48353276A42B7316CD308F2A /* AnemllClaw */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 664BFF6FB02ACE45FC2697E3 /* Build configuration list for PBXNativeTarget "AnemllClaw" */;
+			buildPhases = (
+				200164F8A77D5C341DDA8DF1 /* SwiftFormat (lint) */,
+				D23EC33C398013BE08750985 /* SwiftLint */,
+				5C082E8974FB4938F3928117 /* Sources */,
+				CEEFC1819052DB4677A72108 /* Resources */,
+				1AC984851D5B5CB112DD030A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AnemllClaw;
+			packageProductDependencies = (
+				5993EAABC0A4D42485F1F630 /* OpenClawKit */,
+				6AEB17BCFB008A155A307B8C /* OpenClawChatUI */,
+				5901CD5BAA72A8EE9A965482 /* OpenClawProtocol */,
+				EE9E5F3891FDAA45C71D672C /* OpenClawGatewayCore */,
+				9261A8221DD14164526D4DFD /* SwabbleKit */,
+			);
+			productName = AnemllClaw;
+			productReference = 245EA4C215B03D9375C8E6A3 /* AnemllClaw.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B14D5F4DCC0F9A1A2B3C1928 /* AnemllClawTV */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 895D46E797018479D5F407CD /* Build configuration list for PBXNativeTarget "AnemllClawTV" */;
+			buildPhases = (
+				863F0AE3779251983C9AD38C /* SwiftFormat (lint) */,
+				10A84BCBC74EBCBDAA4B21C7 /* SwiftLint */,
+				C263F9649DB29FED8BC174E0 /* Sources */,
+				1EA2359A12CF61C6785C3C0B /* Resources */,
+				ED9505917EAFA488B106F8D8 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AnemllClawTV;
+			packageProductDependencies = (
+				529C57C81CFB4B6F0EE7C780 /* OpenClawGatewayCore */,
+			);
+			productName = AnemllClawTV;
+			productReference = 9D1D4771ED34DED836BECF71 /* AnemllClawTV.app */;
+			productType = "com.apple.product-type.application";
+		};
+		DF271473C37C6E8D313540CE /* AnemllClawTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1307BE82436CFB8E778AA45F /* Build configuration list for PBXNativeTarget "AnemllClawTests" */;
+			buildPhases = (
+				E5C19AB41256F5CB19CAF3CB /* Sources */,
+				3610A0668892CEAD40D67BC2 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9F615681FDFCD934B09C94C1 /* PBXTargetDependency */,
+			);
+			name = AnemllClawTests;
+			packageProductDependencies = (
+				9FE8E539EFB2EDC105D44FC4 /* SwabbleKit */,
+			);
+			productName = AnemllClawTests;
+			productReference = 604EB3A291A1A0204EA2F6EE /* AnemllClawTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C8C7044880C1DF2EC732AA92 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 4AB44C06AB322FFC46A3F958 /* Build configuration list for PBXProject "AnemllClaw" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 9B972123A9B83E66026E6713;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				9996850C0ED35D428050E520 /* XCLocalSwiftPackageReference "shared/OpenClawGatewayCore" */,
+				071281F6727DBD0B0C2ED1C9 /* XCLocalSwiftPackageReference "shared/OpenClawKit" */,
+				439301F429F884B84347E87C /* XCLocalSwiftPackageReference "../../Swabble" */,
+			);
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				48353276A42B7316CD308F2A /* AnemllClaw */,
+				B14D5F4DCC0F9A1A2B3C1928 /* AnemllClawTV */,
+				DF271473C37C6E8D313540CE /* AnemllClawTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1EA2359A12CF61C6785C3C0B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2299E660A9EA36FCC5CE3AFC /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CEEFC1819052DB4677A72108 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				77C30743E9FD10AD2A204368 /* Assets.xcassets in Resources */,
+				AB2AFE704902A0DC2D36E5CA /* Info-tvOS.plist in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		10A84BCBC74EBCBDAA4B21C7 /* SwiftLint */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/SwiftSources.input.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = SwiftLint;
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif ! command -v swiftlint >/dev/null 2>&1; then\n  echo \"error: swiftlint not found (brew install swiftlint)\" >&2\n  exit 1\nfi\nswiftlint lint --config \"$SRCROOT/.swiftlint.yml\" --use-script-input-file-lists\n";
+		};
+		200164F8A77D5C341DDA8DF1 /* SwiftFormat (lint) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/SwiftSources.input.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "SwiftFormat (lint)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif ! command -v swiftformat >/dev/null 2>&1; then\n  echo \"error: swiftformat not found (brew install swiftformat)\" >&2\n  exit 1\nfi\nswiftformat --lint --config \"$SRCROOT/../../.swiftformat\" \\\n  --filelist \"$SRCROOT/SwiftSources.input.xcfilelist\"\n";
+		};
+		863F0AE3779251983C9AD38C /* SwiftFormat (lint) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/SwiftSources.input.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "SwiftFormat (lint)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif ! command -v swiftformat >/dev/null 2>&1; then\n  echo \"error: swiftformat not found (brew install swiftformat)\" >&2\n  exit 1\nfi\nswiftformat --lint --config \"$SRCROOT/../../.swiftformat\" \\\n  --filelist \"$SRCROOT/SwiftSources.input.xcfilelist\"\n";
+		};
+		D23EC33C398013BE08750985 /* SwiftLint */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/SwiftSources.input.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = SwiftLint;
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif ! command -v swiftlint >/dev/null 2>&1; then\n  echo \"error: swiftlint not found (brew install swiftlint)\" >&2\n  exit 1\nfi\nswiftlint lint --config \"$SRCROOT/.swiftlint.yml\" --use-script-input-file-lists\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5C082E8974FB4938F3928117 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ED5947FF5E5A30FC0EF407D9 /* CalendarService.swift in Sources */,
+				B9185FB98738CA42D37CD7BE /* CameraController.swift in Sources */,
+				E70E697DADF232EC5E62845F /* ChatSheet.swift in Sources */,
+				377F320001C9538FCB5D34D3 /* ContactsService.swift in Sources */,
+				668BD531A954E8C494D914D4 /* DeviceStatusService.swift in Sources */,
+				C09D60578A642B60DBA777A2 /* EventKitAuthorization.swift in Sources */,
+				0125CFAAE4B615327F5F8347 /* GatewayConnectConfig.swift in Sources */,
+				24704918A0CDD1FBADFA872E /* GatewayConnectionController.swift in Sources */,
+				C52C734E98106E88172CAF35 /* GatewayConnectionIssue.swift in Sources */,
+				6DF452AC134CB276EF520E96 /* GatewayDiscoveryDebugLogView.swift in Sources */,
+				17B9D8E2539BE8E29ED68E12 /* GatewayDiscoveryModel.swift in Sources */,
+				360AECB7D974C076D6DFFA83 /* GatewayHealthMonitor.swift in Sources */,
+				49CD0B4AA7CFCE012AE77F11 /* GatewayHostCapabilityMatrix.swift in Sources */,
+				DDD22D7CECAE5A9A47781B94 /* GatewayOnboardingView.swift in Sources */,
+				8974F849586C5F62C99AE427 /* GatewayQuickSetupSheet.swift in Sources */,
+				638127EB5447F45579309024 /* GatewayServiceResolver.swift in Sources */,
+				4AA05C9C0B83ADCA472AE476 /* GatewaySettingsStore.swift in Sources */,
+				92391E7FB584DBD954600CF5 /* GatewaySetupCode.swift in Sources */,
+				A5733B5EB94111DCBE4F985A /* GatewayTrustPromptAlert.swift in Sources */,
+				3EDBFFFA598ADEC7056417FC /* IOSGatewayChatTransport.swift in Sources */,
+				271F0EFDD58517F4D71FC862 /* KeychainStore.swift in Sources */,
+				F05A047562DEC8811997CEFC /* LLMProviderEditorSheet.swift in Sources */,
+				B906525826B4CFB9313778C6 /* LLMProviderStore.swift in Sources */,
+				5DC129A120218C65EBD08016 /* LocalGatewayChatTransport.swift in Sources */,
+				87AE8577109135BE29D07BE4 /* LocationService.swift in Sources */,
+				8937D51FF67E3013EDCC458D /* MotionService.swift in Sources */,
+				6294BEDC24DD80E3ACCB2997 /* NetworkStatusService.swift in Sources */,
+				2413BAA6338793A5DEBD8945 /* NodeAppModel+Canvas.swift in Sources */,
+				3FB24756F7F51DF44A779BE3 /* NodeAppModel.swift in Sources */,
+				CA28B82980ECBF66D24C86AE /* NodeCapabilityRouter.swift in Sources */,
+				E867FCBC351F61786F110AD1 /* NodeDisplayName.swift in Sources */,
+				A5CB43CA542BEB76E8322B44 /* NodeServiceProtocols.swift in Sources */,
+				2B3B9E094CD5BAFCAEC73BC0 /* NotificationService.swift in Sources */,
+				D499441E0DB2726B7445AE9A /* OnboardingStateStore.swift in Sources */,
+				3D822E6EE38FE2FC255A8E31 /* OnboardingWizardView.swift in Sources */,
+				E20C17321985932F751F96E4 /* OpenClawApp.swift in Sources */,
+				C35B0FC62CD0307BC7F62A8B /* OpenClawBackupManager.swift in Sources */,
+				31DD683C44072EBDA9FF2D93 /* PhotoLibraryService.swift in Sources */,
+				C06E0CC173F12BBA78A70ECA /* QRScannerView.swift in Sources */,
+				8D6BDA0A2B023EFEB2F73507 /* RemindersService.swift in Sources */,
+				1270A41C13BA983903BF413A /* RootCanvas.swift in Sources */,
+				1B22917CE2E98AB0478EF1E4 /* RootTabs.swift in Sources */,
+				CC8D7545EE7B23D2132519D0 /* RootView.swift in Sources */,
+				FA7584774D361F6264882F5C /* ScreenController.swift in Sources */,
+				FA4C8045CBD6E74B7FA901C2 /* ScreenRecordService.swift in Sources */,
+				F3D936CB3B1A3BE489947F96 /* ScreenTab.swift in Sources */,
+				55B73F9447429049E119F18A /* ScreenWebView.swift in Sources */,
+				845A6B76A13AEFE16F22FC8B /* SessionKey.swift in Sources */,
+				BCF0959640C6C61835EFDBEA /* SettingsNetworkingHelpers.swift in Sources */,
+				0F7FC7EFF2DA12BB8244B5E0 /* SettingsTab.swift in Sources */,
+				F3B93A2E2912C8ED6251F142 /* SignificantLocationMonitor.swift in Sources */,
+				5B3FFC50CE121BC2BA55D9A2 /* StatusActivityBuilder.swift in Sources */,
+				40EA517862C4FCE286CF7474 /* StatusPill.swift in Sources */,
+				A856FB74B5D8B33C63E3D058 /* TCPProbe.swift in Sources */,
+				1F692D9B0754F80623A460A2 /* TVOSBootstrapTemplateStore.swift in Sources */,
+				1F65944EB030C820975E87E1 /* TVOSBootstrapWorkspaceSeeder.swift in Sources */,
+				1AB0339366DB438149E660E6 /* TVOSGatewayHostView.swift in Sources */,
+				ACED365FE5D0BE13F97B0383 /* TVOSLocalGatewayRuntime.swift in Sources */,
+				EB48B22338AFAEDB182DA5FB /* TalkModeManager.swift in Sources */,
+				BD2E4F5D544408D0DB6D28FC /* TalkOrbOverlay.swift in Sources */,
+				D2B995515778687A1951DA63 /* VoiceTab.swift in Sources */,
+				E8E2D2F3DB51247F40930E89 /* VoiceWakeManager.swift in Sources */,
+				DD4DE0B1CC777342EA05A4EC /* VoiceWakePreferences.swift in Sources */,
+				DDA612588ED5DF9588AE82FA /* VoiceWakeToast.swift in Sources */,
+				A3C00F4E66E435711ABE537C /* VoiceWakeWordsSettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C263F9649DB29FED8BC174E0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				826261AAA058812A0D324075 /* KeychainStore.swift in Sources */,
+				26478404F5E02B602B3224C0 /* OpenClawApp.swift in Sources */,
+				412A38DE49EE913C89F37EC5 /* OpenClawBackupManager.swift in Sources */,
+				163CE62CDFF73DF1B6776752 /* TVOSBootstrapTemplateStore.swift in Sources */,
+				4AE093E9BBFFD0CCB8F0AD82 /* TVOSBootstrapWorkspaceSeeder.swift in Sources */,
+				90EE2A048146804B30B42C43 /* TVOSGatewayHostView.swift in Sources */,
+				C41953D00154CB821A446938 /* TVOSLocalGatewayRuntime.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5C19AB41256F5CB19CAF3CB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CA3922A7B56668B136A70330 /* AppCoverageTests.swift in Sources */,
+				2DD6BD2A6A03CC8187B88FC2 /* CameraControllerClampTests.swift in Sources */,
+				6A86D9849703609941F8612F /* CameraControllerErrorTests.swift in Sources */,
+				0AFB5E22C611724B355EEB29 /* DeepLinkParserTests.swift in Sources */,
+				4970C3C8C4B267119BF5C6D5 /* GatewayConnectionControllerTests.swift in Sources */,
+				CB99CB44A2AABA542AF46E4D /* GatewayConnectionIssueTests.swift in Sources */,
+				5D23CA72C97195B2CDA989D7 /* GatewayConnectionSecurityTests.swift in Sources */,
+				0C3C9895F7D3E623B0C515C4 /* GatewayDiscoveryModelTests.swift in Sources */,
+				C3EC71B9D200C25D6BBCB18D /* GatewayEndpointIDTests.swift in Sources */,
+				D19D1086BEBEA9D812C48008 /* GatewaySettingsStoreTests.swift in Sources */,
+				D13697C185596E202D625B2A /* IOSGatewayChatTransportTests.swift in Sources */,
+				BEC889A5048C1556E02140FA /* KeychainStoreTests.swift in Sources */,
+				F4D53B3B49E5DA4A1ABC0BAA /* NodeAppModelInvokeTests.swift in Sources */,
+				B92BCCAF30D2AF4EB92B5C78 /* OnboardingStateStoreTests.swift in Sources */,
+				74FFA391ED65B74C8D67CADB /* ScreenControllerTests.swift in Sources */,
+				BAC248B617C96BF6B017F605 /* ScreenRecordServiceTests.swift in Sources */,
+				9A051CB1012C9218E52943A5 /* SettingsNetworkingHelpersTests.swift in Sources */,
+				857AAE554568F05C90E3638E /* SwiftUIRenderSmokeTests.swift in Sources */,
+				AD6E639AB739DFB9A6F787BB /* VoiceWakeGatewaySyncTests.swift in Sources */,
+				7BBD7B0EFCEAE58BCD7ECA8A /* VoiceWakeManagerExtractCommandTests.swift in Sources */,
+				1930106458BA948E0089A8B6 /* VoiceWakeManagerStateTests.swift in Sources */,
+				1EF072776197F4EF7BA4CD2D /* VoiceWakePreferencesTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		9F615681FDFCD934B09C94C1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 48353276A42B7316CD308F2A /* AnemllClaw */;
+			targetProxy = FF31A66A0231C5EFCCC419FE /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2206036C852937BD9EF51886 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = ARRY5366Y3;
+				ENABLE_APPINTENTS_METADATA = NO;
+				INFOPLIST_FILE = "Sources/Info-tvOS.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.tvos;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = appletvos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Debug;
+		};
+		44E4EDDDF14A3B6D2FEA561D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TVOS_DEPLOYMENT_TARGET = 18.0;
+			};
+			name = Debug;
+		};
+		6DE3EF0BCEBB9C8ACF2080CB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TVOS_DEPLOYMENT_TARGET = 18.0;
+			};
+			name = Release;
+		};
+		882CEE45D3945077F9668C15 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = ARRY5366Y3;
+				ENABLE_APPINTENTS_METADATA = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.ios;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D0AF3C463BC735D433E53565 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = ARRY5366Y3;
+				ENABLE_APPINTENTS_METADATA = NO;
+				INFOPLIST_FILE = "Sources/Info-tvOS.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.tvos;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = appletvos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Release;
+		};
+		E5AE817194EAA648D9C72A09 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.ios.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnemllClaw.app/AnemllClaw";
+			};
+			name = Debug;
+		};
+		E65014EBBC04B0F361455889 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				INFOPLIST_FILE = Tests/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.ios.tests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AnemllClaw.app/AnemllClaw";
+			};
+			name = Release;
+		};
+		EB15DBA06C85324076E2086A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = TQQH8VZ67M;
+				ENABLE_APPINTENTS_METADATA = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = anemll.claw.ios;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1307BE82436CFB8E778AA45F /* Build configuration list for PBXNativeTarget "AnemllClawTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5AE817194EAA648D9C72A09 /* Debug */,
+				E65014EBBC04B0F361455889 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4AB44C06AB322FFC46A3F958 /* Build configuration list for PBXProject "AnemllClaw" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				44E4EDDDF14A3B6D2FEA561D /* Debug */,
+				6DE3EF0BCEBB9C8ACF2080CB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		664BFF6FB02ACE45FC2697E3 /* Build configuration list for PBXNativeTarget "AnemllClaw" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				882CEE45D3945077F9668C15 /* Debug */,
+				EB15DBA06C85324076E2086A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		895D46E797018479D5F407CD /* Build configuration list for PBXNativeTarget "AnemllClawTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2206036C852937BD9EF51886 /* Debug */,
+				D0AF3C463BC735D433E53565 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		071281F6727DBD0B0C2ED1C9 /* XCLocalSwiftPackageReference "shared/OpenClawKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = shared/OpenClawKit;
+		};
+		439301F429F884B84347E87C /* XCLocalSwiftPackageReference "../../Swabble" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../Swabble;
+		};
+		9996850C0ED35D428050E520 /* XCLocalSwiftPackageReference "shared/OpenClawGatewayCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = shared/OpenClawGatewayCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		529C57C81CFB4B6F0EE7C780 /* OpenClawGatewayCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OpenClawGatewayCore;
+		};
+		5901CD5BAA72A8EE9A965482 /* OpenClawProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OpenClawProtocol;
+		};
+		5993EAABC0A4D42485F1F630 /* OpenClawKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OpenClawKit;
+		};
+		6AEB17BCFB008A155A307B8C /* OpenClawChatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OpenClawChatUI;
+		};
+		9261A8221DD14164526D4DFD /* SwabbleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwabbleKit;
+		};
+		9FE8E539EFB2EDC105D44FC4 /* SwabbleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwabbleKit;
+		};
+		EE9E5F3891FDAA45C71D672C /* OpenClawGatewayCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = OpenClawGatewayCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = C8C7044880C1DF2EC732AA92 /* Project object */;
+}
