@@ -26,6 +26,8 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
     public let bootstrapConfig: GatewayBootstrapConfig
     public let enableLocalSafeTools: Bool
     public let enableLocalFileTools: Bool
+    public let enableLocalDeviceTools: Bool
+    public let deviceToolBridge: (any GatewayDeviceToolBridge)?
     public let llmToolCallingMode: GatewayLocalLLMToolCallingMode
     public let enableAutoProfileRewrite: Bool
     public let adminBridge: (any GatewayLocalMethodRouterAdminBridge)?
@@ -40,6 +42,8 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         bootstrapConfig: GatewayBootstrapConfig = .default,
         enableLocalSafeTools: Bool = true,
         enableLocalFileTools: Bool = true,
+        enableLocalDeviceTools: Bool = false,
+        deviceToolBridge: (any GatewayDeviceToolBridge)? = nil,
         llmToolCallingMode: GatewayLocalLLMToolCallingMode = .auto,
         enableAutoProfileRewrite: Bool = false,
         adminBridge: (any GatewayLocalMethodRouterAdminBridge)? = nil)
@@ -53,6 +57,8 @@ public struct GatewayLocalMethodRouterConfig: Sendable {
         self.bootstrapConfig = bootstrapConfig
         self.enableLocalSafeTools = enableLocalSafeTools
         self.enableLocalFileTools = enableLocalFileTools
+        self.enableLocalDeviceTools = enableLocalDeviceTools
+        self.deviceToolBridge = deviceToolBridge
         self.llmToolCallingMode = llmToolCallingMode
         self.enableAutoProfileRewrite = enableAutoProfileRewrite
         self.adminBridge = adminBridge
@@ -414,6 +420,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             hostLabel: config.hostLabel,
             enableLocalSafeTools: config.enableLocalSafeTools,
             enableLocalFileTools: config.enableLocalFileTools,
+            enableLocalDeviceTools: config.enableLocalDeviceTools,
+            deviceToolBridge: config.deviceToolBridge,
             telegramConfig: config.telegramConfig,
             workspaceRoot: Self.resolveWorkspaceRootURL(config.bootstrapConfig),
             session: session)
@@ -825,7 +833,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     upstreamForwarder: self.config.upstreamForwarder,
                     telegramConfig: self.config.telegramConfig,
                     enableLocalSafeTools: self.config.enableLocalSafeTools,
-                    enableLocalFileTools: self.config.enableLocalFileTools)
+                    enableLocalFileTools: self.config.enableLocalFileTools,
+                    enableLocalDeviceTools: self.config.enableLocalDeviceTools,
+                    deviceToolBridge: self.config.deviceToolBridge)
 
                 let resultText: String
                 let ok: Bool
@@ -1207,6 +1217,181 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                         ]),
                         "required": .array([.string("input")]),
                     ])))
+        }
+
+        // -- Device tools (native iOS capabilities via bridge) --
+        if self.config.enableLocalDeviceTools, let bridge = self.config.deviceToolBridge {
+            let supported = bridge.supportedCommands()
+
+            if supported.contains("reminders.list") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "reminders.list",
+                    description: "List iOS reminders. Returns title, due date, completion status.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "status": .object([
+                                "type": .string("string"),
+                                "description": .string("Filter: incomplete, completed, or all"),
+                            ]),
+                            "limit": .object(["type": .string("integer")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("reminders.add") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "reminders.add",
+                    description: "Create a new iOS reminder",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "title": .object(["type": .string("string")]),
+                            "dueISO": .object([
+                                "type": .string("string"),
+                                "description": .string("ISO-8601 due date"),
+                            ]),
+                            "notes": .object(["type": .string("string")]),
+                            "listName": .object(["type": .string("string")]),
+                        ]),
+                        "required": .array([.string("title")]),
+                    ])))
+            }
+            if supported.contains("calendar.events") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "calendar.events",
+                    description: "Query iOS calendar events in a date range",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "startISO": .object([
+                                "type": .string("string"),
+                                "description": .string("ISO-8601 start (default: now)"),
+                            ]),
+                            "endISO": .object([
+                                "type": .string("string"),
+                                "description": .string("ISO-8601 end (default: +7 days)"),
+                            ]),
+                            "limit": .object(["type": .string("integer")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("calendar.add") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "calendar.add",
+                    description: "Create a new iOS calendar event",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "title": .object(["type": .string("string")]),
+                            "startISO": .object(["type": .string("string")]),
+                            "endISO": .object(["type": .string("string")]),
+                            "location": .object(["type": .string("string")]),
+                            "notes": .object(["type": .string("string")]),
+                            "isAllDay": .object(["type": .string("boolean")]),
+                        ]),
+                        "required": .array([.string("title"), .string("startISO"), .string("endISO")]),
+                    ])))
+            }
+            if supported.contains("contacts.search") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "contacts.search",
+                    description: "Search iOS contacts by name",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "query": .object(["type": .string("string")]),
+                            "limit": .object(["type": .string("integer")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("contacts.add") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "contacts.add",
+                    description: "Add a new iOS contact",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "givenName": .object(["type": .string("string")]),
+                            "familyName": .object(["type": .string("string")]),
+                            "phoneNumbers": .object([
+                                "type": .string("array"),
+                                "items": .object(["type": .string("string")]),
+                            ]),
+                            "emails": .object([
+                                "type": .string("array"),
+                                "items": .object(["type": .string("string")]),
+                            ]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("location.get") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "location.get",
+                    description: "Get current GPS coordinates of this device",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "desiredAccuracy": .object([
+                                "type": .string("string"),
+                                "description": .string("coarse, balanced, or precise"),
+                            ]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("photos.latest") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "photos.latest",
+                    description: "Get recent photos from the device photo library as base64 JPEG",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "limit": .object(["type": .string("integer")]),
+                            "maxWidth": .object(["type": .string("integer")]),
+                            "quality": .object(["type": .string("number")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("camera.snap") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "camera.snap",
+                    description: "Take a photo with the device camera (requires foreground)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "facing": .object([
+                                "type": .string("string"),
+                                "description": .string("back or front"),
+                            ]),
+                            "maxWidth": .object(["type": .string("integer")]),
+                            "quality": .object(["type": .string("number")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("motion.activity") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "motion.activity",
+                    description: "Query device motion activity history (walking, running, driving)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "startISO": .object(["type": .string("string")]),
+                            "endISO": .object(["type": .string("string")]),
+                            "limit": .object(["type": .string("integer")]),
+                        ]),
+                    ])))
+            }
+            if supported.contains("motion.pedometer") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "motion.pedometer",
+                    description: "Query pedometer data (steps, distance, floors)",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "startISO": .object(["type": .string("string")]),
+                            "endISO": .object(["type": .string("string")]),
+                        ]),
+                    ])))
+            }
         }
 
         return tools

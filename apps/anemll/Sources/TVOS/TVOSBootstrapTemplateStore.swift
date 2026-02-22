@@ -9,6 +9,11 @@ enum TVOSBootstrapTemplateStore {
         "SOUL.md",
         "TOOLS.md",
         "skills/JS_NEWS.md",
+        "skills/weather/SKILL.md",
+        "skills/summarize/SKILL.md",
+        "skills/notion/SKILL.md",
+        "skills/trello/SKILL.md",
+        "skills/blogwatcher/SKILL.md",
         "IDENTITY.md",
         "USER.md",
         "HEARTBEAT.md",
@@ -561,6 +566,305 @@ enum TVOSBootstrapTemplateStore {
         ---
 
         _Good luck out there. Make it count._
+        """#,
+        "skills/weather/SKILL.md": #"""
+        # Weather
+
+        Two free services, no API keys needed. Use the `network.fetch` tool to call them.
+
+        ## wttr.in (primary)
+
+        Quick one-liner — returns plain text:
+
+        ```json
+        network.fetch({ "url": "https://wttr.in/London?format=3" })
+        ```
+        Output: `London: ⛅️ +8°C`
+
+        Compact format:
+
+        ```json
+        network.fetch({ "url": "https://wttr.in/London?format=%l:+%c+%t+%h+%w" })
+        ```
+        Output: `London: ⛅️ +8°C 71% ↙5km/h`
+
+        Full forecast:
+
+        ```json
+        network.fetch({ "url": "https://wttr.in/London?T" })
+        ```
+
+        Format codes: `%c` condition · `%t` temp · `%h` humidity · `%w` wind · `%l` location · `%m` moon
+
+        Tips:
+
+        - URL-encode spaces: `wttr.in/New+York`
+        - Airport codes: `wttr.in/JFK`
+        - Units: `?m` (metric) `?u` (USCS)
+        - Today only: `?1` · Current only: `?0`
+
+        ## Open-Meteo (fallback, JSON)
+
+        Free, no key, good for programmatic use:
+
+        ```json
+        network.fetch({ "url": "https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.12&current_weather=true" })
+        ```
+
+        Find coordinates for a city, then query. Returns JSON with temp, windspeed, weathercode.
+
+        Docs: https://open-meteo.com/en/docs
+        """#,
+        "skills/summarize/SKILL.md": #"""
+        # Summarize
+
+        Extract and summarize content from URLs and web pages.
+
+        ## When to use
+
+        Use this skill when the user asks:
+
+        - "what's this link/video about?"
+        - "summarize this URL/article"
+        - "what does this page say?"
+
+        ## How to summarize on iOS
+
+        Use the available web tools in order of preference:
+
+        ### 1. web.render (best for JS-heavy sites)
+
+        ```json
+        web.render({ "url": "https://example.com/article", "maxChars": 8000 })
+        ```
+
+        Returns rendered text with title, links, and metadata. Works on JavaScript-rendered pages.
+
+        ### 2. web.extract (for cleanup/normalization)
+
+        ```json
+        web.extract({ "url": "https://example.com/article", "maxChars": 8000 })
+        ```
+
+        Normalizes page content into clean title/text/links format.
+
+        ### 3. network.fetch (for APIs and plain text)
+
+        ```json
+        network.fetch({ "url": "https://example.com/api/content" })
+        ```
+
+        Best for RSS feeds, APIs, and plain text endpoints.
+
+        ## Workflow
+
+        1. Try `web.render` first — handles most modern websites
+        2. If the result needs cleanup, pipe through `web.extract`
+        3. Read the extracted text and provide a concise summary
+        4. If content is very long, summarize the key points and offer to expand on specific sections
+
+        ## Tips
+
+        - For news sites, prefer `web.render` over `network.fetch`
+        - RSS feeds work well with plain `network.fetch`
+        - Always mention the source URL in your summary
+        - If the page is paywalled, let the user know
+        """#,
+        "skills/notion/SKILL.md": #"""
+        # Notion
+
+        Use the Notion API to create/read/update pages, data sources (databases), and blocks.
+
+        ## Setup
+
+        The user needs a Notion API key (starts with `ntn_` or `secret_`). Ask for it if not provided.
+
+        1. Create an integration at https://notion.so/my-integrations
+        2. Copy the API key
+        3. Share target pages/databases with the integration
+
+        ## API Basics
+
+        All requests use `network.fetch` with authorization headers:
+
+        ```json
+        network.fetch({
+          "url": "https://api.notion.com/v1/search",
+          "headers": {
+            "Authorization": "Bearer USER_NOTION_KEY",
+            "Notion-Version": "2025-09-03",
+            "Content-Type": "application/json"
+          }
+        })
+        ```
+
+        > **Note:** Replace `USER_NOTION_KEY` with the user's API key. Ask for it if needed.
+
+        > **Note:** `network.fetch` currently supports GET requests. For creating or updating content (POST/PATCH), use the upstream gateway if connected.
+
+        ## Read Operations (GET — works on iOS)
+
+        **Get a page:**
+        ```
+        GET https://api.notion.com/v1/pages/{page_id}
+        ```
+
+        **Get page content (blocks):**
+        ```
+        GET https://api.notion.com/v1/blocks/{page_id}/children
+        ```
+
+        **Search for pages and data sources:**
+        ```
+        POST https://api.notion.com/v1/search  (requires upstream gateway)
+        ```
+
+        ## Write Operations (requires upstream gateway)
+
+        Creating pages, updating properties, and adding blocks require POST/PATCH requests. These need an upstream gateway connection.
+
+        ## Property Types
+
+        Common property formats:
+        - **Title:** `{"title": [{"text": {"content": "..."}}]}`
+        - **Rich text:** `{"rich_text": [{"text": {"content": "..."}}]}`
+        - **Select:** `{"select": {"name": "Option"}}`
+        - **Date:** `{"date": {"start": "2024-01-15"}}`
+        - **Checkbox:** `{"checkbox": true}`
+        - **Number:** `{"number": 42}`
+        - **URL:** `{"url": "https://..."}`
+
+        ## Notes
+
+        - Page/database IDs are UUIDs (with or without dashes)
+        - Rate limit: ~3 requests/second average
+        - The Notion-Version header is required (use `2025-09-03`)
+        """#,
+        "skills/trello/SKILL.md": #"""
+        # Trello
+
+        Manage Trello boards, lists, and cards via the Trello REST API.
+
+        ## Setup
+
+        The user needs two credentials:
+        1. API key: https://trello.com/app-key
+        2. Token: click "Token" link on that page
+
+        Ask the user for both if not provided.
+
+        ## Read Operations (GET — works on iOS)
+
+        All GET requests use `network.fetch`:
+
+        **List boards:**
+        ```json
+        network.fetch({
+          "url": "https://api.trello.com/1/members/me/boards?key=USER_API_KEY&token=USER_TOKEN&fields=name,id"
+        })
+        ```
+
+        **List lists in a board:**
+        ```json
+        network.fetch({
+          "url": "https://api.trello.com/1/boards/{boardId}/lists?key=USER_API_KEY&token=USER_TOKEN"
+        })
+        ```
+
+        **List cards in a list:**
+        ```json
+        network.fetch({
+          "url": "https://api.trello.com/1/lists/{listId}/cards?key=USER_API_KEY&token=USER_TOKEN"
+        })
+        ```
+
+        **Find a board by name:**
+        ```json
+        network.fetch({
+          "url": "https://api.trello.com/1/members/me/boards?key=USER_API_KEY&token=USER_TOKEN"
+        })
+        ```
+        Then filter results by name.
+
+        > **Note:** Replace `USER_API_KEY` and `USER_TOKEN` with the user's credentials.
+
+        ## Write Operations (require upstream gateway)
+
+        Creating cards, moving cards, adding comments, and archiving require POST/PUT requests. These need an upstream gateway connection.
+
+        ## Notes
+
+        - Board/List/Card IDs can be found in Trello URLs or via the list commands
+        - Keep API key and token secret
+        - Rate limits: 300 requests per 10 seconds per API key
+        """#,
+        "skills/blogwatcher/SKILL.md": #"""
+        # Blog Watcher
+
+        Monitor blogs and RSS/Atom feeds for updates using `network.fetch` and `web.render`.
+
+        ## When to use
+
+        Use this skill when the user asks:
+        - "check my blogs for updates"
+        - "what's new on [blog]?"
+        - "subscribe to this RSS feed"
+        - "monitor this blog"
+
+        ## How to check feeds on iOS
+
+        ### RSS/Atom feeds (most common)
+
+        Fetch the feed URL directly:
+
+        ```json
+        network.fetch({ "url": "https://example.com/feed" })
+        ```
+
+        Parse the XML response to extract article titles, dates, and links.
+
+        Common feed URL patterns:
+        - `/feed` or `/feed/` (WordPress)
+        - `/rss` or `/rss.xml`
+        - `/atom.xml`
+        - `/index.xml`
+
+        ### Blog pages without RSS
+
+        Use `web.render` to extract content:
+
+        ```json
+        web.render({ "url": "https://example.com/blog", "maxChars": 8000 })
+        ```
+
+        ### Discovering feed URLs
+
+        Try these in order:
+        1. `network.fetch({ "url": "https://example.com/feed" })`
+        2. `web.render({ "url": "https://example.com" })` — look for `<link rel="alternate" type="application/rss+xml">` in metadata
+        3. Common patterns: `/feed`, `/rss`, `/atom.xml`, `/index.xml`
+
+        ## Popular feed URLs
+
+        - xkcd: `https://xkcd.com/rss.xml`
+        - Hacker News: `https://hnrss.org/frontpage`
+        - TechCrunch: `https://techcrunch.com/feed/`
+        - The Verge: `https://www.theverge.com/rss/index.xml`
+        - Ars Technica: `https://feeds.arstechnica.com/arstechnica/index`
+        - BBC News: `https://feeds.bbci.co.uk/news/rss.xml`
+
+        ## Workflow
+
+        1. When the user provides a blog URL, try to find its RSS feed
+        2. Fetch the feed and parse recent articles
+        3. Present a summary of new/recent posts with titles and dates
+        4. Offer to fetch full article content using `web.render` if requested
+
+        ## Tips
+
+        - RSS feeds return XML — parse `<item>` or `<entry>` elements for articles
+        - Each item typically has `<title>`, `<link>`, `<pubDate>`, and `<description>`
+        - To track what the user has already seen, note the latest article date in conversation
         """#,
     ]
 

@@ -1,4 +1,8 @@
 #if os(iOS) || os(tvOS)
+#if os(iOS)
+import CoreLocation
+import OpenClawKit
+#endif
 import Darwin
 import Foundation
 import Network
@@ -74,6 +78,8 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
     var telegramBotToken: String
     var telegramDefaultChatID: String
 
+    var enableLocalDeviceTools: Bool
+
     static let `default` = TVOSGatewayControlPlaneSettings(
         authMode: .none,
         authToken: "",
@@ -89,7 +95,8 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMModel: "",
         localLLMToolCallingMode: .auto,
         telegramBotToken: "",
-        telegramDefaultChatID: "")
+        telegramDefaultChatID: "",
+        enableLocalDeviceTools: true)
 
     /// Suggested LLM defaults shown in the provider editor when no provider
     /// has been configured yet.  Kept separate from `default` so that a fresh
@@ -201,6 +208,184 @@ private actor TVOSRuntimeAdminBridge: GatewayLocalMethodRouterAdminBridge {
     }
 }
 
+// MARK: - Device Tool Bridge
+
+#if os(iOS)
+final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
+    private let reminders: any RemindersServicing
+    private let calendar: any CalendarServicing
+    private let contacts: any ContactsServicing
+    private let location: any LocationServicing
+    private let photos: any PhotosServicing
+    private let camera: any CameraServicing
+    private let motion: any MotionServicing
+
+    init(
+        reminders: any RemindersServicing,
+        calendar: any CalendarServicing,
+        contacts: any ContactsServicing,
+        location: any LocationServicing,
+        photos: any PhotosServicing,
+        camera: any CameraServicing,
+        motion: any MotionServicing)
+    {
+        self.reminders = reminders
+        self.calendar = calendar
+        self.contacts = contacts
+        self.location = location
+        self.photos = photos
+        self.camera = camera
+        self.motion = motion
+    }
+
+    func supportedCommands() -> [String] {
+        [
+            "reminders.list", "reminders.add",
+            "calendar.events", "calendar.add",
+            "contacts.search", "contacts.add",
+            "location.get",
+            "photos.latest",
+            "camera.snap",
+            "motion.activity", "motion.pedometer",
+        ]
+    }
+
+    func execute(command: String, params: GatewayJSONValue?) async -> GatewayLocalTooling.ToolResult {
+        do {
+            switch command {
+            case "reminders.list":
+                let p = Self.decodeParams(OpenClawRemindersListParams.self, from: params)
+                    ?? OpenClawRemindersListParams()
+                let result = try await self.reminders.list(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "reminders.add":
+                guard let p = Self.decodeParams(OpenClawRemindersAddParams.self, from: params) else {
+                    return GatewayLocalTooling.ToolResult(payload: .null, error: "invalid reminders.add params: title required")
+                }
+                let result = try await self.reminders.add(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "calendar.events":
+                let p = Self.decodeParams(OpenClawCalendarEventsParams.self, from: params)
+                    ?? OpenClawCalendarEventsParams()
+                let result = try await self.calendar.events(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "calendar.add":
+                guard let p = Self.decodeParams(OpenClawCalendarAddParams.self, from: params) else {
+                    return GatewayLocalTooling.ToolResult(payload: .null, error: "invalid calendar.add params")
+                }
+                let result = try await self.calendar.add(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "contacts.search":
+                let p = Self.decodeParams(OpenClawContactsSearchParams.self, from: params)
+                    ?? OpenClawContactsSearchParams()
+                let result = try await self.contacts.search(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "contacts.add":
+                guard let p = Self.decodeParams(OpenClawContactsAddParams.self, from: params) else {
+                    return GatewayLocalTooling.ToolResult(payload: .null, error: "invalid contacts.add params")
+                }
+                let result = try await self.contacts.add(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "location.get":
+                let p = Self.decodeParams(OpenClawLocationGetParams.self, from: params)
+                    ?? OpenClawLocationGetParams()
+                let desired = p.desiredAccuracy ?? .balanced
+                let location = try await self.location.currentLocation(
+                    params: p, desiredAccuracy: desired,
+                    maxAgeMs: p.maxAgeMs, timeoutMs: p.timeoutMs)
+                let isPrecise = await self.location.accuracyAuthorization() == .fullAccuracy
+                let payload: [String: GatewayJSONValue] = [
+                    "ok": .bool(true),
+                    "command": .string(command),
+                    "lat": .double(location.coordinate.latitude),
+                    "lon": .double(location.coordinate.longitude),
+                    "accuracyMeters": .double(location.horizontalAccuracy),
+                    "altitudeMeters": location.verticalAccuracy >= 0
+                        ? .double(location.altitude) : .null,
+                    "speedMps": location.speed >= 0
+                        ? .double(location.speed) : .null,
+                    "headingDeg": location.course >= 0
+                        ? .double(location.course) : .null,
+                    "timestamp": .string(
+                        ISO8601DateFormatter().string(from: location.timestamp)),
+                    "isPrecise": .bool(isPrecise),
+                ]
+                return GatewayLocalTooling.ToolResult(payload: .object(payload), error: nil)
+
+            case "photos.latest":
+                let p = Self.decodeParams(OpenClawPhotosLatestParams.self, from: params)
+                    ?? OpenClawPhotosLatestParams()
+                let result = try await self.photos.latest(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "camera.snap":
+                let p = Self.decodeParams(OpenClawCameraSnapParams.self, from: params)
+                    ?? OpenClawCameraSnapParams()
+                let res = try await self.camera.snap(params: p)
+                let payload: [String: GatewayJSONValue] = [
+                    "ok": .bool(true),
+                    "command": .string(command),
+                    "format": .string(res.format),
+                    "base64": .string(res.base64),
+                    "width": .integer(Int64(res.width)),
+                    "height": .integer(Int64(res.height)),
+                ]
+                return GatewayLocalTooling.ToolResult(payload: .object(payload), error: nil)
+
+            case "motion.activity":
+                let p = Self.decodeParams(OpenClawMotionActivityParams.self, from: params)
+                    ?? OpenClawMotionActivityParams()
+                let result = try await self.motion.activities(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            case "motion.pedometer":
+                let p = Self.decodeParams(OpenClawPedometerParams.self, from: params)
+                    ?? OpenClawPedometerParams()
+                let result = try await self.motion.pedometer(params: p)
+                return Self.encodeResult(command: command, payload: result)
+
+            default:
+                return GatewayLocalTooling.ToolResult(
+                    payload: .null, error: "unsupported device command: \(command)")
+            }
+        } catch {
+            return GatewayLocalTooling.ToolResult(
+                payload: .null, error: "\(command) failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func decodeParams<T: Decodable>(_ type: T.Type, from value: GatewayJSONValue?) -> T? {
+        guard let value else { return nil }
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private static func encodeResult(
+        command: String,
+        payload: some Encodable) -> GatewayLocalTooling.ToolResult
+    {
+        guard let data = try? JSONEncoder().encode(payload),
+              let json = try? JSONDecoder().decode(GatewayJSONValue.self, from: data)
+        else {
+            return GatewayLocalTooling.ToolResult(payload: .null, error: "\(command): encoding error")
+        }
+        var result: [String: GatewayJSONValue] = ["ok": .bool(true), "command": .string(command)]
+        if case let .object(obj) = json {
+            for (key, value) in obj { result[key] = value }
+        } else {
+            result["payload"] = json
+        }
+        return GatewayLocalTooling.ToolResult(payload: .object(result), error: nil)
+    }
+}
+#endif
+
 @MainActor
 @Observable
 final class TVOSLocalGatewayRuntime {
@@ -282,6 +467,17 @@ final class TVOSLocalGatewayRuntime {
     private(set) var diagnosticsLog: [TVOSGatewayRuntimeLogEntry]
 
     private(set) var lanAccessEnabled: Bool
+    #if os(iOS)
+    private var deviceToolBridge: DeviceToolBridgeImpl?
+    #endif
+
+    private var deviceBridgeConfigured: Bool {
+        #if os(iOS)
+        return self.deviceToolBridge != nil
+        #else
+        return false
+        #endif
+    }
 
     private let webSocketListenPortPreference: UInt16
     private let tcpListenPortPreference: UInt16
@@ -436,6 +632,33 @@ final class TVOSLocalGatewayRuntime {
             self.appendLog("upstream not configured", level: .warning)
         }
     }
+
+    #if os(iOS)
+    /// Inject native device service implementations into the runtime.
+    /// Call this before ``start()`` so that device tools are available to the LLM.
+    /// The bridge is recreated on each call and will be picked up by the next
+    /// ``rebuildGatewayStack()``.
+    func configureDeviceServices(
+        reminders: any RemindersServicing,
+        calendar: any CalendarServicing,
+        contacts: any ContactsServicing,
+        location: any LocationServicing,
+        photos: any PhotosServicing,
+        camera: any CameraServicing,
+        motion: any MotionServicing)
+    {
+        self.deviceToolBridge = DeviceToolBridgeImpl(
+            reminders: reminders,
+            calendar: calendar,
+            contacts: contacts,
+            location: location,
+            photos: photos,
+            camera: camera,
+            motion: motion)
+        self.appendLog(
+            "device tool bridge configured with \(self.deviceToolBridge?.supportedCommands().count ?? 0) commands")
+    }
+    #endif
 
     func start() async {
         guard !self.runtimeTransitionInProgress else {
@@ -654,6 +877,7 @@ final class TVOSLocalGatewayRuntime {
                     + " upstream=\(Self.trimmed(normalized.upstreamURL) ?? "(none)")"
                     + " llm=\(normalized.localLLMProvider.rawValue)"
                     + " llmTools=\(normalized.localLLMToolCallingMode.rawValue)"
+                    + " deviceTools=\(normalized.enableLocalDeviceTools)"
                     + " telegram=\(Self.presenceState(normalized.telegramBotToken))")
 
             if wasRunning {
@@ -1562,6 +1786,15 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
+    /// Reload skill registry and rebuild the gateway stack
+    /// without restarting the runtime.
+    func reloadSkills() async {
+        await self.withRuntimeTransition("reload skills") {
+            self.rebuildGatewayStack()
+            self.appendLog("skills reloaded")
+        }
+    }
+
     private func rebuildGatewayStack() {
         self.webSocketRetryTask?.cancel()
         self.webSocketRetryTask = nil
@@ -1633,15 +1866,39 @@ final class TVOSLocalGatewayRuntime {
             }
         }
 
+        var resolvedFileNames = Self.bootstrapInjectionFileNames(
+            workspacePath: bootstrapWorkspacePath)
+        if !bootstrapWorkspacePath.isEmpty {
+            let workspaceURL = URL(
+                fileURLWithPath: bootstrapWorkspacePath)
+            if let skillRegistry = GatewaySkillRegistry.load(
+                from: workspaceURL)
+            {
+                resolvedFileNames = skillRegistry.filterFileNames(
+                    resolvedFileNames)
+                self.appendLog(
+                    "skill registry loaded: "
+                        + "\(skillRegistry.skills.count) skills, "
+                        + "\(skillRegistry.enabledFileNames.count) enabled")
+            }
+        }
+
         let bootstrapConfig = GatewayBootstrapConfig(
             enabled: true,
             workspacePath: bootstrapWorkspacePath,
-            fileNames: Self.bootstrapInjectionFileNames(workspacePath: bootstrapWorkspacePath),
+            fileNames: resolvedFileNames,
             perFileMaxChars: GatewayBootstrapConfig.default.perFileMaxChars,
             totalMaxChars: GatewayBootstrapConfig.default.totalMaxChars,
             includeMissingMarkers: false)
 
         let resolvedTransport: GatewayLoopbackTransport
+        #if os(iOS)
+        let resolvedDeviceToolBridge: (any GatewayDeviceToolBridge)? = self.deviceToolBridge
+        let resolvedEnableDeviceTools = self.controlPlaneSettings.enableLocalDeviceTools
+        #else
+        let resolvedDeviceToolBridge: (any GatewayDeviceToolBridge)? = nil
+        let resolvedEnableDeviceTools = false
+        #endif
         if let transportOverride = self.transportOverride {
             resolvedTransport = transportOverride
         } else {
@@ -1661,6 +1918,8 @@ final class TVOSLocalGatewayRuntime {
                         bootstrapConfig: bootstrapConfig,
                         enableLocalSafeTools: true,
                         enableLocalFileTools: true,
+                        enableLocalDeviceTools: resolvedEnableDeviceTools,
+                        deviceToolBridge: resolvedDeviceToolBridge,
                         llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
                         enableAutoProfileRewrite: false,
                         adminBridge: adminBridge))
@@ -1686,6 +1945,8 @@ final class TVOSLocalGatewayRuntime {
                                 bootstrapConfig: bootstrapConfig,
                                 enableLocalSafeTools: true,
                                 enableLocalFileTools: true,
+                                enableLocalDeviceTools: resolvedEnableDeviceTools,
+                                deviceToolBridge: resolvedDeviceToolBridge,
                                 llmToolCallingMode: self.controlPlaneSettings.localLLMToolCallingMode,
                                 enableAutoProfileRewrite: false,
                                 adminBridge: adminBridge))
@@ -2991,6 +3252,13 @@ final class TVOSLocalGatewayRuntime {
             Self.trimmed(defaults.string(forKey: "gateway.tvos.telegram.defaultChatID"))
             ?? ""
 
+        // Device tools default to enabled (true) when no persisted value exists.
+        if defaults.object(forKey: "gateway.tvos.deviceTools.enabled") != nil {
+            settings.enableLocalDeviceTools = defaults.bool(forKey: "gateway.tvos.deviceTools.enabled")
+        } else {
+            settings.enableLocalDeviceTools = true
+        }
+
         return Self.normalizedSettings(settings)
     }
 
@@ -3036,6 +3304,7 @@ final class TVOSLocalGatewayRuntime {
         defaults.set(
             self.trimmed(settings.telegramDefaultChatID),
             forKey: "gateway.tvos.telegram.defaultChatID")
+        defaults.set(settings.enableLocalDeviceTools, forKey: "gateway.tvos.deviceTools.enabled")
     }
 
     private func verifyPersistedControlPlaneSettings(_ expected: TVOSGatewayControlPlaneSettings) {
@@ -3070,6 +3339,10 @@ final class TVOSLocalGatewayRuntime {
             "telegramDefaultChatID",
             expected.telegramDefaultChatID,
             persisted.telegramDefaultChatID)
+        markIfDifferent(
+            "enableLocalDeviceTools",
+            expected.enableLocalDeviceTools,
+            persisted.enableLocalDeviceTools)
 
         self.appendLog(
             "settings persistence mismatch fields=\(mismatches.joined(separator: ","))"
@@ -3774,7 +4047,8 @@ final class TVOSLocalGatewayRuntime {
             localLLMModel: Self.trimmed(settings.localLLMModel) ?? "",
             localLLMToolCallingMode: settings.localLLMToolCallingMode,
             telegramBotToken: Self.trimmed(settings.telegramBotToken) ?? "",
-            telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "")
+            telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "",
+            enableLocalDeviceTools: settings.enableLocalDeviceTools)
     }
 
     private static func makeAuthConfig(from settings: TVOSGatewayControlPlaneSettings) -> GatewayCoreAuthConfig {
@@ -3852,6 +4126,8 @@ final class TVOSLocalGatewayRuntime {
                 + " apiKey=\(localAPIKeyState)"
                 + " llmConfigured=\(self.localLLMConfigured)"
                 + " tools=\(self.controlPlaneSettings.localLLMToolCallingMode.rawValue)"
+                + " deviceTools=\(self.controlPlaneSettings.enableLocalDeviceTools)"
+                + " deviceBridge=\(self.deviceBridgeConfigured ? "yes" : "no")"
                 + " telegramChat=\(telegramDefaultChatID)"
                 + " telegramToken=\(telegramTokenState)"
                 + " bootstrapPath=\(bootstrapState)")
@@ -3974,6 +4250,10 @@ final class TVOSLocalGatewayRuntime {
 
         return fileManager.temporaryDirectory
             .appendingPathComponent("GatewayMemory.sqlite", isDirectory: false)
+    }
+
+    var bootstrapWorkspacePath: String {
+        Self.defaultBootstrapWorkspacePath()
     }
 
     private static func defaultBootstrapWorkspacePath() -> String {

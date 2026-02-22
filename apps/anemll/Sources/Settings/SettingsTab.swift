@@ -36,6 +36,7 @@ struct SettingsTab: View {
     @AppStorage("canvas.debugStatusEnabled") private var canvasDebugStatusEnabled: Bool = false
     @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = false
     @AppStorage("chat.autoRetryAttemptsOnError") private var chatAutoRetryAttemptsOnError: Int = 1
+    @AppStorage("gateway.tvos.deviceTools.enabled") private var deviceToolsEnabled: Bool = true
     @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
 
     // Onboarding control (RootCanvas listens to onboarding.requestID and force-opens the wizard).
@@ -89,6 +90,7 @@ struct SettingsTab: View {
     @State private var showRestoreRestartAlert: Bool = false
     @State private var restoreRestartMessage: String = ""
     @State private var showAcknowledgments: Bool = false
+    @State private var selectedSkillInfo: SkillEntryViewModel?
 
     private static let showsRemoteGatewaySection = false
 
@@ -437,6 +439,16 @@ struct SettingsTab: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
 
+                        Toggle(
+                            "Device Tools (LLM Access)",
+                            isOn: self.$deviceToolsEnabled)
+                        Text(
+                            "Allow the AI to use Reminders, Calendar,"
+                                + " Contacts, Location, Photos, Camera,"
+                                + " and Motion tools during chat.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
                         Toggle("Allow Camera", isOn: self.$cameraEnabled)
                         Text("Allows the gateway to request photos or short video clips (foreground only).")
                             .font(.footnote)
@@ -460,6 +472,12 @@ struct SettingsTab: View {
                         Text("Keeps the screen awake while AnemllClaw is open.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+
+                    DisclosureGroup("Skills") {
+                        SkillsSettingsView(
+                            localGatewayRuntime: self.localGatewayRuntime,
+                            selectedSkillInfo: self.$selectedSkillInfo)
                     }
 
                     DisclosureGroup("Device Info") {
@@ -607,6 +625,13 @@ struct SettingsTab: View {
                     }
                 }
             }
+            .onChange(of: self.deviceToolsEnabled) { _, newValue in
+                Task {
+                    var settings = self.localGatewayRuntime.controlPlaneSettings
+                    settings.enableLocalDeviceTools = newValue
+                    await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+                }
+            }
         }
         .gatewayTrustPromptAlert()
         .sheet(item: self.$editingProvider) { editing in
@@ -678,6 +703,15 @@ struct SettingsTab: View {
                 }
                 .sheet(isPresented: self.$showAcknowledgments) {
                     AcknowledgmentsSheet()
+                }
+                .sheet(item: self.$selectedSkillInfo) { entry in
+                    SkillInfoSheet(
+                        entry: entry,
+                        workspacePath: self.localGatewayRuntime
+                            .bootstrapWorkspacePath,
+                        onDismiss: {
+                            self.selectedSkillInfo = nil
+                        })
                 }
     }
 

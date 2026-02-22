@@ -19,6 +19,7 @@ Sources/Screen/ScreenWebView.swift
 Sources/SessionKey.swift
 Sources/Settings/SettingsNetworkingHelpers.swift
 Sources/Settings/SettingsTab.swift
+Sources/Settings/SkillsSettingsView.swift
 Sources/Settings/VoiceWakeWordsSettingsView.swift
 Sources/Status/StatusPill.swift
 Sources/Status/VoiceWakeToast.swift

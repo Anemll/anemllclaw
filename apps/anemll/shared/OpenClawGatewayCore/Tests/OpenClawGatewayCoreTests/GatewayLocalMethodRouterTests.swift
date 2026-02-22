@@ -1873,6 +1873,171 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         let data = try JSONEncoder().encode(payload)
         return try JSONDecoder().decode(type, from: data)
     }
+
+    // MARK: - Device Tool Bridge Stub
+
+    private actor StubDeviceToolBridge: GatewayDeviceToolBridge {
+        nonisolated func supportedCommands() -> [String] {
+            [
+                "reminders.list", "reminders.add",
+                "calendar.events", "calendar.add",
+                "contacts.search", "contacts.add",
+                "location.get", "photos.latest",
+                "camera.snap",
+                "motion.activity", "motion.pedometer",
+            ]
+        }
+
+        private var callLog: [(command: String, params: GatewayJSONValue?)] = []
+
+        func execute(
+            command: String,
+            params: GatewayJSONValue?) async -> GatewayLocalTooling.ToolResult
+        {
+            self.callLog.append((command, params))
+            return GatewayLocalTooling.ToolResult(
+                payload: .object([
+                    "ok": .bool(true),
+                    "command": .string(command),
+                    "stub": .bool(true),
+                ]),
+                error: nil)
+        }
+
+        func observedCallLog() -> [(String, GatewayJSONValue?)] {
+            self.callLog.map { ($0.command, $0.params) }
+        }
+    }
+
+    // MARK: - Device Tool Tests
+
+    func testDeviceToolExecutionRoutesThroughBridge() async {
+        let bridge = StubDeviceToolBridge()
+        let result = await GatewayLocalTooling.execute(
+            command: "reminders.list",
+            params: .object(["limit": .integer(5)]),
+            hostLabel: "test",
+            workspaceRoot: nil,
+            urlSession: URLSession(
+                configuration: .ephemeral),
+            enableLocalSafeTools: true,
+            enableLocalFileTools: false,
+            enableLocalDeviceTools: true,
+            deviceToolBridge: bridge)
+        XCTAssertNil(result.error)
+        XCTAssertEqual(
+            result.payload.objectValue?["ok"]?.boolValue,
+            true)
+        XCTAssertEqual(
+            result.payload.objectValue?["command"]?
+                .stringValue,
+            "reminders.list")
+        let calls = await bridge.observedCallLog()
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.0, "reminders.list")
+    }
+
+    func testDeviceToolDisabledReturnsError() async {
+        let bridge = StubDeviceToolBridge()
+        let result = await GatewayLocalTooling.execute(
+            command: "reminders.list",
+            params: nil,
+            hostLabel: "test",
+            workspaceRoot: nil,
+            urlSession: URLSession(
+                configuration: .ephemeral),
+            enableLocalSafeTools: true,
+            enableLocalFileTools: false,
+            enableLocalDeviceTools: false,
+            deviceToolBridge: bridge)
+        XCTAssertNotNil(result.error)
+        let calls = await bridge.observedCallLog()
+        XCTAssertEqual(calls.count, 0)
+    }
+
+    func testDeviceToolNoBridgeReturnsError() async {
+        let result = await GatewayLocalTooling.execute(
+            command: "reminders.list",
+            params: nil,
+            hostLabel: "test",
+            workspaceRoot: nil,
+            urlSession: URLSession(
+                configuration: .ephemeral),
+            enableLocalSafeTools: true,
+            enableLocalFileTools: false,
+            enableLocalDeviceTools: true,
+            deviceToolBridge: nil)
+        XCTAssertNotNil(result.error)
+    }
+
+    func testDeviceToolAllCommandsRecognized() {
+        let expected: [String] = [
+            "reminders.list", "reminders.add",
+            "calendar.events", "calendar.add",
+            "contacts.search", "contacts.add",
+            "location.get", "photos.latest",
+            "camera.snap",
+            "motion.activity", "motion.pedometer",
+        ]
+        for command in expected {
+            XCTAssertTrue(
+                GatewayLocalTooling.deviceCommands
+                    .contains(command),
+                "\(command) not in deviceCommands")
+        }
+    }
+
+    func testSkillRegistryFilterBootstrapFiles() {
+        var registry = GatewaySkillRegistry(
+            version: 1,
+            skills: [
+                GatewaySkillEntry(
+                    id: "news",
+                    fileName: "JS_NEWS.md",
+                    enabled: true),
+                GatewaySkillEntry(
+                    id: "calc",
+                    fileName: "CALCULATOR.md",
+                    enabled: false),
+            ])
+
+        let input = [
+            "SOUL.md", "JS_NEWS.md",
+            "CALCULATOR.md", "TOOLS.md",
+        ]
+        let filtered = registry.filterFileNames(input)
+        XCTAssertEqual(
+            filtered,
+            ["SOUL.md", "JS_NEWS.md", "TOOLS.md"])
+
+        registry.setEnabled("calc", enabled: true)
+        let filtered2 = registry.filterFileNames(input)
+        XCTAssertEqual(filtered2, input)
+    }
+
+    func testSkillRegistryEnableDisable() {
+        var registry = GatewaySkillRegistry(
+            version: 1,
+            skills: [
+                GatewaySkillEntry(
+                    id: "a", fileName: "A.md",
+                    enabled: true),
+                GatewaySkillEntry(
+                    id: "b", fileName: "B.md",
+                    enabled: true),
+            ])
+        XCTAssertEqual(
+            registry.enabledFileNames,
+            ["A.md", "B.md"])
+
+        registry.setEnabled("a", enabled: false)
+        XCTAssertEqual(registry.enabledFileNames, ["B.md"])
+
+        registry.setEnabled("a", enabled: true)
+        XCTAssertEqual(
+            registry.enabledFileNames,
+            ["A.md", "B.md"])
+    }
 }
 
 private struct ChatHistoryPayload: Decodable {

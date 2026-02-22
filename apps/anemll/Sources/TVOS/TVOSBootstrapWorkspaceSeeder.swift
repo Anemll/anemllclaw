@@ -1,5 +1,6 @@
 #if os(iOS) || os(tvOS)
 import Foundation
+import OpenClawGatewayCore
 
 private struct TVOSWorkspaceOnboardingState: Codable, Sendable {
     var version: Int
@@ -162,6 +163,16 @@ enum TVOSBootstrapWorkspaceSeeder {
             }
         }
 
+        // Seed skills.json if it doesn't exist yet.
+        let skillsJsonURL = workspaceURL.appendingPathComponent(
+            "skills.json", isDirectory: false)
+        if !self.isRegularFile(skillsJsonURL) {
+            let defaultRegistry = GatewaySkillRegistry(
+                version: 1,
+                skills: Self.defaultSkillEntries())
+            try? defaultRegistry.save(to: workspaceURL)
+        }
+
         if stateDirty {
             try self.writeWorkspaceOnboardingState(state, statePath: statePath)
         }
@@ -280,6 +291,33 @@ enum TVOSBootstrapWorkspaceSeeder {
 
     private static func nowISO8601() -> String {
         ISO8601DateFormatter().string(from: Date())
+    }
+
+    // MARK: - Default Skill Registry
+
+    private static let skillDescriptions: [String: String] = [
+        "JS_NEWS": "Fetch and parse JavaScript-rendered news sites using web.render",
+        "weather": "Weather forecasts via wttr.in and Open-Meteo (no API key needed)",
+        "summarize": "Summarize or extract text from URLs, articles, and web pages",
+        "notion": "Create and manage Notion pages, databases, and blocks via API",
+        "trello": "Manage Trello boards, lists, and cards via REST API",
+        "blogwatcher": "Monitor blogs and RSS/Atom feeds for updates",
+    ]
+
+    private static func defaultSkillEntries() -> [GatewaySkillEntry] {
+        TVOSBootstrapTemplateStore.managedFileNames
+            .filter { $0.hasPrefix("skills/") }
+            .map { fileName in
+                let id = fileName
+                    .replacingOccurrences(of: "skills/", with: "")
+                    .replacingOccurrences(of: "/SKILL.md", with: "")
+                    .replacingOccurrences(of: ".md", with: "")
+                return GatewaySkillEntry(
+                    id: id,
+                    fileName: fileName,
+                    enabled: true,
+                    description: self.skillDescriptions[id])
+            }
     }
 }
 #endif

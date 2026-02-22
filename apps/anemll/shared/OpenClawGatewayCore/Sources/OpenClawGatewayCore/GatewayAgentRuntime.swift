@@ -56,6 +56,8 @@ public actor GatewayAgentRuntime {
     private let hostLabel: String
     private let enableLocalSafeTools: Bool
     private let enableLocalFileTools: Bool
+    private let enableLocalDeviceTools: Bool
+    private let deviceToolBridge: (any GatewayDeviceToolBridge)?
     private let telegramConfig: GatewayLocalTelegramConfig
     private let workspaceRoot: URL?
     private let urlSession: URLSession
@@ -70,6 +72,8 @@ public actor GatewayAgentRuntime {
         hostLabel: String,
         enableLocalSafeTools: Bool,
         enableLocalFileTools: Bool,
+        enableLocalDeviceTools: Bool = false,
+        deviceToolBridge: (any GatewayDeviceToolBridge)? = nil,
         telegramConfig: GatewayLocalTelegramConfig = .disabled,
         workspaceRoot: URL?,
         session: URLSession = URLSession(configuration: .ephemeral))
@@ -80,6 +84,8 @@ public actor GatewayAgentRuntime {
         self.hostLabel = hostLabel
         self.enableLocalSafeTools = enableLocalSafeTools
         self.enableLocalFileTools = enableLocalFileTools
+        self.enableLocalDeviceTools = enableLocalDeviceTools
+        self.deviceToolBridge = deviceToolBridge
         self.telegramConfig = telegramConfig
         self.workspaceRoot = workspaceRoot
         self.urlSession = session
@@ -178,6 +184,8 @@ public actor GatewayAgentRuntime {
         let hostLabel = self.hostLabel
         let safeToolsEnabled = self.enableLocalSafeTools
         let fileToolsEnabled = self.enableLocalFileTools
+        let deviceToolsEnabled = self.enableLocalDeviceTools
+        let deviceBridge = self.deviceToolBridge
         let telegramConfig = self.telegramConfig
         let workspaceRoot = self.workspaceRoot
         let urlSession = self.urlSession
@@ -225,7 +233,9 @@ public actor GatewayAgentRuntime {
                         urlSession: urlSession,
                         telegramConfig: telegramConfig,
                         enableLocalSafeTools: safeToolsEnabled,
-                        enableLocalFileTools: fileToolsEnabled)
+                        enableLocalFileTools: fileToolsEnabled,
+                        enableLocalDeviceTools: deviceToolsEnabled,
+                        deviceToolBridge: deviceBridge)
                     if let toolError = toolResult.error {
                         throw NSError(
                             domain: "GatewayAgentRuntime",

@@ -16,10 +16,23 @@ public struct GatewayLocalTelegramConfig: Sendable, Equatable {
     public static let disabled = GatewayLocalTelegramConfig(botToken: "", defaultChatID: "")
 }
 
-enum GatewayLocalTooling {
-    struct ToolResult: Sendable {
-        let payload: GatewayJSONValue
-        let error: String?
+/// Protocol for routing device-specific tool commands to the app target.
+/// The shared package cannot import iOS frameworks (EventKit, Contacts,
+/// CoreLocation, etc.), so the app target provides an implementation.
+public protocol GatewayDeviceToolBridge: Sendable {
+    func execute(command: String, params: GatewayJSONValue?) async -> GatewayLocalTooling.ToolResult
+    func supportedCommands() -> [String]
+}
+
+public enum GatewayLocalTooling {
+    public struct ToolResult: Sendable {
+        public let payload: GatewayJSONValue
+        public let error: String?
+
+        public init(payload: GatewayJSONValue, error: String?) {
+            self.payload = payload
+            self.error = error
+        }
     }
 
     private struct NetworkFetchParams: Codable {
@@ -86,6 +99,7 @@ enum GatewayLocalTooling {
     private enum ToolClass {
         case safe
         case file
+        case device
         case unsupported
     }
 
@@ -117,12 +131,26 @@ enum GatewayLocalTooling {
         "apply_patch",
     ]
 
+    static let deviceCommands: [String] = [
+        "reminders.list",
+        "reminders.add",
+        "calendar.events",
+        "calendar.add",
+        "contacts.search",
+        "contacts.add",
+        "location.get",
+        "photos.latest",
+        "camera.snap",
+        "motion.activity",
+        "motion.pedometer",
+    ]
+
     static var localCommands: [String] {
         self.safeCommands + self.fileCommands
     }
 
     static func supports(_ command: String) -> Bool {
-        self.localCommands.contains(command)
+        self.localCommands.contains(command) || self.deviceCommands.contains(command)
     }
 
     static func execute(
@@ -134,7 +162,9 @@ enum GatewayLocalTooling {
         upstreamForwarder: (any GatewayUpstreamForwarding)? = nil,
         telegramConfig: GatewayLocalTelegramConfig = .disabled,
         enableLocalSafeTools: Bool,
-        enableLocalFileTools: Bool) async -> ToolResult
+        enableLocalFileTools: Bool,
+        enableLocalDeviceTools: Bool = false,
+        deviceToolBridge: (any GatewayDeviceToolBridge)? = nil) async -> ToolResult
     {
         let command = rawCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
@@ -156,6 +186,14 @@ enum GatewayLocalTooling {
             guard workspaceRoot != nil else {
                 return ToolResult(payload: .null, error: "workspace root is unavailable")
             }
+        case .device:
+            guard enableLocalDeviceTools else {
+                return ToolResult(payload: .null, error: "local device tools are disabled")
+            }
+            guard let bridge = deviceToolBridge else {
+                return ToolResult(payload: .null, error: "device tool bridge unavailable")
+            }
+            return await bridge.execute(command: command, params: params)
         case .unsupported:
             return ToolResult(payload: .null, error: "unsupported local command: \(command)")
         }
@@ -255,6 +293,9 @@ enum GatewayLocalTooling {
         }
         if self.fileCommands.contains(command) {
             return .file
+        }
+        if self.deviceCommands.contains(command) {
+            return .device
         }
         return .unsupported
     }

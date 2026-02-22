@@ -279,6 +279,19 @@ final class NodeAppModel {
         }
     }
 
+    /// Configure the local gateway runtime with device service instances
+    /// so the LLM can call native iOS tools during chat.
+    func configureDeviceToolBridge(on runtime: TVOSLocalGatewayRuntime) {
+        runtime.configureDeviceServices(
+            reminders: self.remindersService,
+            calendar: self.calendarService,
+            contacts: self.contactsService,
+            location: self.locationService,
+            photos: self.photosService,
+            camera: self.camera,
+            motion: self.motionService)
+    }
+
     func setScenePhase(_ phase: ScenePhase) {
         let keepTalkActive = UserDefaults.standard.bool(forKey: "talk.background.enabled")
         switch phase {

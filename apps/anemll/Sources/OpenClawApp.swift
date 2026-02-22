@@ -49,6 +49,7 @@ struct OpenClawApp: App {
                     Task { await self.appModel.handleDeepLink(url: url) }
                 }
                 .task {
+                    self.appModel.configureDeviceToolBridge(on: self.localGatewayRuntime)
                     if self.localGatewayRuntime.state == .stopped {
                         await self.localGatewayRuntime.start()
                     }
