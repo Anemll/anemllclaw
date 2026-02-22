@@ -76,7 +76,7 @@ apps/anemll/*.xcodeproj/xcuserdata/
 apps/anemll/*.xcodeproj/project.xcworkspace/xcuserdata/
 apps/anemll/*.xcworkspace/
 apps/anemll/.swiftpm/
-apps/anemll/*.xcfilelist
+# apps/anemll/*.xcfilelist — now tracked (needed by xcodeproj build phases)
 apps/anemll/fastlane/README.md
 apps/anemll/fastlane/report.xml
 apps/anemll/fastlane/Preview.html
