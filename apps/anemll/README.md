@@ -30,7 +30,7 @@ AnemllClaw keeps all the original OpenClaw workspace files, so the agent adapts 
 - `web.render` -- fetches a URL, renders JavaScript, and returns clean extracted text with links and metadata. Also accepts raw HTML or text input.
 - `web.extract` -- lightweight content extraction from HTML, text, or a URL without JS rendering.
 
-**Skills** -- One skill is pre-installed: `skills/JS_NEWS.md`, a JavaScript-based web-site processor for agentic news collection and content research. Additional skills can be added to the `skills/` directory. The ability to modify and add skills allows for multiple workflows.
+**Skills** -- One skill is pre-installed: `skills/JS_NEWS.md`, a JavaScript-based web-site processor for agentic news collection and content research. Additional skills can be added to the `skills/` directory. The ability to modify and add skills allows for multiple workflows. Active development is underway to port and validate tools from the mainline OpenClaw repo for iOS, as well as adding settings to enable or disable individual skills and tools.
 
 **Backup and Restore** -- Create and restore compressed, encrypted backups of chat history, workspace files, settings, and keychain credentials.
 
@@ -102,8 +102,52 @@ The unpacked folder contains:
 - `keychain.json` -- keychain credentials (contains API keys -- handle with care)
 - `archive.json` -- full raw archive for reference
 
+## Clone & Build
+
+```bash
+git clone https://github.com/Anemll/anemllclaw.git
+cd anemllclaw
+git checkout anemll-ios-app
+```
+
+Open the Xcode project:
+
+```bash
+open apps/anemll/AnemllClaw.xcodeproj
+```
+
+### Build Targets
+
+| Scheme | Platform | Description |
+|--------|----------|-------------|
+| **AnemllClaw** | iOS 18+ | Runs on iPhone, iPad, and Vision Pro |
+| **AnemllClawTV** | tvOS 18+ | Runs on Apple TV |
+
+In Xcode, select the scheme from the scheme picker:
+- **AnemllClaw** for iOS / iPadOS / visionOS
+- **AnemllClawTV** for tvOS
+
+Then build & run (Cmd+R).
+
+### Requirements
+
+- Xcode 16.0+
+- Swift 6.0
+- macOS with Homebrew (for build-phase linters):
+  ```bash
+  brew install swiftformat swiftlint
+  ```
+
+### Dependencies
+
+All Swift packages are included in the repo under `apps/anemll/shared/`:
+- **OpenClawKit** -- Core SDK, chat UI, and protocol
+- **OpenClawGatewayCore** -- On-device gateway server
+
+No `pod install` or `swift package resolve` needed -- SPM dependencies resolve automatically on first build.
+
 ## Notes
 
 During development AnemllClaw turned out to be quite useful as a daily tool for online research and news collection. Even with a primarily web-focused chat UI, the ability to modify skills enables many different workflows and iterative self-improvement.
 
-Let me know if this repo is usefull, to add other skills or harness extension
+Let me know if this repo is useful, to add other skills or harness extensions.
