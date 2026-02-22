@@ -417,8 +417,9 @@ public final class OpenClawChatViewModel {
 
                 retriesRemaining -= 1
                 retryIndex += 1
+                let retryLabel = "\(retryIndex)/\(maxAutoRetries)"
                 chatUILogger.warning(
-                    "chat.send failed \(error.localizedDescription, privacy: .public); auto-retry \(retryIndex, privacy: .public)/\(maxAutoRetries, privacy: .public) with Continue")
+                    "chat.send failed \(error.localizedDescription, privacy: .public); retry \(retryLabel, privacy: .public)")
 
                 currentRunId = UUID().uuidString
                 self.pendingRuns.insert(currentRunId)

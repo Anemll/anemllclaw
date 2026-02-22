@@ -2940,7 +2940,7 @@ final class TVOSLocalGatewayRuntime {
         let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch normalized {
         case "none", "off", "disabled":
-            return .none
+            return GatewayCoreAuthMode.none
         case "token":
             return .token
         case "password", "pass":
@@ -3475,16 +3475,21 @@ final class TVOSLocalGatewayRuntime {
                 _ = KeychainStore.saveString(legacyKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
                 defaults.removeObject(forKey: "gateway.tvos.localLLM.apiKey")
             }
+            #if os(iOS)
             // 2) Try the active LLMProviderStore provider (Keychain service "ai.openclaw.llm").
-            else if let activeID = LLMProviderStore.activeID(defaults: defaults) {
+            if persistedAPIKey == nil || persistedAPIKey!.isEmpty,
+               let activeID = LLMProviderStore.activeID(defaults: defaults)
+            {
                 let providers = LLMProviderStore.load(defaults: defaults)
                 if let active = providers.first(where: { $0.id == activeID }),
                    !active.apiKey.isEmpty
                 {
                     persistedAPIKey = active.apiKey
-                    _ = KeychainStore.saveString(active.apiKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
+                    _ = KeychainStore.saveString(
+                        active.apiKey, service: "ai.openclaw.llm.runtime", account: "localLLMAPIKey")
                 }
             }
+            #endif
         }
 
         let persistedModel = Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.model"))
