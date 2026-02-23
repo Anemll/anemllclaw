@@ -228,6 +228,10 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
     private let photos: any PhotosServicing
     private let camera: any CameraServicing
     private let motion: any MotionServicing
+    private let idleTracker: UserIdleTracker
+    private let dreamManager: DreamModeManager
+    private let dreamStateStore: DreamStateStore?
+    private let workspaceRoot: URL?
 
     init(
         reminders: any RemindersServicing,
@@ -236,7 +240,11 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
         location: any LocationServicing,
         photos: any PhotosServicing,
         camera: any CameraServicing,
-        motion: any MotionServicing)
+        motion: any MotionServicing,
+        idleTracker: UserIdleTracker,
+        dreamManager: DreamModeManager,
+        dreamStateStore: DreamStateStore?,
+        workspaceRoot: URL?)
     {
         self.reminders = reminders
         self.calendar = calendar
@@ -245,6 +253,10 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
         self.photos = photos
         self.camera = camera
         self.motion = motion
+        self.idleTracker = idleTracker
+        self.dreamManager = dreamManager
+        self.dreamStateStore = dreamStateStore
+        self.workspaceRoot = workspaceRoot
     }
 
     func supportedCommands() -> [String] {
@@ -258,6 +270,7 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
             "motion.activity", "motion.pedometer",
             "credentials.get", "credentials.set",
             "credentials.delete",
+            "get_idle_time", "dream_mode",
         ]
     }
 
@@ -439,6 +452,98 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
                         "message": .string("API key removed"),
                     ]), error: nil)
 
+            case "get_idle_time":
+                let idle = await MainActor.run {
+                    self.idleTracker.idleSeconds
+                }
+                let lastInteraction = await MainActor.run {
+                    self.idleTracker.lastInteractionAt
+                }
+                let dreamState = await MainActor.run {
+                    self.dreamManager.state.rawValue
+                }
+                let dreamEnabled = await MainActor.run {
+                    self.dreamManager.enabled
+                }
+                let threshold = await MainActor.run {
+                    self.dreamManager.idleThresholdSeconds
+                }
+                let runState = self.dreamStateStore?.load()
+                var payload: [String: GatewayJSONValue] = [
+                    "ok": .bool(true),
+                    "command": .string(command),
+                    "idle_seconds": .integer(Int64(idle)),
+                    "last_interaction_at": .string(
+                        ISO8601DateFormatter()
+                            .string(from: lastInteraction)),
+                    "dream_state": .string(dreamState),
+                    "dream_enabled": .bool(dreamEnabled),
+                    "idle_threshold_seconds": .integer(
+                        Int64(threshold)),
+                ]
+                if let pending = runState?.pendingDigestPath {
+                    payload["pending_digest_path"] =
+                        .string(pending)
+                }
+                if let cooldown = runState?.cooldownUntil {
+                    payload["cooldown_until"] =
+                        .string(cooldown)
+                }
+                return GatewayLocalTooling.ToolResult(
+                    payload: .object(payload), error: nil)
+
+            case "dream_mode":
+                let paramsObj = params?.objectValue ?? [:]
+                let action = paramsObj["action"]?
+                    .stringValue ?? "status"
+                let outputRoot = paramsObj["outputRoot"]?
+                    .stringValue ?? "dream"
+                let writeMode = paramsObj["writeMode"]?
+                    .stringValue ?? "patches"
+
+                switch action {
+                case "enter":
+                    await MainActor.run {
+                        self.dreamManager.enterDream()
+                    }
+                case "exit":
+                    await MainActor.run {
+                        self.dreamManager.wake()
+                    }
+                    self.performDreamCleanup()
+                case "status":
+                    break
+                default:
+                    return GatewayLocalTooling.ToolResult(
+                        payload: .null,
+                        error: "dream_mode: action must be enter, exit, or status")
+                }
+                let dreamState = await MainActor.run {
+                    self.dreamManager.state.rawValue
+                }
+                let dreamEnabled = await MainActor.run {
+                    self.dreamManager.enabled
+                }
+                let currentRunId = await MainActor.run {
+                    self.dreamManager.runId
+                }
+                var resultPayload: [String: GatewayJSONValue] = [
+                    "ok": .bool(true),
+                    "command": .string(command),
+                    "action": .string(action),
+                    "dream_state": .string(dreamState),
+                    "dream_enabled": .bool(dreamEnabled),
+                    "outputRoot": .string(outputRoot),
+                    "writeMode": .string(writeMode),
+                ]
+                if let currentRunId {
+                    resultPayload["runId"] =
+                        .string(currentRunId)
+                }
+                return GatewayLocalTooling.ToolResult(
+                    payload: .object(resultPayload),
+                    error: nil)
+
             default:
                 return GatewayLocalTooling.ToolResult(
                     payload: .null, error: "unsupported device command: \(command)")
@@ -446,6 +551,18 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
         } catch {
             return GatewayLocalTooling.ToolResult(
                 payload: .null, error: "\(command) failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Run retention cleanup on dream journals and patches in a
+    /// background task. Called after `dream_mode(exit)`.
+    private func performDreamCleanup() {
+        guard let root = self.workspaceRoot else { return }
+        Task.detached(priority: .utility) {
+            DreamRetentionCleaner.cleanJournals(
+                workspaceRoot: root, retainDays: 14)
+            DreamRetentionCleaner.cleanPatches(
+                workspaceRoot: root, retainDays: 7)
         }
     }
 
@@ -737,8 +854,37 @@ final class TVOSLocalGatewayRuntime {
         location: any LocationServicing,
         photos: any PhotosServicing,
         camera: any CameraServicing,
-        motion: any MotionServicing)
+        motion: any MotionServicing,
+        idleTracker: UserIdleTracker,
+        dreamManager: DreamModeManager)
     {
+        let workspacePath =
+            Self.defaultBootstrapWorkspacePath()
+        let workspaceRoot: URL? = workspacePath.isEmpty
+            ? nil
+            : URL(
+                fileURLWithPath: workspacePath,
+                isDirectory: true)
+
+        let dreamStateStore: DreamStateStore?
+        if let workspaceRoot {
+            dreamStateStore = DreamStateStore(
+                workspaceRoot: workspaceRoot)
+            dreamManager.dreamStateStore = dreamStateStore
+
+            // Run initial retention cleanup on launch
+            Task.detached(priority: .utility) {
+                DreamRetentionCleaner.cleanJournals(
+                    workspaceRoot: workspaceRoot,
+                    retainDays: 14)
+                DreamRetentionCleaner.cleanPatches(
+                    workspaceRoot: workspaceRoot,
+                    retainDays: 7)
+            }
+        } else {
+            dreamStateStore = nil
+        }
+
         self.deviceToolBridge = DeviceToolBridgeImpl(
             reminders: reminders,
             calendar: calendar,
@@ -746,7 +892,11 @@ final class TVOSLocalGatewayRuntime {
             location: location,
             photos: photos,
             camera: camera,
-            motion: motion)
+            motion: motion,
+            idleTracker: idleTracker,
+            dreamManager: dreamManager,
+            dreamStateStore: dreamStateStore,
+            workspaceRoot: workspaceRoot)
         self.appendLog(
             "device tool bridge configured with \(self.deviceToolBridge?.supportedCommands().count ?? 0) commands")
         // Rebuild so the router picks up the newly configured bridge.

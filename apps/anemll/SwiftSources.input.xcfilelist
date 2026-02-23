@@ -61,3 +61,15 @@ shared/OpenClawKit/Sources/OpenClawKit/TalkDirective.swift
 ../../Swabble/Sources/SwabbleKit/WakeWordGate.swift
 Sources/Voice/TalkModeManager.swift
 Sources/Voice/TalkOrbOverlay.swift
+Sources/Dream/UserIdleTracker.swift
+Sources/Dream/DreamModeManager.swift
+Sources/Dream/DreamStateStore.swift
+Sources/Dream/DreamView.swift
+Sources/Dream/DreamStatusPill.swift
+Sources/Dream/IdleTouchPassthroughView.swift
+Sources/Dream/Animations/FlamePulseAnimation.swift
+Sources/Dream/Animations/AuroraAnimation.swift
+Sources/Dream/Animations/StarfieldAnimation.swift
+Sources/Dream/Animations/BreathingOrbAnimation.swift
+Sources/Dream/Animations/FlurryAnimation.swift
+Sources/Dream/Animations/FlurryClassicAnimation.swift

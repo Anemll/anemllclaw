@@ -40,6 +40,10 @@
 	<string>AnemllClaw discovers and connects to your gateway on the local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AnemllClaw needs microphone access for voice wake.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>AnemllClaw uses motion data to detect device orientation and activity.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AnemllClaw can save captured photos and videos to your photo library.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>AnemllClaw uses on-device speech recognition for voice wake.</string>
 	<key>TVTopShelfImage</key>

@@ -105,6 +105,7 @@ public struct GatewayBootstrapConfig: Sendable, Equatable {
             "BOOTSTRAP.md",
             "MEMORY.md",
             "memory.md",
+            "DREAM.md",
         ],
         perFileMaxChars: 8000,
         totalMaxChars: 48000,
@@ -1527,6 +1528,40 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                             ]),
                         ]),
                         "required": .array([.string("service")]),
+                    ])))
+            }
+
+            // -- Dream mode tools --
+            if supported.contains("get_idle_time") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "get_idle_time",
+                    description: "Get seconds since last user interaction (tap, typing, message). Returns idle duration and dream mode state.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([:]),
+                    ])))
+            }
+            if supported.contains("dream_mode") {
+                tools.append(GatewayLocalLLMToolDefinition(
+                    name: "dream_mode",
+                    description: "Enter or exit dream mode. Dream mode shows ambient animation while background tasks run. Returns runId, outputRoot, and writeMode for artifact management.",
+                    parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object([
+                            "action": .object([
+                                "type": .string("string"),
+                                "description": .string("enter, exit, or status"),
+                            ]),
+                            "outputRoot": .object([
+                                "type": .string("string"),
+                                "description": .string("Directory for dream artifacts, default 'dream'"),
+                            ]),
+                            "writeMode": .object([
+                                "type": .string("string"),
+                                "description": .string("'patches' (default) or 'apply_safe'"),
+                            ]),
+                        ]),
+                        "required": .array([.string("action")]),
                     ])))
             }
         }
@@ -4107,6 +4142,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         Self.resolveWorkspaceRootURL(self.config.bootstrapConfig)
     }
 
+    /// Scans workspace for memory files (MEMORY.md, memory.md, memory/**/*.md).
+    /// NOTE: Only the `memory/` directory is scanned. The `dream/` directory
+    /// (dream artifacts, journals, patches) is intentionally excluded to keep
+    /// grounded memory separate from speculative dream content.
     private func workspaceMemoryFileURLs(workspaceRoot: URL) -> [URL] {
         let fileManager = FileManager.default
         var files: [URL] = []

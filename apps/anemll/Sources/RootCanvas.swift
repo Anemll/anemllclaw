@@ -6,6 +6,8 @@ struct RootCanvas: View {
     @Environment(NodeAppModel.self) private var appModel
     @Environment(GatewayConnectionController.self) private var gatewayController
     @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime
+    @Environment(UserIdleTracker.self) private var idleTracker
+    @Environment(DreamModeManager.self) private var dreamModeManager
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("screen.preventSleep") private var preventSleep: Bool = true
     @AppStorage("canvas.debugStatusEnabled") private var canvasDebugStatusEnabled: Bool = false
@@ -14,6 +16,9 @@ struct RootCanvas: View {
     @AppStorage("gateway.hasConnectedOnce") private var hasConnectedOnce: Bool = false
     @AppStorage("onboarding.quickSetupDismissed") private var quickSetupDismissed: Bool = false
     @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
+    @AppStorage("dream.enabled") private var dreamEnabled: Bool = false
+    @AppStorage("dream.idleThreshold") private var dreamIdleThreshold: Int = 600
+    @AppStorage("dream.animation") private var dreamAnimationRaw: String = DreamAnimation.flamePulse.rawValue
     @State private var presentedSheet: PresentedSheet?
     @State private var showOnboarding: Bool = false
     @State private var onboardingAllowSkip: Bool = true
@@ -49,59 +54,11 @@ struct RootCanvas: View {
     }
 
     var body: some View {
-        self.backupRestoreWrapped(
-            Group {
-                if self.localGatewayRuntime.host != nil {
-                    ChatSheet(
-                        transport: LocalGatewayChatTransport(runtime: self.localGatewayRuntime),
-                        sessionKey: self.localGatewayRuntime.chatSessionKey,
-                        agentName: self.localGatewayRuntime.chatAssistantName,
-                        userAccent: self.appModel.seamColor,
-                        allowDismiss: false)
-                        .ignoresSafeArea()
-                } else {
-                    ChatSheet(
-                        gateway: self.appModel.gatewaySession,
-                        sessionKey: self.appModel.mainSessionKey,
-                        agentName: self.appModel.activeAgentName,
-                        userAccent: self.appModel.seamColor,
-                        allowDismiss: false)
-                        .ignoresSafeArea()
-                }
-            }
-            .preferredColorScheme(.dark)
-            .gatewayTrustPromptAlert()
-            .fullScreenCover(isPresented: self.$showOnboarding) {
-                OnboardingWizardView(
-                    allowSkip: self.onboardingAllowSkip,
-                    onClose: {
-                        self.showOnboarding = false
-                    })
-                    .environment(self.appModel)
-                    .environment(self.appModel.voiceWake)
-                    .environment(self.gatewayController)
-            }
-            .sheet(item: self.$presentedSheet) { sheet in
-                switch sheet {
-                case .quickSetup:
-                    GatewayQuickSetupSheet()
-                        .environment(self.appModel)
-                        .environment(self.gatewayController)
-                }
-            }
-            .onAppear { self.updateIdleTimer() }
-            .onAppear { self.evaluateOnboardingPresentation(force: false) }
-            .onAppear { self.maybePromptForLLMSetupOnLaunch() }
-            .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
-            .onChange(of: self.scenePhase) { _, _ in self.updateIdleTimer() }
-            .onChange(of: self.localGatewayRuntime.state) { _, _ in
-                self.maybePromptForLLMSetupOnLaunch()
-            }
-            .onChange(of: self.localGatewayRuntime.localLLMConfigured) { _, newValue in
-                if newValue {
-                    self.showLLMSetupPrompt = false
-                }
-            }
+        self.backupRestoreWrapped(self.mainContent())
+    }
+
+    private func mainContent() -> some View {
+        self.mainContentWithSheets()
             .onAppear { self.maybeShowQuickSetup() }
             .onChange(of: self.gatewayController.gateways.count) { _, _ in self.maybeShowQuickSetup() }
             .onAppear { self.updateCanvasDebugStatus() }
@@ -131,7 +88,85 @@ struct RootCanvas: View {
             }
             .onDisappear {
                 UIApplication.shared.isIdleTimerDisabled = false
-            })
+            }
+    }
+
+    private func mainContentWithSheets() -> some View {
+        self.chatContent()
+            .preferredColorScheme(.dark)
+            .gatewayTrustPromptAlert()
+            .fullScreenCover(isPresented: self.$showOnboarding) {
+                OnboardingWizardView(
+                    allowSkip: self.onboardingAllowSkip,
+                    onClose: {
+                        self.showOnboarding = false
+                    })
+                    .environment(self.appModel)
+                    .environment(self.appModel.voiceWake)
+                    .environment(self.gatewayController)
+            }
+            .sheet(item: self.$presentedSheet) { sheet in
+                switch sheet {
+                case .quickSetup:
+                    GatewayQuickSetupSheet()
+                        .environment(self.appModel)
+                        .environment(self.gatewayController)
+                }
+            }
+            .overlay { IdleTouchPassthroughView(tracker: self.idleTracker) }
+            .overlay {
+                if self.dreamModeManager.state != .awake {
+                    DreamView()
+                        .transition(.opacity.animation(.easeInOut(duration: 0.8)))
+                        .zIndex(999)
+                }
+            }
+            .task(id: "dream-auto-trigger") {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(30))
+                    self.dreamModeManager.evaluateAutoTrigger(
+                        idleTracker: self.idleTracker)
+                    self.dreamModeManager
+                        .evaluateDigestDelivery(
+                            idleTracker: self.idleTracker)
+                }
+            }
+            .onAppear { self.updateIdleTimer() }
+            .onAppear { self.syncDreamSettings() }
+            .onAppear { self.evaluateOnboardingPresentation(force: false) }
+            .onAppear { self.maybePromptForLLMSetupOnLaunch() }
+            .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
+            .onChange(of: self.scenePhase) { _, _ in self.updateIdleTimer() }
+            .onChange(of: self.localGatewayRuntime.state) { _, _ in
+                self.maybePromptForLLMSetupOnLaunch()
+            }
+            .onChange(of: self.localGatewayRuntime.localLLMConfigured) { _, newValue in
+                if newValue {
+                    self.showLLMSetupPrompt = false
+                }
+            }
+    }
+
+    private func chatContent() -> some View {
+        Group {
+            if self.localGatewayRuntime.host != nil {
+                ChatSheet(
+                    transport: LocalGatewayChatTransport(runtime: self.localGatewayRuntime),
+                    sessionKey: self.localGatewayRuntime.chatSessionKey,
+                    agentName: self.localGatewayRuntime.chatAssistantName,
+                    userAccent: self.appModel.seamColor,
+                    allowDismiss: false)
+                    .ignoresSafeArea()
+            } else {
+                ChatSheet(
+                    gateway: self.appModel.gatewaySession,
+                    sessionKey: self.appModel.mainSessionKey,
+                    agentName: self.appModel.activeAgentName,
+                    userAccent: self.appModel.seamColor,
+                    allowDismiss: false)
+                    .ignoresSafeArea()
+            }
+        }
     }
 
     private func backupRestoreWrapped(_ content: some View) -> some View {
@@ -229,6 +264,14 @@ struct RootCanvas: View {
 
     private func updateIdleTimer() {
         UIApplication.shared.isIdleTimerDisabled = (self.scenePhase == .active && self.preventSleep)
+    }
+
+    private func syncDreamSettings() {
+        self.dreamModeManager.enabled = self.dreamEnabled
+        self.dreamModeManager.idleThresholdSeconds = TimeInterval(self.dreamIdleThreshold)
+        if let anim = DreamAnimation(rawValue: self.dreamAnimationRaw) {
+            self.dreamModeManager.selectedAnimation = anim
+        }
     }
 
     private func updateCanvasDebugStatus() {

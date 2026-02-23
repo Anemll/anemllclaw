@@ -152,6 +152,8 @@ public enum GatewayLocalTooling {
         "credentials.get",
         "credentials.set",
         "credentials.delete",
+        "get_idle_time",
+        "dream_mode",
     ]
 
     static var localCommands: [String] {
@@ -1304,7 +1306,7 @@ public enum GatewayLocalTooling {
             "AGENTS.md", "SOUL.md", "TOOLS.md",
             "IDENTITY.md", "USER.md", "HEARTBEAT.md",
             "BOOTSTRAP.md", "MEMORY.md", "NOTES.md",
-            "README.md",
+            "README.md", "DREAM.md",
         ]
         if knownRootFiles.contains(trimmed) { return path }
 

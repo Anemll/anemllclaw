@@ -106,6 +106,8 @@ targets:
         NSLocationWhenInUseUsageDescription: AnemllClaw uses your location when you allow location sharing.
         NSLocationAlwaysAndWhenInUseUsageDescription: AnemllClaw can share your location in the background when you enable Always.
         NSMicrophoneUsageDescription: AnemllClaw needs microphone access for voice wake.
+        NSMotionUsageDescription: AnemllClaw uses motion data to detect device orientation and activity.
+        NSPhotoLibraryUsageDescription: AnemllClaw can save captured photos and videos to your photo library.
         NSSpeechRecognitionUsageDescription: AnemllClaw uses on-device speech recognition for voice wake.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -213,4 +215,6 @@ targets:
         NSBonjourServices:
           - _openclaw-gw._tcp
         NSMicrophoneUsageDescription: AnemllClaw needs microphone access for voice wake.
+        NSMotionUsageDescription: AnemllClaw uses motion data to detect device orientation and activity.
+        NSPhotoLibraryUsageDescription: AnemllClaw can save captured photos and videos to your photo library.
         NSSpeechRecognitionUsageDescription: AnemllClaw uses on-device speech recognition for voice wake.

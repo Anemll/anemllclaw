@@ -19,6 +19,7 @@ enum TVOSBootstrapTemplateStore {
         "IDENTITY.md",
         "USER.md",
         "HEARTBEAT.md",
+        "DREAM.md",
         "BOOTSTRAP.md",
     ]
 
@@ -543,8 +544,290 @@ enum TVOSBootstrapTemplateStore {
         # HEARTBEAT.md
 
         # Keep this file empty (or with only comments) to skip heartbeat API calls.
-
         # Add tasks below when you want the agent to check something periodically.
+
+        ## Dream Mode Integration
+
+        On each heartbeat, call `get_idle_time()` and branch:
+
+        ### A) Start dream when idle (respond HEARTBEAT_OK)
+
+        If `idle_seconds > idle_threshold_seconds` AND `dream_enabled` is true
+        AND `cooldown_until` is absent or in the past:
+
+        1. `dream_mode({ "action": "enter" })` → note `runId` and `outputRoot`
+        2. Run dream cycle per DREAM.md (consolidate → explore → critic)
+        3. Write journal: `write({ "path": "dream/journal/YYYY-MM-DD.md", "content": "..." })`
+        4. Write digest: `write({ "path": "dream/digest.md", "content": "## Wake Digest\n..." })`
+        5. Optionally write patches: `write({ "path": "dream/patches/<name>.patch", "content": "..." })`
+        6. `dream_mode({ "action": "exit" })` — triggers retention cleanup
+        7. Respond `HEARTBEAT_OK`
+
+        ### B) Deliver digest when user returns
+
+        If `idle_seconds < 300` AND `pending_digest_path` is set in the response:
+
+        1. `read({ "path": "dream/digest.md" })`
+        2. Summarize findings to user as the heartbeat response
+        3. The native harness marks the digest as delivered
+
+        ### Important
+
+        - Use the `write` tool (NOT `memory.append`) for all `dream/` paths
+        - `dream/state.json` is managed by native code — do not write to it
+        - Dream artifacts are NOT included in memory search (kept separate)
+        - Only propose MEMORY.md changes via `dream/patches/`; never overwrite directly during dream
+        - Native cooldown (4h default) prevents re-running while continuously idle
+
+        """#,
+        "DREAM.md": #"""
+        # Dream Mode
+
+        Dream Mode is an **offline, interruptible background loop** that runs after long idle.
+        It has two goals:
+
+        1. **Consolidate** and improve *grounded* memory/context (compression, linking,
+           prioritization).
+        2. **Explore** new ideas via controlled "dreaming" (high-temperature ideation),
+           producing **hypotheses** that must be verified on wake.
+
+        ---
+
+        ## Dream Artifacts Directory
+
+        All dream outputs go to `dream/` under workspace root (separate from `memory/`):
+
+        ```
+        dream/
+        ├── state.json              ← run bookkeeping (managed by native harness — DO NOT WRITE)
+        ├── digest.md               ← short wake summary (overwritten each run)
+        ├── journal/
+        │   └── YYYY-MM-DD.md       ← verbose audit trail (14-day retention)
+        ├── patches/
+        │   └── *.patch             ← proposed diffs, never auto-applied (7-day retention)
+        └── archive/                ← optional compressed old journals
+        ```
+
+        **Rules:**
+        - Use the `write` tool for all `dream/` paths (NOT `memory.append` — it will be rejected).
+        - Dream artifacts are NOT included in `memory.search` results (grounded memory stays clean).
+        - `dream/state.json` is managed by native code. Do not read or write it directly.
+        - The digest (`dream/digest.md`) is delivered to the user via the next heartbeat after wake.
+        - Patches in `dream/patches/` are proposals — they require wake-time review before applying.
+        - Native retention: journals older than 14 days and patches older than 7 days are auto-deleted
+          when dream mode exits.
+
+        ---
+
+        ## Digest Format (dream/digest.md)
+
+        Keep the digest concise (<1200 chars). Structure:
+
+        - **Grounded changes** — consolidations, links, dedup performed (2–3 bullets)
+        - **Hypotheses** — H1–H3 with title, summary, expected impact, verification plan
+        - **Verify next** — 1–3 actions to take on wake
+        - **Patches available** — list filenames in `dream/patches/` if any
+
+        ---
+
+        ## Interrupt Events
+
+        Dream Mode ends immediately when any of the following occur:
+
+        - User taps the screen
+        - User sends a chat message
+        - Agent calls `dream_mode({ "action": "exit" })`
+        - App returns from background
+        - Heartbeat/interrupt signal fires
+
+        **Requirement:** Stop within a short window (best-effort ≤ 250ms) and checkpoint
+        progress.
+
+        ---
+
+        ## Dream Cycle Model
+
+        Dream Mode runs in **short, checkpointed cycles** to keep CPU low and wake fast.
+
+        **Cycle phases (recommended):**
+
+        1. **Consolidate (low temperature)**
+           - Summarize, dedup, tag, link, normalize names.
+           - Only produce grounded outputs from existing memory/files.
+
+        2. **Explore (higher temperature)**
+           - Generate *new* candidate ideas/plans/solutions.
+           - Must be labeled as **HYPOTHESIS** and stored separately (dream journal).
+           - No claims of factual truth unless backed by memory/file evidence.
+
+        3. **Critic / Gate (low temperature)**
+           - Score hypotheses for value, plausibility, and verification cost.
+           - Produce "wake digest" with top suggestions + what to verify.
+
+        **Temperature schedule (example):**
+        - Consolidate: 0.1–0.3
+        - Explore: 0.7–1.1
+        - Critic: 0.1–0.2
+
+        **Budgeting:**
+        - Per-cycle work: 5–20s compute + yield/sleep
+        - Max dream length: `durationMs` (tool param)
+        - Target CPU: <10% average (best-effort)
+
+        ---
+
+        ## Dream Tasks
+
+        Dream tasks are grouped into **four families**. The agent should pick tasks based on:
+        - recency/salience,
+        - open loops (blockers, TODOs, unanswered questions),
+        - novelty potential,
+        - and available budget.
+
+        ### A) Consolidation Tasks (Grounded)
+
+        - **Memory consolidation:** Review recent `memory/YYYY-MM-DD.md` files and update
+          `MEMORY.md` with distilled insights.
+        - **Tagging + prioritization:** Apply tags like `core/high`, `chit-chat/low`,
+          `blocker`, `todo`, `decision`, `spec`.
+        - **Compression / dedup:** Merge duplicates, summarize clusters, prune stale
+          low-utility notes (with reversible trail).
+        - **Cross-referencing:** Create links between related notes (e.g., iPhone X compat
+          → iOS deployment targets).
+        - **Indexing (optional):** Maintain `memory/index.json` with tags, entities, link
+          graph, and recency/utility stats.
+
+        ### B) Maintenance Tasks (Read-only by default)
+
+        - **Workspace health:** Verify key files exist (`ls({ "recursive": true })`);
+          optionally `git status` (no commits).
+        - **Staleness scan:** Check TOOLS.md, SOUL.md, and skill files for stale info;
+          generate a "refresh list."
+        - **Tooling hygiene:** Detect repeated tool-call failures/timeouts; suggest retries,
+          fallbacks, or doc fixes.
+
+        ### C) Exploration Tasks (High-Temperature Ideation)
+
+        Exploration is allowed to be creative, but outputs must be treated as **hypotheses**.
+
+        **Exploration operators (pick 1–3 per cycle):**
+        - **Analogize:** "What is a similar problem we solved before? Map the solution
+          pattern over."
+        - **Invert constraints:** "Assume the opposite constraint; what changes? Any useful
+          partial ideas?"
+        - **Random-walk association:** Traverse memory links (A→B→C) and propose new
+          connections.
+        - **Plan variants:** Generate 3–5 alternative approaches with different tradeoffs
+          (simplicity, safety, performance).
+        - **Failure replay:** Re-examine a prior failed approach; propose modifications
+          with newly learned constraints.
+        - **Red-team critique:** Attack the current plan; list failure modes; propose
+          mitigations.
+        - **Micro-experiments:** Propose small tests that would validate big assumptions
+          quickly.
+        - **"Future user" simulation:** Predict what the user will want next; prepare
+          candidate artifacts/checklists.
+        - **Refactor suggestions:** Identify repetitive steps; propose a new
+          skill/checklist/automation.
+
+        **Important:** Exploration must NOT:
+        - overwrite canonical memory directly,
+        - produce external side effects,
+        - or present unverified ideas as facts.
+
+        ### D) Meta / Self-Improvement Tasks (Process Upgrades)
+
+        - **Skill upgrades:** Suggest SKILL.md updates based on tool-call patterns and
+          repeated mistakes.
+        - **Checklists:** Convert repeated sequences into "do-this-first" checklists.
+        - **Naming consistency:** Normalize tool names, paths, and conventions; propose
+          a glossary.
+
+        ---
+
+        ## Outputs
+
+        Dream Mode should write its work into **separate, auditable artifacts** under `dream/`.
+
+        ### Required
+        - `dream/journal/YYYY-MM-DD.md` — verbose audit trail
+        - `dream/digest.md` — short wake summary (delivered via heartbeat)
+
+        ### Optional
+        - `dream/patches/*.patch` — proposed diffs for MEMORY.md or other files
+        - `memory/index.json` (tags/entities/links/stats — written via `memory.append`)
+
+        ---
+
+        ## Dream Journal Format (Recommended)
+
+        Each cycle appends a block:
+
+        - **Cycle ID:** timestamp + incremental counter
+        - **Inputs touched:** files read, sections scanned
+        - **Actions (grounded):**
+          - bullet list of consolidations/links/dedups performed
+        - **HYPOTHESES (unverified):**
+          - `H#` Title
+          - Summary (1–3 bullets)
+          - Expected impact (low/med/high)
+          - Verification plan (tests/reads needed)
+          - Risk (hallucination risk, side-effect risk)
+        - **Top wake suggestions:** up to 3 items
+
+        ---
+
+        ## Guardrails
+
+        Dream Mode exists to **reorganize existing information** and to **generate labeled
+        hypotheses**, not to invent reality.
+
+        - **No external side-effects by default.** Prefer read-only scans + writing a
+          dream journal output.
+        - **Never overwrite user-authored memory** without a reversible trail (diff/backup).
+        - **Separate confidence levels:**
+          - **Grounded facts** = directly supported by existing memory/files.
+          - **Hypotheses** = speculative; stored separately; require wake-time verification.
+        - **Interruptibility is mandatory.** Touch/heartbeat must stop quickly with
+          checkpointing.
+        - **Bounded compute.** Respect CPU/battery constraints; chunk work; yield frequently.
+
+        ---
+
+        ## Novelty Bias (Without Going Chaotic)
+
+        To ensure exploration produces genuinely new ideas (instead of rehashing):
+
+        **Per-session requirements:**
+        - At least 1 Exploration cycle per dream session.
+        - At least 1 exploration operator not used in the last 3 sessions.
+
+        **Critic scoring heuristic:**
+        - **Novelty:** Is this distinct from what's already in memory?
+        - **Impact:** Would it reduce user effort / reduce failure risk / ship faster?
+        - **Verification cost:** Can we test/validate it quickly?
+        - **Risk:** Could this mislead memory or cause unwanted side effects?
+
+        Surface only the top 1–3 hypotheses in the wake digest.
+
+        ---
+
+        ## Animation
+
+        Set in Settings > Device > Dream Mode. Options:
+        - `flame_pulse` — warm pulsing particles on black
+        - `aurora` — flowing gradient waves
+        - `starfield` — drifting star field
+        - `breathing_orb` — slow expanding/contracting orb
+        - `flurry` — rainbow particle clouds
+        - `flurry_classic` — glowing ribbon trails (Apple Flurry style)
+
+        ---
+
+        ## Custom Dream Tasks
+
+        Add your own tasks below. The agent picks from these during dream cycles:
+
         """#,
         "BOOTSTRAP.md": #"""
         # BOOTSTRAP.md - Hello, World

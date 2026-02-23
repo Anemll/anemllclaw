@@ -281,7 +281,11 @@ final class NodeAppModel {
 
     /// Configure the local gateway runtime with device service instances
     /// so the LLM can call native iOS tools during chat.
-    func configureDeviceToolBridge(on runtime: TVOSLocalGatewayRuntime) {
+    func configureDeviceToolBridge(
+        on runtime: TVOSLocalGatewayRuntime,
+        idleTracker: UserIdleTracker,
+        dreamManager: DreamModeManager)
+    {
         runtime.configureDeviceServices(
             reminders: self.remindersService,
             calendar: self.calendarService,
@@ -289,7 +293,9 @@ final class NodeAppModel {
             location: self.locationService,
             photos: self.photosService,
             camera: self.camera,
-            motion: self.motionService)
+            motion: self.motionService,
+            idleTracker: idleTracker,
+            dreamManager: dreamManager)
     }
 
     func setScenePhase(_ phase: ScenePhase) {

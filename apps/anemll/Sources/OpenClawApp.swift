@@ -10,6 +10,8 @@ struct OpenClawApp: App {
     @State private var appModel: NodeAppModel
     @State private var gatewayController: GatewayConnectionController
     @State private var localGatewayRuntime: TVOSLocalGatewayRuntime
+    @State private var idleTracker = UserIdleTracker()
+    @State private var dreamModeManager = DreamModeManager()
     @Environment(\.scenePhase) private var scenePhase
     #endif
 
@@ -45,11 +47,16 @@ struct OpenClawApp: App {
                 .environment(self.appModel.voiceWake)
                 .environment(self.gatewayController)
                 .environment(self.localGatewayRuntime)
+                .environment(self.idleTracker)
+                .environment(self.dreamModeManager)
                 .onOpenURL { url in
                     Task { await self.appModel.handleDeepLink(url: url) }
                 }
                 .task {
-                    self.appModel.configureDeviceToolBridge(on: self.localGatewayRuntime)
+                    self.appModel.configureDeviceToolBridge(
+                        on: self.localGatewayRuntime,
+                        idleTracker: self.idleTracker,
+                        dreamManager: self.dreamModeManager)
                     if self.localGatewayRuntime.state == .stopped {
                         await self.localGatewayRuntime.start()
                     }
@@ -116,6 +123,10 @@ extension OpenClawApp {
             case .background:
                 await self.localGatewayRuntime.stop()
             case .active:
+                self.idleTracker.recordInteraction()
+                if self.dreamModeManager.state == .dreaming {
+                    self.dreamModeManager.wake()
+                }
                 if self.localGatewayRuntime.state == .stopped {
                     await self.localGatewayRuntime.start()
                 }

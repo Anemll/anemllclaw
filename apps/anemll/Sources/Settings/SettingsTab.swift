@@ -14,6 +14,7 @@ struct SettingsTab: View {
     @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
     @Environment(GatewayConnectionController.self) private var gatewayController: GatewayConnectionController
     @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime: TVOSLocalGatewayRuntime
+    @Environment(DreamModeManager.self) private var dreamModeManager: DreamModeManager
     @Environment(\.dismiss) private var dismiss
     @AppStorage("node.displayName") private var displayName: String = "iOS Node"
     @AppStorage("node.instanceId") private var instanceId: String = UUID().uuidString
@@ -38,6 +39,9 @@ struct SettingsTab: View {
     @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = false
     @AppStorage("chat.autoRetryAttemptsOnError") private var chatAutoRetryAttemptsOnError: Int = 1
     @AppStorage("gateway.tvos.deviceTools.enabled") private var deviceToolsEnabled: Bool = true
+    @AppStorage("dream.enabled") private var dreamModeEnabled: Bool = false
+    @AppStorage("dream.idleThreshold") private var dreamIdleThreshold: Int = 600
+    @AppStorage("dream.animation") private var dreamAnimationRaw: String = DreamAnimation.flamePulse.rawValue
     @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
 
     // Onboarding control (RootCanvas listens to onboarding.requestID and force-opens the wizard).
@@ -103,553 +107,7 @@ struct SettingsTab: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    if self.savedProviders.isEmpty {
-                        Text("No LLM providers configured.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(self.savedProviders) { provider in
-                            self.providerRow(provider)
-                        }
-                        .onDelete { indexSet in
-                            let deletedIDs = indexSet.map { self.savedProviders[$0].id }
-                            self.savedProviders.remove(atOffsets: indexSet)
-                            LLMProviderStore.save(self.savedProviders)
-                            for id in deletedIDs {
-                                LLMProviderStore.deleteAPIKey(forProviderID: id)
-                            }
-                            if let activeID = self.activeProviderID, deletedIDs.contains(activeID) {
-                                self.activeProviderID = nil
-                                LLMProviderStore.setActiveID(nil)
-                                Task { await self.activateProvider(nil) }
-                            }
-                        }
-                    }
-
-                    Button {
-                        self.editingProvider = SavedLLMProvider()
-                    } label: {
-                        Label("Add Provider", systemImage: "plus.circle.fill")
-                    }
-
-                    if self.llmApplying {
-                        HStack(spacing: 8) {
-                            ProgressView().progressViewStyle(.circular)
-                            Text("Applying…")
-                        }
-                    }
-
-                    Toggle(
-                        "Show launch prompt when LLM is missing",
-                        isOn: Binding(
-                            get: { !self.llmSetupPromptSuppressed },
-                            set: { self.llmSetupPromptSuppressed = !$0 }))
-
-                    if let error = self.localGatewayRuntime.localLLMConfigErrorText {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-
-                    if let succeeded = self.localGatewayRuntime.lastLocalLLMProbeSucceeded {
-                        HStack(spacing: 6) {
-                            Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .foregroundStyle(succeeded ? .green : .red)
-                            Text(succeeded ? "LLM test passed" : "LLM test failed")
-                                .font(.footnote.weight(.medium))
-                        }
-                    }
-                    if let errorText = self.localGatewayRuntime.lastLocalLLMProbeErrorText {
-                        Text(Self.formatLLMError(errorText))
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                    if let responseText = self.localGatewayRuntime.lastLocalLLMProbeResponseText {
-                        Text(responseText)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(4)
-                    }
-                } header: {
-                    Text("LLM Providers")
-                }
-
-                Section {
-                    LabeledContent("Status") {
-                        Text(self.localGatewayRuntime.state == .running ? "Running" : "Stopped")
-                            .foregroundStyle(self.localGatewayRuntime.state == .running ? .green : .orange)
-                    }
-                    if let port = self.localGatewayRuntime.listenerPort {
-                        LabeledContent("Port", value: "\(port)")
-                    }
-                    LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
-
-                    Toggle("LAN Access (Debug)", isOn: Binding(
-                        get: { self.localGatewayRuntime.lanAccessEnabled },
-                        set: { newValue in
-                            Task { await self.localGatewayRuntime.setLanAccessEnabled(newValue) }
-                        }))
-                    if self.localGatewayRuntime.lanAccessEnabled {
-                        Text(
-                            "Server is reachable from your local network. This reduces security — use only for debugging.")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text("Server only accepts connections from this device (localhost).")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
-                            .frame(width: 10, height: 10)
-                        Text("Local Server")
-                    }
-                }
-
-                if Self.showsRemoteGatewaySection {
-                    Section {
-                        DisclosureGroup(isExpanded: self.$gatewayExpanded) {
-                            if !self.isGatewayConnected {
-                                Text(
-                                    "1. Open Telegram and message your bot: /pair\n"
-                                        + "2. Copy the setup code it returns\n"
-                                        + "3. Paste here and tap Connect\n"
-                                        + "4. Back in Telegram, run /pair approve")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-
-                                if let warning = self.tailnetWarningText {
-                                    Text(warning)
-                                        .font(.footnote.weight(.semibold))
-                                        .foregroundStyle(.orange)
-                                }
-
-                                TextField("Paste setup code", text: self.$setupCode)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-
-                                Button {
-                                    Task { await self.applySetupCodeAndConnect() }
-                                } label: {
-                                    if self.connectingGatewayID == "manual" {
-                                        HStack(spacing: 8) {
-                                            ProgressView()
-                                                .progressViewStyle(.circular)
-                                            Text("Connecting…")
-                                        }
-                                    } else {
-                                        Text("Connect with setup code")
-                                    }
-                                }
-                                .disabled(self.connectingGatewayID != nil
-                                    || self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                                if let status = self.setupStatusLine {
-                                    Text(status)
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-
-                            if self.isGatewayConnected {
-                                Picker("Bot", selection: self.$selectedAgentPickerId) {
-                                    Text("Default").tag("")
-                                    let defaultId = (self.appModel.gatewayDefaultAgentId ?? "")
-                                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    ForEach(
-                                        self.appModel.gatewayAgents.filter { $0.id != defaultId },
-                                        id: \.id)
-                                    { agent in
-                                        let name = (agent.name ?? "")
-                                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                                        Text(name.isEmpty ? agent.id : name).tag(agent.id)
-                                    }
-                                }
-                                Text("Controls which bot Chat and Talk speak to.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            if self.appModel.gatewayServerName == nil {
-                                LabeledContent("Discovery", value: self.gatewayController.discoveryStatusText)
-                            }
-                            LabeledContent("Status", value: self.appModel.gatewayStatusText)
-                            Toggle("Auto-connect on launch", isOn: self.$gatewayAutoConnect)
-
-                            if let serverName = self.appModel.gatewayServerName {
-                                LabeledContent("Server", value: serverName)
-                                if let addr = self.appModel.gatewayRemoteAddress {
-                                    let parts = Self.parseHostPort(from: addr)
-                                    let urlString = Self.httpURLString(
-                                        host: parts?.host,
-                                        port: parts?.port,
-                                        fallback: addr)
-                                    LabeledContent("Address") {
-                                        Text(urlString)
-                                    }
-                                    .contextMenu {
-                                        Button {
-                                            UIPasteboard.general.string = urlString
-                                        } label: {
-                                            Label("Copy URL", systemImage: "doc.on.doc")
-                                        }
-
-                                        if let parts {
-                                            Button {
-                                                UIPasteboard.general.string = parts.host
-                                            } label: {
-                                                Label("Copy Host", systemImage: "doc.on.doc")
-                                            }
-
-                                            Button {
-                                                UIPasteboard.general.string = "\(parts.port)"
-                                            } label: {
-                                                Label("Copy Port", systemImage: "doc.on.doc")
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Button("Disconnect", role: .destructive) {
-                                    self.appModel.disconnectGateway()
-                                }
-                            } else {
-                                self.gatewayList(showing: .all)
-                            }
-
-                            DisclosureGroup("Advanced") {
-                                Toggle("Use Manual Gateway", isOn: self.$manualGatewayEnabled)
-
-                                TextField("Host", text: self.$manualGatewayHost)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-
-                                TextField("Port (optional)", text: self.manualPortBinding)
-                                    .keyboardType(.numberPad)
-
-                                Toggle("Use TLS", isOn: self.$manualGatewayTLS)
-
-                                Button {
-                                    Task { await self.connectManual() }
-                                } label: {
-                                    if self.connectingGatewayID == "manual" {
-                                        HStack(spacing: 8) {
-                                            ProgressView()
-                                                .progressViewStyle(.circular)
-                                            Text("Connecting…")
-                                        }
-                                    } else {
-                                        Text("Connect (Manual)")
-                                    }
-                                }
-                                .disabled(self.connectingGatewayID != nil || self.manualGatewayHost
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty || !self.manualPortIsValid)
-
-                                Text(
-                                    "Use this when mDNS/Bonjour discovery is blocked. "
-                                        + "Leave port empty for 443 on tailnet DNS (TLS) or 18789 otherwise.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-
-                                Toggle("Discovery Debug Logs", isOn: self.$discoveryDebugLogsEnabled)
-                                    .onChange(of: self.discoveryDebugLogsEnabled) { _, newValue in
-                                        self.gatewayController.setDiscoveryDebugLoggingEnabled(newValue)
-                                    }
-
-                                NavigationLink("Discovery Logs") {
-                                    GatewayDiscoveryDebugLogView()
-                                }
-
-                                Toggle("Debug Canvas Status", isOn: self.$canvasDebugStatusEnabled)
-                                self.tvOSGatewayCapabilityMatrixSection()
-
-                                TextField("Gateway Auth Token", text: self.$gatewayToken)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-
-                                SecureField("Gateway Password", text: self.$gatewayPassword)
-
-                                Button("Reset Onboarding", role: .destructive) {
-                                    self.showResetOnboardingAlert = true
-                                }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Debug")
-                                        .font(.footnote.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                    Text(self.gatewayDebugText())
-                                        .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(10)
-                                        .background(
-                                            .thinMaterial,
-                                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Circle()
-                                    .fill(self.isGatewayConnected ? Color.green : Color.secondary.opacity(0.35))
-                                    .frame(width: 10, height: 10)
-                                Text("Remote Gateway")
-                                Spacer()
-                                Text(self.isGatewayConnected ? self.gatewaySummaryText : "Optional")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button {
-                        self.showBackupConfirmAlert = true
-                    } label: {
-                        Label("Backup to Files…", systemImage: "square.and.arrow.up")
-                    }
-                    .disabled(self.backupOperationInFlight)
-
-                    Button(role: .destructive) {
-                        self.showRestoreImporter = true
-                    } label: {
-                        Label("Restore from Backup…", systemImage: "square.and.arrow.down")
-                    }
-                    .disabled(self.backupOperationInFlight)
-
-                    Text("Backup includes chats, workspace files, settings, and saved credentials.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } header: {
-                    Text("Backup / Restore")
-                }
-
-                Section("Device") {
-                    DisclosureGroup("Features") {
-                        // Voice Wake, Talk Mode, and ElevenLabs are hidden —
-                        // they require a remote gateway and don't work with local server.
-                        Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
-                        Toggle("Show Tool Calls in Chat", isOn: self.$showsToolCallsInChat)
-                        Text("Tool calls are collapsed by default. Disable to hide tool traces in Chat.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Stepper(value: self.$chatAutoRetryAttemptsOnError, in: 0...5) {
-                            LabeledContent("Auto-Retry on Chat Error", value: "\(self.chatAutoRetryAttemptsOnError)")
-                        }
-                        Text("When chat.send fails, Chat sends \"Continue\" up to this many times per user message.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        Toggle(
-                            "Device Tools (LLM Access)",
-                            isOn: self.$deviceToolsEnabled)
-                        Text(
-                            "Allow the AI to use Reminders, Calendar,"
-                                + " Contacts, Location, Photos, Camera,"
-                                + " and Motion tools during chat.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        Toggle("Allow Camera", isOn: self.$cameraEnabled)
-                        Text("Allows the gateway to request photos or short video clips (foreground only).")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        Picker("Location Access", selection: self.$locationEnabledModeRaw) {
-                            Text("Off").tag(OpenClawLocationMode.off.rawValue)
-                            Text("While Using").tag(OpenClawLocationMode.whileUsing.rawValue)
-                            Text("Always").tag(OpenClawLocationMode.always.rawValue)
-                        }
-                        .pickerStyle(.segmented)
-
-                        Toggle("Precise Location", isOn: self.$locationPreciseEnabled)
-                            .disabled(self.locationMode == .off)
-
-                        Text("Always requires system permission and may prompt to open Settings.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        Toggle("Prevent Sleep", isOn: self.$preventSleep)
-                        Text("Keeps the screen awake while AnemllClaw is open.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    DisclosureGroup("Skills") {
-                        SkillsSettingsView(
-                            localGatewayRuntime: self.localGatewayRuntime,
-                            selectedSkillInfo: self.$selectedSkillInfo)
-                    }
-
-                    DisclosureGroup("Tools") {
-                        ToolsSettingsView(
-                            localGatewayRuntime: self.localGatewayRuntime,
-                            selectedToolInfo: self.$selectedToolInfo)
-                    }
-
-                    DisclosureGroup("Device Info") {
-                        TextField("Name", text: self.$displayName)
-                        Text(self.instanceId)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        LabeledContent("IP", value: self.localIPAddress ?? "—")
-                            .contextMenu {
-                                if let ip = self.localIPAddress {
-                                    Button {
-                                        UIPasteboard.general.string = ip
-                                    } label: {
-                                        Label("Copy", systemImage: "doc.on.doc")
-                                    }
-                                }
-                            }
-                        LabeledContent("Platform", value: self.platformString())
-                        LabeledContent("Version", value: self.appVersion())
-                        LabeledContent("Model", value: self.modelIdentifier())
-                    }
-
-                    self.bootstrapBudgetSection()
-                }
-
-                Section("About") {
-                    Button {
-                        self.showAcknowledgments = true
-                    } label: {
-                        Label("Acknowledgments", systemImage: "doc.text")
-                    }
-                }
-            }
-            .modifier(SettingsFormWidthModifier())
-            .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        self.dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .accessibilityLabel("Close")
-                }
-            }
-            .alert("Reset Onboarding?", isPresented: self.$showResetOnboardingAlert) {
-                Button("Reset", role: .destructive) {
-                    self.resetOnboarding()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text(
-                    "This will disconnect, clear saved gateway connection + credentials, and reopen the onboarding wizard.")
-            }
-            .onAppear {
-                self.localIPAddress = NetworkInterfaces.primaryIPv4Address()
-                self.lastLocationModeRaw = self.locationEnabledModeRaw
-                self.syncManualPortText()
-                let trimmedInstanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedInstanceId.isEmpty {
-                    self.gatewayToken = GatewaySettingsStore.loadGatewayToken(instanceId: trimmedInstanceId) ?? ""
-                    self.gatewayPassword = GatewaySettingsStore.loadGatewayPassword(instanceId: trimmedInstanceId) ?? ""
-                }
-                self.talkElevenLabsApiKey = GatewaySettingsStore.loadTalkElevenLabsApiKey() ?? ""
-                // Local server is primary — collapse remote gateway by default.
-                let localRunning = self.localGatewayRuntime.state == .running
-                self.gatewayExpanded = !localRunning && !self.isGatewayConnected
-                self.selectedAgentPickerId = self.appModel.selectedAgentId ?? ""
-                self.loadLLMSettingsFromRuntime()
-                self.loadBootstrapBudgetFromRuntime()
-                let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
-                self.savedProviders = migrated.providers
-                self.activeProviderID = migrated.activeID
-            }
-            .onAppear {
-                if self.autoAddProvider {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        if self.editingProvider == nil {
-                            self.editingProvider = SavedLLMProvider()
-                        }
-                    }
-                }
-            }
-            .onChange(of: self.selectedAgentPickerId) { _, newValue in
-                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.appModel.setSelectedAgentId(trimmed.isEmpty ? nil : trimmed)
-            }
-            .onChange(of: self.llmProvider) { _, newValue in
-                self.applyRecommendedLLMDefaultsIfNeeded(for: newValue)
-            }
-            .onChange(of: self.appModel.selectedAgentId ?? "") { _, newValue in
-                if newValue != self.selectedAgentPickerId {
-                    self.selectedAgentPickerId = newValue
-                }
-            }
-            .onChange(of: self.preferredGatewayStableID) { _, newValue in
-                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                GatewaySettingsStore.savePreferredGatewayStableID(trimmed)
-            }
-            .onChange(of: self.gatewayToken) { _, newValue in
-                guard !self.suppressCredentialPersist else { return }
-                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !instanceId.isEmpty else { return }
-                GatewaySettingsStore.saveGatewayToken(trimmed, instanceId: instanceId)
-            }
-            .onChange(of: self.gatewayPassword) { _, newValue in
-                guard !self.suppressCredentialPersist else { return }
-                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !instanceId.isEmpty else { return }
-                GatewaySettingsStore.saveGatewayPassword(trimmed, instanceId: instanceId)
-            }
-            .onChange(of: self.talkElevenLabsApiKey) { _, newValue in
-                GatewaySettingsStore.saveTalkElevenLabsApiKey(newValue)
-            }
-            .onChange(of: self.manualGatewayPort) { _, _ in
-                self.syncManualPortText()
-            }
-            .onChange(of: self.appModel.gatewayServerName) { _, newValue in
-                if newValue != nil {
-                    self.setupCode = ""
-                    self.setupStatusText = nil
-                    return
-                }
-                if self.manualGatewayEnabled {
-                    self.setupStatusText = self.appModel.gatewayStatusText
-                }
-            }
-            .onChange(of: self.appModel.gatewayStatusText) { _, newValue in
-                guard self.manualGatewayEnabled || self.connectingGatewayID == "manual" else { return }
-                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                self.setupStatusText = trimmed
-            }
-            .onChange(of: self.locationEnabledModeRaw) { _, newValue in
-                let previous = self.lastLocationModeRaw
-                self.lastLocationModeRaw = newValue
-                guard let mode = OpenClawLocationMode(rawValue: newValue) else { return }
-                Task {
-                    let granted = await self.appModel.requestLocationPermissions(mode: mode)
-                    if !granted {
-                        await MainActor.run {
-                            self.locationEnabledModeRaw = previous
-                            self.lastLocationModeRaw = previous
-                        }
-                    }
-                }
-            }
-            .onChange(of: self.deviceToolsEnabled) { _, newValue in
-                Task {
-                    var settings = self.localGatewayRuntime.controlPlaneSettings
-                    settings.enableLocalDeviceTools = newValue
-                    await self.localGatewayRuntime.applyControlPlaneSettings(settings)
-                }
-            }
-            .modifier(BootstrapBudgetChangeModifier(
-                perFile: self.$bootstrapPerFileMaxChars,
-                total: self.$bootstrapTotalMaxChars,
-                runtime: self.localGatewayRuntime))
+            self.settingsFormWithModifiers()
         }
         .gatewayTrustPromptAlert()
         .sheet(item: self.$editingProvider) { editing in
@@ -961,6 +419,716 @@ struct SettingsTab: View {
             || self.llmAPIKey != settings.localLLMAPIKey
             || self.llmModel != settings.localLLMModel
             || self.llmToolCallingMode != settings.localLLMToolCallingMode
+    }
+
+    private func settingsFormWithModifiers() -> some View {
+        self.settingsFormWithGatewayHandlers()
+            .onChange(of: self.locationEnabledModeRaw) { _, newValue in
+                let previous = self.lastLocationModeRaw
+                self.lastLocationModeRaw = newValue
+                guard let mode = OpenClawLocationMode(rawValue: newValue) else { return }
+                Task {
+                    let granted = await self.appModel.requestLocationPermissions(mode: mode)
+                    if !granted {
+                        await MainActor.run {
+                            self.locationEnabledModeRaw = previous
+                            self.lastLocationModeRaw = previous
+                        }
+                    }
+                }
+            }
+            .onChange(of: self.deviceToolsEnabled) { _, newValue in
+                Task {
+                    var settings = self.localGatewayRuntime.controlPlaneSettings
+                    settings.enableLocalDeviceTools = newValue
+                    await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+                }
+            }
+            .onChange(of: self.dreamModeEnabled) { _, newValue in
+                self.dreamModeManager.enabled = newValue
+            }
+            .onChange(of: self.dreamIdleThreshold) { _, newValue in
+                self.dreamModeManager.idleThresholdSeconds = TimeInterval(newValue)
+            }
+            .onChange(of: self.dreamAnimationRaw) { _, newValue in
+                if let anim = DreamAnimation(rawValue: newValue) {
+                    self.dreamModeManager.selectedAnimation = anim
+                }
+            }
+    }
+
+    private func settingsFormWithGatewayHandlers() -> some View {
+        self.settingsFormWithNavigation()
+            .onChange(of: self.selectedAgentPickerId) { _, newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.appModel.setSelectedAgentId(trimmed.isEmpty ? nil : trimmed)
+            }
+            .onChange(of: self.llmProvider) { _, newValue in
+                self.applyRecommendedLLMDefaultsIfNeeded(for: newValue)
+            }
+            .onChange(of: self.appModel.selectedAgentId ?? "") { _, newValue in
+                if newValue != self.selectedAgentPickerId {
+                    self.selectedAgentPickerId = newValue
+                }
+            }
+            .onChange(of: self.preferredGatewayStableID) { _, newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                GatewaySettingsStore.savePreferredGatewayStableID(trimmed)
+            }
+            .onChange(of: self.gatewayToken) { _, newValue in
+                guard !self.suppressCredentialPersist else { return }
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !instanceId.isEmpty else { return }
+                GatewaySettingsStore.saveGatewayToken(trimmed, instanceId: instanceId)
+            }
+            .onChange(of: self.gatewayPassword) { _, newValue in
+                guard !self.suppressCredentialPersist else { return }
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let instanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !instanceId.isEmpty else { return }
+                GatewaySettingsStore.saveGatewayPassword(trimmed, instanceId: instanceId)
+            }
+            .onChange(of: self.talkElevenLabsApiKey) { _, newValue in
+                GatewaySettingsStore.saveTalkElevenLabsApiKey(newValue)
+            }
+            .onChange(of: self.manualGatewayPort) { _, _ in
+                self.syncManualPortText()
+            }
+            .onChange(of: self.appModel.gatewayServerName) { _, newValue in
+                if newValue != nil {
+                    self.setupCode = ""
+                    self.setupStatusText = nil
+                    return
+                }
+                if self.manualGatewayEnabled {
+                    self.setupStatusText = self.appModel.gatewayStatusText
+                }
+            }
+            .onChange(of: self.appModel.gatewayStatusText) { _, newValue in
+                guard self.manualGatewayEnabled || self.connectingGatewayID == "manual" else { return }
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                self.setupStatusText = trimmed
+            }
+    }
+
+    private func settingsFormWithNavigation() -> some View {
+        self.settingsForm()
+            .modifier(SettingsFormWidthModifier())
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        self.dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+            .alert("Reset Onboarding?", isPresented: self.$showResetOnboardingAlert) {
+                Button("Reset", role: .destructive) {
+                    self.resetOnboarding()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(
+                    "This will disconnect, clear saved gateway connection + credentials, and reopen the onboarding wizard.")
+            }
+            .onAppear {
+                self.loadOnAppear()
+            }
+            .onAppear {
+                if self.autoAddProvider {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if self.editingProvider == nil {
+                            self.editingProvider = SavedLLMProvider()
+                        }
+                    }
+                }
+            }
+            .modifier(BootstrapBudgetChangeModifier(
+                perFile: self.$bootstrapPerFileMaxChars,
+                total: self.$bootstrapTotalMaxChars,
+                runtime: self.localGatewayRuntime))
+    }
+
+    private func loadOnAppear() {
+        self.localIPAddress = NetworkInterfaces.primaryIPv4Address()
+        self.lastLocationModeRaw = self.locationEnabledModeRaw
+        self.syncManualPortText()
+        let trimmedInstanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedInstanceId.isEmpty {
+            self.gatewayToken = GatewaySettingsStore.loadGatewayToken(instanceId: trimmedInstanceId) ?? ""
+            self.gatewayPassword = GatewaySettingsStore
+                .loadGatewayPassword(instanceId: trimmedInstanceId) ?? ""
+        }
+        self.talkElevenLabsApiKey = GatewaySettingsStore.loadTalkElevenLabsApiKey() ?? ""
+        let localRunning = self.localGatewayRuntime.state == .running
+        self.gatewayExpanded = !localRunning && !self.isGatewayConnected
+        self.selectedAgentPickerId = self.appModel.selectedAgentId ?? ""
+        self.loadLLMSettingsFromRuntime()
+        self.loadBootstrapBudgetFromRuntime()
+        let migrated = LLMProviderStore.migrateFromLegacyIfNeeded()
+        self.savedProviders = migrated.providers
+        self.activeProviderID = migrated.activeID
+        self.dreamModeManager.enabled = self.dreamModeEnabled
+        self.dreamModeManager.idleThresholdSeconds = TimeInterval(self.dreamIdleThreshold)
+        if let anim = DreamAnimation(rawValue: self.dreamAnimationRaw) {
+            self.dreamModeManager.selectedAnimation = anim
+        }
+    }
+
+    private func settingsForm() -> some View {
+        Form {
+            self.llmProvidersSection()
+            self.localServerSection()
+
+            if Self.showsRemoteGatewaySection {
+                self.remoteGatewaySection()
+            }
+
+            self.backupRestoreSection()
+            self.deviceSection()
+
+            Section("About") {
+                Button {
+                    self.showAcknowledgments = true
+                } label: {
+                    Label("Acknowledgments", systemImage: "doc.text")
+                }
+            }
+        }
+    }
+
+    private func localServerSection() -> some View {
+        Section {
+            LabeledContent("Status") {
+                Text(self.localGatewayRuntime.state == .running ? "Running" : "Stopped")
+                    .foregroundStyle(self.localGatewayRuntime.state == .running ? .green : .orange)
+            }
+            if let port = self.localGatewayRuntime.listenerPort {
+                LabeledContent("Port", value: "\(port)")
+            }
+            LabeledContent("Session", value: self.localGatewayRuntime.chatSessionKey)
+
+            Toggle("LAN Access (Debug)", isOn: Binding(
+                get: { self.localGatewayRuntime.lanAccessEnabled },
+                set: { newValue in
+                    Task { await self.localGatewayRuntime.setLanAccessEnabled(newValue) }
+                }))
+            if self.localGatewayRuntime.lanAccessEnabled {
+                Text(
+                    "Server is reachable from your local network. This reduces security — use only for debugging.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Server only accepts connections from this device (localhost).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(self.localGatewayRuntime.state == .running ? Color.green : Color.orange)
+                    .frame(width: 10, height: 10)
+                Text("Local Server")
+            }
+        }
+    }
+
+    private func remoteGatewaySection() -> some View {
+        Section {
+            DisclosureGroup(isExpanded: self.$gatewayExpanded) {
+                if !self.isGatewayConnected {
+                    Text(
+                        "1. Open Telegram and message your bot: /pair\n"
+                            + "2. Copy the setup code it returns\n"
+                            + "3. Paste here and tap Connect\n"
+                            + "4. Back in Telegram, run /pair approve")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    if let warning = self.tailnetWarningText {
+                        Text(warning)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+
+                    TextField("Paste setup code", text: self.$setupCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    Button {
+                        Task { await self.applySetupCodeAndConnect() }
+                    } label: {
+                        if self.connectingGatewayID == "manual" {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                Text("Connecting…")
+                            }
+                        } else {
+                            Text("Connect with setup code")
+                        }
+                    }
+                    .disabled(self.connectingGatewayID != nil
+                        || self.setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if let status = self.setupStatusLine {
+                        Text(status)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if self.isGatewayConnected {
+                    Picker("Bot", selection: self.$selectedAgentPickerId) {
+                        Text("Default").tag("")
+                        let defaultId = (self.appModel.gatewayDefaultAgentId ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        ForEach(
+                            self.appModel.gatewayAgents.filter { $0.id != defaultId },
+                            id: \.id)
+                        { agent in
+                            let name = (agent.name ?? "")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            Text(name.isEmpty ? agent.id : name).tag(agent.id)
+                        }
+                    }
+                    Text("Controls which bot Chat and Talk speak to.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if self.appModel.gatewayServerName == nil {
+                    LabeledContent("Discovery", value: self.gatewayController.discoveryStatusText)
+                }
+                LabeledContent("Status", value: self.appModel.gatewayStatusText)
+                Toggle("Auto-connect on launch", isOn: self.$gatewayAutoConnect)
+
+                if let serverName = self.appModel.gatewayServerName {
+                    LabeledContent("Server", value: serverName)
+                    if let addr = self.appModel.gatewayRemoteAddress {
+                        let parts = Self.parseHostPort(from: addr)
+                        let urlString = Self.httpURLString(
+                            host: parts?.host,
+                            port: parts?.port,
+                            fallback: addr)
+                        LabeledContent("Address") {
+                            Text(urlString)
+                        }
+                        .contextMenu {
+                            Button {
+                                UIPasteboard.general.string = urlString
+                            } label: {
+                                Label("Copy URL", systemImage: "doc.on.doc")
+                            }
+
+                            if let parts {
+                                Button {
+                                    UIPasteboard.general.string = parts.host
+                                } label: {
+                                    Label("Copy Host", systemImage: "doc.on.doc")
+                                }
+
+                                Button {
+                                    UIPasteboard.general.string = "\(parts.port)"
+                                } label: {
+                                    Label("Copy Port", systemImage: "doc.on.doc")
+                                }
+                            }
+                        }
+                    }
+
+                    Button("Disconnect", role: .destructive) {
+                        self.appModel.disconnectGateway()
+                    }
+                } else {
+                    self.gatewayList(showing: .all)
+                }
+
+                DisclosureGroup("Advanced") {
+                    Toggle("Use Manual Gateway", isOn: self.$manualGatewayEnabled)
+
+                    TextField("Host", text: self.$manualGatewayHost)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    TextField("Port (optional)", text: self.manualPortBinding)
+                        .keyboardType(.numberPad)
+
+                    Toggle("Use TLS", isOn: self.$manualGatewayTLS)
+
+                    Button {
+                        Task { await self.connectManual() }
+                    } label: {
+                        if self.connectingGatewayID == "manual" {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                Text("Connecting…")
+                            }
+                        } else {
+                            Text("Connect (Manual)")
+                        }
+                    }
+                    .disabled(self.connectingGatewayID != nil || self.manualGatewayHost
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty || !self.manualPortIsValid)
+
+                    Text(
+                        "Use this when mDNS/Bonjour discovery is blocked. "
+                            + "Leave port empty for 443 on tailnet DNS (TLS) or 18789 otherwise.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Discovery Debug Logs", isOn: self.$discoveryDebugLogsEnabled)
+                        .onChange(of: self.discoveryDebugLogsEnabled) { _, newValue in
+                            self.gatewayController.setDiscoveryDebugLoggingEnabled(newValue)
+                        }
+
+                    NavigationLink("Discovery Logs") {
+                        GatewayDiscoveryDebugLogView()
+                    }
+
+                    Toggle("Debug Canvas Status", isOn: self.$canvasDebugStatusEnabled)
+                    self.tvOSGatewayCapabilityMatrixSection()
+
+                    TextField("Gateway Auth Token", text: self.$gatewayToken)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    SecureField("Gateway Password", text: self.$gatewayPassword)
+
+                    Button("Reset Onboarding", role: .destructive) {
+                        self.showResetOnboardingAlert = true
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Debug")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(self.gatewayDebugText())
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .background(
+                                .thinMaterial,
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(self.isGatewayConnected ? Color.green : Color.secondary.opacity(0.35))
+                        .frame(width: 10, height: 10)
+                    Text("Remote Gateway")
+                    Spacer()
+                    Text(self.isGatewayConnected ? self.gatewaySummaryText : "Optional")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func backupRestoreSection() -> some View {
+        Section {
+            Button {
+                self.showBackupConfirmAlert = true
+            } label: {
+                Label("Backup to Files…", systemImage: "square.and.arrow.up")
+            }
+            .disabled(self.backupOperationInFlight)
+
+            Button(role: .destructive) {
+                self.showRestoreImporter = true
+            } label: {
+                Label("Restore from Backup…", systemImage: "square.and.arrow.down")
+            }
+            .disabled(self.backupOperationInFlight)
+
+            Text("Backup includes chats, workspace files, settings, and saved credentials.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } header: {
+            Text("Backup / Restore")
+        }
+    }
+
+    private func llmProvidersSection() -> some View {
+        Section {
+            if self.savedProviders.isEmpty {
+                Text("No LLM providers configured.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(self.savedProviders) { provider in
+                    self.providerRow(provider)
+                }
+                .onDelete { indexSet in
+                    let deletedIDs = indexSet.map { self.savedProviders[$0].id }
+                    self.savedProviders.remove(atOffsets: indexSet)
+                    LLMProviderStore.save(self.savedProviders)
+                    for id in deletedIDs {
+                        LLMProviderStore.deleteAPIKey(forProviderID: id)
+                    }
+                    if let activeID = self.activeProviderID, deletedIDs.contains(activeID) {
+                        self.activeProviderID = nil
+                        LLMProviderStore.setActiveID(nil)
+                        Task { await self.activateProvider(nil) }
+                    }
+                }
+            }
+
+            Button {
+                self.editingProvider = SavedLLMProvider()
+            } label: {
+                Label("Add Provider", systemImage: "plus.circle.fill")
+            }
+
+            if self.llmApplying {
+                HStack(spacing: 8) {
+                    ProgressView().progressViewStyle(.circular)
+                    Text("Applying…")
+                }
+            }
+
+            Toggle(
+                "Show launch prompt when LLM is missing",
+                isOn: Binding(
+                    get: { !self.llmSetupPromptSuppressed },
+                    set: { self.llmSetupPromptSuppressed = !$0 }))
+
+            if let error = self.localGatewayRuntime.localLLMConfigErrorText {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            if let succeeded = self.localGatewayRuntime.lastLocalLLMProbeSucceeded {
+                HStack(spacing: 6) {
+                    Image(systemName: succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(succeeded ? .green : .red)
+                    Text(succeeded ? "LLM test passed" : "LLM test failed")
+                        .font(.footnote.weight(.medium))
+                }
+            }
+            if let errorText = self.localGatewayRuntime.lastLocalLLMProbeErrorText {
+                Text(Self.formatLLMError(errorText))
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            if let responseText = self.localGatewayRuntime.lastLocalLLMProbeResponseText {
+                Text(responseText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+        } header: {
+            Text("LLM Providers")
+        }
+    }
+
+    private func deviceSection() -> some View {
+        Section("Device") {
+            DisclosureGroup("Features") {
+                // Voice Wake, Talk Mode, and ElevenLabs are hidden —
+                // they require a remote gateway and don't work with local server.
+                Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
+                Toggle("Show Tool Calls in Chat", isOn: self.$showsToolCallsInChat)
+                Text("Tool calls are collapsed by default. Disable to hide tool traces in Chat.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Stepper(value: self.$chatAutoRetryAttemptsOnError, in: 0...5) {
+                    LabeledContent("Auto-Retry on Chat Error", value: "\(self.chatAutoRetryAttemptsOnError)")
+                }
+                Text("When chat.send fails, Chat sends \"Continue\" up to this many times per user message.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle(
+                    "Device Tools (LLM Access)",
+                    isOn: self.$deviceToolsEnabled)
+                Text(
+                    "Allow the AI to use Reminders, Calendar,"
+                        + " Contacts, Location, Photos, Camera,"
+                        + " and Motion tools during chat.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Allow Camera", isOn: self.$cameraEnabled)
+                Text("Allows the gateway to request photos or short video clips (foreground only).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Picker("Location Access", selection: self.$locationEnabledModeRaw) {
+                    Text("Off").tag(OpenClawLocationMode.off.rawValue)
+                    Text("While Using").tag(OpenClawLocationMode.whileUsing.rawValue)
+                    Text("Always").tag(OpenClawLocationMode.always.rawValue)
+                }
+                .pickerStyle(.segmented)
+
+                Toggle("Precise Location", isOn: self.$locationPreciseEnabled)
+                    .disabled(self.locationMode == .off)
+
+                Text("Always requires system permission and may prompt to open Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Prevent Sleep", isOn: self.$preventSleep)
+                Text("Keeps the screen awake while AnemllClaw is open.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            DisclosureGroup("Skills") {
+                SkillsSettingsView(
+                    localGatewayRuntime: self.localGatewayRuntime,
+                    selectedSkillInfo: self.$selectedSkillInfo)
+            }
+
+            DisclosureGroup("Tools") {
+                ToolsSettingsView(
+                    localGatewayRuntime: self.localGatewayRuntime,
+                    selectedToolInfo: self.$selectedToolInfo)
+            }
+
+            self.dreamModeSection()
+
+            DisclosureGroup("Device Info") {
+                TextField("Name", text: self.$displayName)
+                Text(self.instanceId)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                LabeledContent("IP", value: self.localIPAddress ?? "—")
+                    .contextMenu {
+                        if let ip = self.localIPAddress {
+                            Button {
+                                UIPasteboard.general.string = ip
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                            }
+                        }
+                    }
+                LabeledContent("Platform", value: self.platformString())
+                LabeledContent("Version", value: self.appVersion())
+                LabeledContent("Model", value: self.modelIdentifier())
+            }
+
+            self.bootstrapBudgetSection()
+        }
+    }
+
+    private func dreamModeSection() -> some View {
+        DisclosureGroup("Dream Mode") {
+            Toggle(
+                "Enable Dream Mode",
+                isOn: self.$dreamModeEnabled)
+            Text(
+                "Shows an ambient animation when idle"
+                    + " and lets the agent do background"
+                    + " housekeeping.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Picker(
+                "Idle Threshold",
+                selection: self.$dreamIdleThreshold)
+            {
+                Text("10 minutes").tag(600)
+                Text("30 minutes").tag(1800)
+                Text("1 hour").tag(3600)
+                Text("2 hours").tag(7200)
+                Text("4 hours").tag(14400)
+            }
+
+            self.dreamAnimationPicker()
+            self.dreamAnimationPreview()
+        }
+    }
+
+    private func dreamAnimationPicker() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Animation")
+                .font(.subheadline)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(DreamAnimation.allCases) { anim in
+                        self.dreamAnimationTile(anim)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func dreamAnimationTile(
+        _ anim: DreamAnimation)
+        -> some View
+    {
+        let selected = self.dreamAnimationRaw == anim.rawValue
+        let borderColor = selected
+            ? Color.accentColor : Color.clear
+        return Button {
+            self.dreamAnimationRaw = anim.rawValue
+        } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    Color.black
+                    anim.previewView
+                        .allowsHitTesting(false)
+                }
+                .frame(width: 80, height: 60)
+                .clipped()
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 8,
+                        style: .continuous))
+                .overlay(
+                    RoundedRectangle(
+                        cornerRadius: 8,
+                        style: .continuous)
+                        .stroke(
+                            borderColor,
+                            lineWidth: 2))
+
+                Text(anim.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(
+                        selected
+                            ? .primary
+                            : .secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dreamAnimationPreview() -> some View {
+        let current = DreamAnimation(
+            rawValue: self.dreamAnimationRaw)
+            ?? .flamePulse
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Preview")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            ZStack {
+                Color.black
+                current.previewView
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 200)
+            .clipped()
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 12,
+                    style: .continuous))
+        }
     }
 
     private func bootstrapBudgetSection() -> some View {

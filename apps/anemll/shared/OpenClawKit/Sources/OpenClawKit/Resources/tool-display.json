@@ -173,6 +173,16 @@
       "title": "Delete Credential",
       "detailKeys": ["service"]
     },
+    "get_idle_time": {
+      "emoji": "💤",
+      "title": "Idle Time",
+      "detailKeys": ["idle_seconds", "dream_state", "pending_digest_path"]
+    },
+    "dream_mode": {
+      "emoji": "🌙",
+      "title": "Dream Mode",
+      "detailKeys": ["action", "dream_state", "runId", "outputRoot"]
+    },
     "discord": {
       "emoji": "💬",
       "title": "Discord",

@@ -100,6 +100,18 @@
 		D19D1086BEBEA9D812C48008 /* GatewaySettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9FE9333EC4133FCF1DE1A2B /* GatewaySettingsStoreTests.swift */; };
 		D2B995515778687A1951DA63 /* VoiceTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B64A0D09B2BB34E367436A0 /* VoiceTab.swift */; };
 		D499441E0DB2726B7445AE9A /* OnboardingStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7650974C160E3E71890426F /* OnboardingStateStore.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C1 /* DreamModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C1 /* DreamModeManager.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C2 /* DreamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C2 /* DreamView.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C3 /* DreamStatusPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C3 /* DreamStatusPill.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C4 /* IdleTouchPassthroughView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C4 /* IdleTouchPassthroughView.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C5 /* FlamePulseAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C5 /* FlamePulseAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C6 /* AuroraAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C6 /* AuroraAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C7 /* StarfieldAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C7 /* StarfieldAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C8 /* BreathingOrbAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C8 /* BreathingOrbAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9C9 /* FlurryAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9C9 /* FlurryAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9CA /* FlurryClassicAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9CA /* FlurryClassicAnimation.swift */; };
+		DB02E1A2B3C4D5E6F7A8B9CB /* DreamStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA01F1A2B3C4D5E6F7A8B9CB /* DreamStateStore.swift */; };
 		DD4DE0B1CC777342EA05A4EC /* VoiceWakePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54737144D2F85A4621F41BF8 /* VoiceWakePreferences.swift */; };
 		DDA612588ED5DF9588AE82FA /* VoiceWakeToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = C48B2978538D845C982D6983 /* VoiceWakeToast.swift */; };
 		DDD22D7CECAE5A9A47781B94 /* GatewayOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52207D3CB1045988BADDDCA0 /* GatewayOnboardingView.swift */; };
@@ -176,11 +188,11 @@
 		77E78563884FA3B58C63BC99 /* IOSGatewayChatTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSGatewayChatTransportTests.swift; sourceTree = "<group>"; };
 		781B2850D3375A80938607A0 /* OpenClawApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawApp.swift; sourceTree = "<group>"; };
 		7F2714F35AC5534D61624DE9 /* DeepLinkParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkParserTests.swift; sourceTree = "<group>"; };
-		8B1809BB98E84F90B7382B3D /* DeviceToolBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolBridgeTests.swift; sourceTree = "<group>"; };
 		80371B3399237F68A0C90984 /* GatewayConnectionSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionSecurityTests.swift; sourceTree = "<group>"; };
 		80A012480A0E1D69C91FEC14 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkModeManager.swift; sourceTree = "<group>"; };
 		86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoverageTests.swift; sourceTree = "<group>"; };
+		8B1809BB98E84F90B7382B3D /* DeviceToolBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolBridgeTests.swift; sourceTree = "<group>"; };
 		9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawBackupManager.swift; sourceTree = "<group>"; };
 		93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryDebugLogView.swift; sourceTree = "<group>"; };
 		94D3B96E29BB602FE72C7ECB /* DeviceStatusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStatusService.swift; sourceTree = "<group>"; };
@@ -219,6 +231,18 @@
 		D42A8C3D213AD8216165F00F /* GatewayConnectionIssueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionIssueTests.swift; sourceTree = "<group>"; };
 		D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryModel.swift; sourceTree = "<group>"; };
 		D58B1998AD66E9AF20EE96E0 /* GatewayDiscoveryModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryModelTests.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdleTracker.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C1 /* DreamModeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DreamModeManager.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C2 /* DreamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DreamView.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C3 /* DreamStatusPill.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DreamStatusPill.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C4 /* IdleTouchPassthroughView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdleTouchPassthroughView.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C5 /* FlamePulseAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlamePulseAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C6 /* AuroraAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuroraAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C7 /* StarfieldAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarfieldAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C8 /* BreathingOrbAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BreathingOrbAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9C9 /* FlurryAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlurryAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9CA /* FlurryClassicAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlurryClassicAnimation.swift; sourceTree = "<group>"; };
+		DA01F1A2B3C4D5E6F7A8B9CB /* DreamStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DreamStateStore.swift; sourceTree = "<group>"; };
 		DC6C09027B558C741B5716E4 /* SettingsNetworkingHelpersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsNetworkingHelpersTests.swift; sourceTree = "<group>"; };
 		DCBB6E6EA59787AD0D722806 /* OpenClawGatewayCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = OpenClawGatewayCore; path = shared/OpenClawGatewayCore; sourceTree = SOURCE_ROOT; };
 		DDE130CB8404C97E9670BBE8 /* RootCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootCanvas.swift; sourceTree = "<group>"; };
@@ -519,6 +543,33 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		DC03E1A2B3C4D5E6F7A8B9C0 /* Dream */ = {
+			isa = PBXGroup;
+			children = (
+				DA01F1A2B3C4D5E6F7A8B9C1 /* DreamModeManager.swift */,
+				DA01F1A2B3C4D5E6F7A8B9CB /* DreamStateStore.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C3 /* DreamStatusPill.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C2 /* DreamView.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C4 /* IdleTouchPassthroughView.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift */,
+				DD04E1A2B3C4D5E6F7A8B9C0 /* Animations */,
+			);
+			path = Dream;
+			sourceTree = "<group>";
+		};
+		DD04E1A2B3C4D5E6F7A8B9C0 /* Animations */ = {
+			isa = PBXGroup;
+			children = (
+				DA01F1A2B3C4D5E6F7A8B9C6 /* AuroraAnimation.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C8 /* BreathingOrbAnimation.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C5 /* FlamePulseAnimation.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C9 /* FlurryAnimation.swift */,
+				DA01F1A2B3C4D5E6F7A8B9CA /* FlurryClassicAnimation.swift */,
+				DA01F1A2B3C4D5E6F7A8B9C7 /* StarfieldAnimation.swift */,
+			);
+			path = Animations;
+			sourceTree = "<group>";
+		};
 		E0524027D3BBE47D649E0DC8 /* Onboarding */ = {
 			isa = PBXGroup;
 			children = (
@@ -555,6 +606,7 @@
 				7DD390FAFE3E24ADAD7F223E /* Chat */,
 				3729AEB8ECE62EB13B6DF3D2 /* Contacts */,
 				8B9335235DC1F6073E4210C1 /* Device */,
+				DC03E1A2B3C4D5E6F7A8B9C0 /* Dream */,
 				51250974DBD620EDABA8BA9F /* EventKit */,
 				C4C91DA2104FBA6357F1C586 /* Gateway */,
 				07BAC2187EE4B6167998AF57 /* Location */,
@@ -786,12 +838,19 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DB02E1A2B3C4D5E6F7A8B9C6 /* AuroraAnimation.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C8 /* BreathingOrbAnimation.swift in Sources */,
 				ED5947FF5E5A30FC0EF407D9 /* CalendarService.swift in Sources */,
 				B9185FB98738CA42D37CD7BE /* CameraController.swift in Sources */,
 				E70E697DADF232EC5E62845F /* ChatSheet.swift in Sources */,
 				377F320001C9538FCB5D34D3 /* ContactsService.swift in Sources */,
 				668BD531A954E8C494D914D4 /* DeviceStatusService.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C1 /* DreamModeManager.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9CB /* DreamStateStore.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C3 /* DreamStatusPill.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C2 /* DreamView.swift in Sources */,
 				C09D60578A642B60DBA777A2 /* EventKitAuthorization.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C5 /* FlamePulseAnimation.swift in Sources */,
 				0125CFAAE4B615327F5F8347 /* GatewayConnectConfig.swift in Sources */,
 				24704918A0CDD1FBADFA872E /* GatewayConnectionController.swift in Sources */,
 				C52C734E98106E88172CAF35 /* GatewayConnectionIssue.swift in Sources */,
@@ -805,6 +864,7 @@
 				4AA05C9C0B83ADCA472AE476 /* GatewaySettingsStore.swift in Sources */,
 				92391E7FB584DBD954600CF5 /* GatewaySetupCode.swift in Sources */,
 				A5733B5EB94111DCBE4F985A /* GatewayTrustPromptAlert.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C4 /* IdleTouchPassthroughView.swift in Sources */,
 				3EDBFFFA598ADEC7056417FC /* IOSGatewayChatTransport.swift in Sources */,
 				271F0EFDD58517F4D71FC862 /* KeychainStore.swift in Sources */,
 				F05A047562DEC8811997CEFC /* LLMProviderEditorSheet.swift in Sources */,
@@ -838,6 +898,9 @@
 				0F7FC7EFF2DA12BB8244B5E0 /* SettingsTab.swift in Sources */,
 				0F7FC7EFF2DA12BB8244B5E1 /* SkillsSettingsView.swift in Sources */,
 				0F7FC7EFF2DA12BB8244B5E2 /* ToolsSettingsView.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C7 /* StarfieldAnimation.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C9 /* FlurryAnimation.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9CA /* FlurryClassicAnimation.swift in Sources */,
 				F3B93A2E2912C8ED6251F142 /* SignificantLocationMonitor.swift in Sources */,
 				5B3FFC50CE121BC2BA55D9A2 /* StatusActivityBuilder.swift in Sources */,
 				40EA517862C4FCE286CF7474 /* StatusPill.swift in Sources */,
@@ -845,6 +908,7 @@
 				1F692D9B0754F80623A460A2 /* TVOSBootstrapTemplateStore.swift in Sources */,
 				1F65944EB030C820975E87E1 /* TVOSBootstrapWorkspaceSeeder.swift in Sources */,
 				1AB0339366DB438149E660E6 /* TVOSGatewayHostView.swift in Sources */,
+				DB02E1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift in Sources */,
 				ACED365FE5D0BE13F97B0383 /* TVOSLocalGatewayRuntime.swift in Sources */,
 				EB48B22338AFAEDB182DA5FB /* TalkModeManager.swift in Sources */,
 				BD2E4F5D544408D0DB6D28FC /* TalkOrbOverlay.swift in Sources */,
@@ -1142,7 +1206,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = TQQH8VZ67M;
+				DEVELOPMENT_TEAM = ARRY5366Y3;
 				ENABLE_APPINTENTS_METADATA = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
