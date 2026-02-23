@@ -90,8 +90,8 @@ targets:
       properties:
         CFBundleDisplayName: AnemllClaw
         CFBundleIconName: AppIcon
-        CFBundleShortVersionString: "2026.2.16"
-        CFBundleVersion: "20260216"
+        CFBundleShortVersionString: "2026.2.23"
+        CFBundleVersion: "20260223"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -141,8 +141,8 @@ targets:
       path: Tests/Info.plist
       properties:
         CFBundleDisplayName: AnemllClawTests
-        CFBundleShortVersionString: "2026.2.16"
-        CFBundleVersion: "20260216"
+        CFBundleShortVersionString: "2026.2.23"
+        CFBundleVersion: "20260223"
 
   AnemllClawTV:
     type: application
@@ -204,8 +204,8 @@ targets:
         TVTopShelfImage:
           TVTopShelfPrimaryImage: "Top Shelf Image"
           TVTopShelfPrimaryImageWide: "Top Shelf Image Wide"
-        CFBundleShortVersionString: "2026.2.16"
-        CFBundleVersion: "20260216"
+        CFBundleShortVersionString: "2026.2.23"
+        CFBundleVersion: "20260223"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

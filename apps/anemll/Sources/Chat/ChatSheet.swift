@@ -38,6 +38,7 @@ struct ChatSheet: View {
     @Environment(VoiceWakeManager.self) private var voiceWake: VoiceWakeManager
     @Environment(GatewayConnectionController.self) private var gatewayController: GatewayConnectionController
     @Environment(TVOSLocalGatewayRuntime.self) private var localGatewayRuntime: TVOSLocalGatewayRuntime
+    @Environment(DreamModeManager.self) private var dreamModeManager: DreamModeManager
     @AppStorage("chat.toolCalls.visible") private var showsToolCallsInChat: Bool = false
     @AppStorage("chat.autoRetryAttemptsOnError") private var autoRetryAttemptsOnError: Int = 1
     @AppStorage(OpenClawChatTextScaleLevel.defaultsKey)
@@ -148,6 +149,7 @@ struct ChatSheet: View {
                     .environment(self.voiceWake)
                     .environment(self.gatewayController)
                     .environment(self.localGatewayRuntime)
+                    .environment(self.dreamModeManager)
             }
         }
     }
