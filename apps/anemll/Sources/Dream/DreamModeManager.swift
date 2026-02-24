@@ -155,27 +155,31 @@ final class DreamModeManager {
             return
         }
 
+        // Allow re-triggering whenever idle threshold has elapsed since
+        // the last dream started. This means dream repeats every
+        // ~idleThresholdSeconds during continuous idle.
         if let store = self.dreamStateStore {
             let state = store.load()
-
-            // Already dreamed for this interaction epoch
-            let key = Self.epochKey(
-                for: idleTracker.lastInteractionAt)
-            if state.lastDreamForInteraction == key {
-                Self.logger.debug(
-                    "dream auto-trigger skip: already dreamed for epoch \(key)")
-                return
+            if let lastRunISO = state.lastRunAt,
+               let lastRunDate = ISO8601DateFormatter().date(from: lastRunISO)
+            {
+                let sinceLast = Date().timeIntervalSince(lastRunDate)
+                if sinceLast < self.idleThresholdSeconds {
+                    Self.logger.debug(
+                        "dream auto-trigger skip: last dream \(Int(sinceLast))s ago < threshold \(Int(self.idleThresholdSeconds))s")
+                    return
+                }
             }
         } else {
             Self.logger.warning(
-                "dream auto-trigger: dreamStateStore is nil — cannot check epoch")
+                "dream auto-trigger: dreamStateStore is nil — cannot check timing")
         }
 
         Self.logger.info(
             "dream auto-trigger: entering dream (idle \(Int(idle))s >= threshold \(Int(self.idleThresholdSeconds))s)")
         self.enterDream()
 
-        // Record interaction epoch
+        // Record interaction epoch (still used for digest delivery tracking)
         self.dreamStateStore?.update { state in
             state.lastDreamForInteraction = Self.epochKey(
                 for: idleTracker.lastInteractionAt)
