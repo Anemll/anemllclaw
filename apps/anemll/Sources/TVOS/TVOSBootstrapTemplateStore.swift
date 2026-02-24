@@ -574,7 +574,7 @@ enum TVOSBootstrapTemplateStore {
         - `dream/state.json` is managed by native code — do not write to it
         - Dream artifacts are NOT included in memory search (kept separate)
         - Only propose MEMORY.md changes via `dream/patches/`; never overwrite directly during dream
-        - Native cooldown (4h default) prevents re-running while continuously idle
+        - Interaction epoch tracking prevents re-running for the same idle period
 
         ## end of Dream Mode Integration
 

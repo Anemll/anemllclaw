@@ -12,7 +12,6 @@ public protocol GatewayLocalMethodRouterAdminBridge: Sendable {
     func dreamEnter() async throws -> GatewayJSONValue
     func dreamWake() async throws -> GatewayJSONValue
     func dreamIdle() async throws -> GatewayJSONValue
-    func dreamClearCooldown() async throws -> GatewayJSONValue
     func dreamReseedTemplates() async throws -> GatewayJSONValue
 }
 
@@ -526,8 +525,6 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleDreamWake(request)
         case "dream.idle":
             return await self.handleDreamIdle(request)
-        case "dream.clearCooldown":
-            return await self.handleDreamClearCooldown(request)
         case "dream.reseedTemplates":
             return await self.handleDreamReseedTemplates(request)
         case "tools.time.now", "time.now":
@@ -1745,14 +1742,27 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 message: "sessions.delete: key must not be empty")
         }
 
-        if key == "main" {
-            return GatewayResponseFrame.failure(
-                id: request.id,
-                code: .invalidRequest,
-                message: "Cannot delete the main session.")
-        }
-
         let deleteTranscript = params.deleteTranscript ?? true
+
+        // For "main", clear transcripts but keep the session entry.
+        if key == "main" {
+            if deleteTranscript {
+                do {
+                    _ = try await self.memoryStore.deleteTranscripts(sessionKey: key)
+                } catch {
+                    // Best-effort
+                }
+            }
+            // Reset the in-memory session context (clears history).
+            await self.sessionStore.removeSession(sessionKey: key)
+            return GatewayResponseFrame.success(
+                id: request.id,
+                payload: .object([
+                    "ok": .bool(true),
+                    "key": .string(key),
+                    "cleared": .bool(true),
+                ]))
+        }
 
         // Remove from in-memory session store.
         await self.sessionStore.removeSession(sessionKey: key)
@@ -2331,24 +2341,6 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 id: request.id,
                 code: .internalError,
                 message: "dream.idle failed: \(error.localizedDescription)")
-        }
-    }
-
-    private func handleDreamClearCooldown(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
-        guard let adminBridge = self.config.adminBridge else {
-            return GatewayResponseFrame.failure(
-                id: request.id,
-                code: .unsupportedOnHost,
-                message: "dream.clearCooldown is not available on this host")
-        }
-        do {
-            let payload = try await adminBridge.dreamClearCooldown()
-            return GatewayResponseFrame.success(id: request.id, payload: payload)
-        } catch {
-            return GatewayResponseFrame.failure(
-                id: request.id,
-                code: .internalError,
-                message: "dream.clearCooldown failed: \(error.localizedDescription)")
         }
     }
 

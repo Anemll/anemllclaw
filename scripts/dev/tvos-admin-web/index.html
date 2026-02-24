@@ -475,10 +475,6 @@
           <span id="dream-enabled-text">—</span>
         </div>
         <div class="row">
-          <label>Cooldown Until</label>
-          <span id="dream-cooldown-text">—</span>
-        </div>
-        <div class="row">
           <label>Run ID</label>
           <span id="dream-run-id-text">—</span>
         </div>
@@ -486,9 +482,6 @@
           <button id="dream-enter-btn" disabled>Enter Dream</button>
           <button id="dream-wake-btn" disabled>Wake</button>
           <button id="dream-refresh-btn" disabled>Refresh</button>
-        </div>
-        <div style="margin-top: 6px">
-          <button id="dream-clear-cooldown-btn" disabled style="width: 100%; background: var(--btn); color: var(--fg); border: none; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px">Clear Cooldown &amp; Epoch</button>
         </div>
         <div id="dream-log" class="muted small" style="margin-top: 8px"></div>
 
@@ -632,12 +625,10 @@
       const dreamIdleText = el("dream-idle-text");
       const dreamThresholdText = el("dream-threshold-text");
       const dreamEnabledText = el("dream-enabled-text");
-      const dreamCooldownText = el("dream-cooldown-text");
       const dreamRunIdText = el("dream-run-id-text");
       const dreamEnterBtn = el("dream-enter-btn");
       const dreamWakeBtn = el("dream-wake-btn");
       const dreamRefreshBtn = el("dream-refresh-btn");
-      const dreamClearCooldownBtn = el("dream-clear-cooldown-btn");
       const dreamLog = el("dream-log");
       const dreamLastRunAt = el("dream-last-run-at");
       const dreamLastEpoch = el("dream-last-epoch");
@@ -722,7 +713,6 @@
         dreamEnterBtn.disabled = !connected || busy;
         dreamWakeBtn.disabled = !connected || busy;
         dreamRefreshBtn.disabled = !connected || busy;
-        dreamClearCooldownBtn.disabled = !connected || busy;
         dreamReadStateBtn.disabled = !connected || busy;
         dreamReadDigestBtn.disabled = !connected || busy;
         dreamListJournalBtn.disabled = !connected || busy;
@@ -1550,7 +1540,6 @@
         const enabled = payload.enabled ?? payload.dream_enabled;
         const idleSec = payload.idleSeconds ?? payload.idle_seconds;
         const thresholdSec = payload.thresholdSeconds ?? payload.idle_threshold_seconds;
-        const cooldown = payload.cooldownUntil || payload.cooldown_until;
         const runId = payload.runId || payload.lastRunId;
 
         if (state) {
@@ -1572,7 +1561,6 @@
         if (enabled === true || enabled === false) {
           dreamEnabledText.textContent = enabled ? "yes" : "no";
         }
-        dreamCooldownText.textContent = cooldown || "none";
         dreamRunIdText.textContent = runId || "none";
 
         // Artifact fields
@@ -1681,15 +1669,6 @@
         renderResult({ method: "dream.wake", payload });
         log(`dream.wake ok state=${payload?.state || "unknown"}`);
         dreamLog.textContent = `woke from dream ${now()}`;
-        await refreshDream();
-      }
-
-      async function dreamClearCooldown() {
-        const payload = await request("dream.clearCooldown", {}, { timeoutMs: 10000 });
-        renderResult({ method: "dream.clearCooldown", payload });
-        log(`dream.clearCooldown ok cleared=${payload?.cleared}`);
-        dreamLog.textContent = `cooldown cleared ${now()}`;
-        dreamCooldownText.textContent = "none";
         await refreshDream();
       }
 
@@ -2348,7 +2327,6 @@
       dreamEnterBtn.addEventListener("click", () => withAction(dreamEnter, "dream.enter"));
       dreamWakeBtn.addEventListener("click", () => withAction(dreamWake, "dream.wake"));
       dreamRefreshBtn.addEventListener("click", () => withAction(refreshDream, "dream.refresh"));
-      dreamClearCooldownBtn.addEventListener("click", () => withAction(dreamClearCooldown, "dream.clearCooldown"));
       dreamReadStateBtn.addEventListener("click", () => withAction(() => dreamReadFile("dream/state.json", "state.json"), "read"));
       dreamReadDigestBtn.addEventListener("click", () => withAction(() => dreamReadFile("dream/digest.md", "digest.md"), "read"));
       dreamListJournalBtn.addEventListener("click", () => withAction(dreamListJournal, "ls"));

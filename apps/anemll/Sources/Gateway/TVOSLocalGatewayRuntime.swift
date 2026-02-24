@@ -246,13 +246,6 @@ private actor TVOSRuntimeAdminBridge: GatewayLocalMethodRouterAdminBridge {
         return await runtime.adminDreamIdle()
     }
 
-    func dreamClearCooldown() async throws -> GatewayJSONValue {
-        guard let runtime = self.runtime else {
-            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
-        }
-        return await runtime.adminDreamClearCooldown()
-    }
-
     func dreamReseedTemplates() async throws -> GatewayJSONValue {
         guard let runtime = self.runtime else {
             throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
@@ -529,10 +522,6 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
                     payload["pending_digest_path"] =
                         .string(pending)
                 }
-                if let cooldown = runState?.cooldownUntil {
-                    payload["cooldown_until"] =
-                        .string(cooldown)
-                }
                 return GatewayLocalTooling.ToolResult(
                     payload: .object(payload), error: nil)
 
@@ -751,6 +740,7 @@ final class TVOSLocalGatewayRuntime {
     private var chatHistoryPollTask: Task<Void, Never>?
     private var telegramPairingPollTask: Task<Void, Never>?
     private var networkWatchdogTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
     /// Tracks the last known set of local IPv4 addresses so the watchdog
     /// can detect interface changes (e.g. WiFi reconnect, new DHCP lease).
     private var networkWatchdogLastAddresses: Set<String> = []
@@ -1040,6 +1030,7 @@ final class TVOSLocalGatewayRuntime {
         self.state = .running
         self.startNetworkWatchdog()
         self.startTelegramPairingPollingIfNeeded()
+        self.startHeartbeat()
         await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
         self.appendLog(
             "runtime running ws=\(self.listenerState.rawValue) tcp=\(self.tcpListenerState.rawValue)")
@@ -1088,6 +1079,7 @@ final class TVOSLocalGatewayRuntime {
         self.appendLog("runtime stop requested")
         self.stopChatProgressPolling()
         self.stopNetworkWatchdog()
+        self.stopHeartbeat()
 
         self.webSocketRetryTask?.cancel()
         self.webSocketRetryTask = nil
@@ -1390,6 +1382,76 @@ final class TVOSLocalGatewayRuntime {
             self.chatLastErrorText = error.localizedDescription
             self.appendLog("chat.send threw: \(error.localizedDescription)", level: .error)
             return
+        }
+    }
+
+    // MARK: - Heartbeat Timer
+
+    /// Default heartbeat interval: 30 minutes (matches the Node.js gateway default).
+    private static let heartbeatIntervalSeconds: TimeInterval = 30 * 60
+
+    /// The prompt sent to the LLM on each heartbeat tick.
+    private static let heartbeatPrompt =
+        "Read HEARTBEAT.md if it exists (workspace context). " +
+        "Follow it strictly. Do not infer or repeat old tasks from prior chats. " +
+        "If nothing needs attention, reply HEARTBEAT_OK."
+
+    private func startHeartbeat() {
+        guard self.heartbeatTask == nil else { return }
+        self.appendLog("heartbeat timer started (every \(Int(Self.heartbeatIntervalSeconds))s)")
+        self.heartbeatTask = Task { [weak self] in
+            // Wait one full interval before the first heartbeat so we don't
+            // fire immediately on app launch.
+            try? await Task.sleep(nanoseconds: UInt64(Self.heartbeatIntervalSeconds * 1_000_000_000))
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.sendHeartbeat()
+                try? await Task.sleep(nanoseconds: UInt64(Self.heartbeatIntervalSeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        self.heartbeatTask?.cancel()
+        self.heartbeatTask = nil
+    }
+
+    private func sendHeartbeat() async {
+        #if os(iOS)
+        // Skip heartbeat while dreaming — the dream cycle is already running.
+        if let dream = self.dreamManager, dream.state == .dreaming {
+            self.appendLog("heartbeat skipped: dream mode active")
+            return
+        }
+        #endif
+
+        guard self.state == .running, let host = self.host else {
+            self.appendLog("heartbeat skipped: runtime not running", level: .warning)
+            return
+        }
+
+        self.appendLog("heartbeat sending")
+
+        let request = GatewayRequestFrame(
+            id: "heartbeat-\(UUID().uuidString.prefix(8))",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string("main"),
+                "message": .string(Self.heartbeatPrompt),
+                "thinking": .string("low"),
+                "skipPreamble": .bool(true),
+            ]))
+
+        do {
+            let response = try await host.invoke(request)
+            if response.ok {
+                self.appendLog("heartbeat ok")
+            } else {
+                let message = response.error?.message ?? "unknown"
+                self.appendLog("heartbeat failed: \(message)", level: .warning)
+            }
+        } catch {
+            self.appendLog("heartbeat threw: \(error.localizedDescription)", level: .error)
         }
     }
 
@@ -2765,9 +2827,6 @@ final class TVOSLocalGatewayRuntime {
         }
         if let store = self.dreamStateStoreRef {
             let state = store.load()
-            if let cooldown = state.cooldownUntil {
-                dict["cooldownUntil"] = .string(cooldown)
-            }
             if let lastRunId = state.lastRunId {
                 dict["lastRunId"] = .string(lastRunId)
             }
@@ -2839,24 +2898,6 @@ final class TVOSLocalGatewayRuntime {
         return .object(dict)
         #else
         return .object(["ok": .bool(false), "error": .string("idle tracking not available on this platform")])
-        #endif
-    }
-
-    fileprivate func adminDreamClearCooldown() -> GatewayJSONValue {
-        #if os(iOS)
-        if let store = self.dreamStateStoreRef {
-            store.update { state in
-                state.cooldownUntil = nil
-                state.lastDreamForInteraction = nil
-            }
-            return .object([
-                "ok": .bool(true),
-                "cleared": .bool(true),
-            ])
-        }
-        return .object(["ok": .bool(false), "error": .string("dreamStateStore unavailable")])
-        #else
-        return .object(["ok": .bool(false), "error": .string("dream not available on this platform")])
         #endif
     }
 

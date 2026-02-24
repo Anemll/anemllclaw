@@ -1129,7 +1129,6 @@ struct SettingsTab: View {
             self.dreamAnimationPreview()
 
             Button {
-                self.dreamModeManager.clearCooldown()
                 self.dreamModeManager.enterDream()
                 self.dismiss()
             } label: {

@@ -279,9 +279,6 @@ struct RootCanvas: View {
         if let anim = DreamAnimation(rawValue: self.dreamAnimationRaw) {
             self.dreamModeManager.selectedAnimation = anim
         }
-        // Reset cooldown on app launch / settings change so the next
-        // idle period can trigger a new dream immediately.
-        self.dreamModeManager.clearCooldown()
     }
 
     private func updateCanvasDebugStatus() {

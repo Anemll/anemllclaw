@@ -140,7 +140,7 @@ final class DreamModeManager {
         self.currentTaskLabel = label
     }
 
-    // MARK: - Auto-Trigger with Cooldown
+    // MARK: - Auto-Trigger
 
     func evaluateAutoTrigger(idleTracker: UserIdleTracker) {
         let idle = idleTracker.idleSeconds
@@ -158,19 +158,6 @@ final class DreamModeManager {
         if let store = self.dreamStateStore {
             let state = store.load()
 
-            // Cooldown: do not re-enter if still within cooldown window
-            if let cooldownStr = state.cooldownUntil {
-                let formatter = ISO8601DateFormatter()
-                if let cooldownDate = formatter.date(
-                    from: cooldownStr),
-                    Date() < cooldownDate
-                {
-                    Self.logger.info(
-                        "dream auto-trigger blocked: cooldown until \(cooldownStr)")
-                    return
-                }
-            }
-
             // Already dreamed for this interaction epoch
             let key = Self.epochKey(
                 for: idleTracker.lastInteractionAt)
@@ -181,21 +168,17 @@ final class DreamModeManager {
             }
         } else {
             Self.logger.warning(
-                "dream auto-trigger: dreamStateStore is nil — cannot check cooldown/epoch")
+                "dream auto-trigger: dreamStateStore is nil — cannot check epoch")
         }
 
         Self.logger.info(
             "dream auto-trigger: entering dream (idle \(Int(idle))s >= threshold \(Int(self.idleThresholdSeconds))s)")
         self.enterDream()
 
-        // Record interaction epoch + set 4-hour cooldown
+        // Record interaction epoch
         self.dreamStateStore?.update { state in
             state.lastDreamForInteraction = Self.epochKey(
                 for: idleTracker.lastInteractionAt)
-            state.cooldownUntil = ISO8601DateFormatter()
-                .string(
-                    from: Date()
-                        .addingTimeInterval(4 * 3600))
         }
     }
 
@@ -229,18 +212,6 @@ final class DreamModeManager {
             state.deliveredForInteraction =
                 state.lastDreamForInteraction
             state.pendingDigestPath = nil
-        }
-    }
-
-    // MARK: - Cooldown
-
-    /// Clear cooldown and interaction epoch so the next idle period
-    /// can trigger a new dream. Called on app launch and settings change.
-    func clearCooldown() {
-        Self.logger.info("clearing dream cooldown and epoch")
-        self.dreamStateStore?.update { state in
-            state.cooldownUntil = nil
-            state.lastDreamForInteraction = nil
         }
     }
 

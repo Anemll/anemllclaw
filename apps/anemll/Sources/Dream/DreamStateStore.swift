@@ -18,7 +18,7 @@ struct DreamRunState: Codable, Sendable {
     /// ISO 8601 timestamp of the most recent dream run start.
     var lastRunAt: String?
 
-    /// ISO 8601 timestamp before which no new dream should start.
+    /// Deprecated — cooldown removed. Kept for JSON backwards compatibility.
     var cooldownUntil: String?
 }
 
