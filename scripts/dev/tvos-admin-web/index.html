@@ -457,6 +457,76 @@
       </div>
 
       <div class="panel" style="margin-top: 14px">
+        <h2>Dream Mode</h2>
+        <div class="row">
+          <label>State</label>
+          <span id="dream-state" class="status"><span class="dot" id="dream-dot"></span><span id="dream-state-text">unknown</span></span>
+        </div>
+        <div class="row">
+          <label>Idle</label>
+          <span id="dream-idle-text">—</span>
+        </div>
+        <div class="row">
+          <label>Threshold</label>
+          <span id="dream-threshold-text">—</span>
+        </div>
+        <div class="row">
+          <label>Enabled</label>
+          <span id="dream-enabled-text">—</span>
+        </div>
+        <div class="row">
+          <label>Cooldown Until</label>
+          <span id="dream-cooldown-text">—</span>
+        </div>
+        <div class="row">
+          <label>Run ID</label>
+          <span id="dream-run-id-text">—</span>
+        </div>
+        <div class="actions-3" style="margin-top: 10px">
+          <button id="dream-enter-btn" disabled>Enter Dream</button>
+          <button id="dream-wake-btn" disabled>Wake</button>
+          <button id="dream-refresh-btn" disabled>Refresh</button>
+        </div>
+        <div style="margin-top: 6px">
+          <button id="dream-clear-cooldown-btn" disabled style="width: 100%; background: var(--btn); color: var(--fg); border: none; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px">Clear Cooldown &amp; Epoch</button>
+        </div>
+        <div id="dream-log" class="muted small" style="margin-top: 8px"></div>
+
+        <h3 style="margin: 16px 0 8px; font-size: 13px; color: var(--muted)">Dream Artifacts</h3>
+        <div class="row">
+          <label>Last Run At</label>
+          <span id="dream-last-run-at">—</span>
+        </div>
+        <div class="row">
+          <label>Last Dream Epoch</label>
+          <span id="dream-last-epoch">—</span>
+        </div>
+        <div class="row">
+          <label>Pending Digest</label>
+          <span id="dream-pending-digest">—</span>
+        </div>
+
+        <div class="actions-3" style="margin-top: 10px">
+          <button id="dream-read-state-btn" disabled>state.json</button>
+          <button id="dream-read-digest-btn" disabled>digest.md</button>
+          <button id="dream-list-journal-btn" disabled>Journal</button>
+        </div>
+        <div class="actions-3" style="margin-top: 6px">
+          <button id="dream-read-dreammd-btn" disabled>DREAM.md</button>
+          <button id="dream-read-heartbeatmd-btn" disabled>HEARTBEAT.md</button>
+          <button id="dream-read-ls-root-btn" disabled>ls workspace</button>
+        </div>
+        <div style="margin-top: 6px">
+          <button id="dream-reseed-btn" disabled style="width: 100%; background: #8b4513; color: var(--fg); border: none; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px">Reseed DREAM.md &amp; HEARTBEAT.md (overwrite with latest templates)</button>
+        </div>
+
+        <div style="margin-top: 10px">
+          <label style="font-size: 12px; color: var(--muted)">Dream File Viewer</label>
+          <pre id="dream-artifact-content" style="max-height: 400px; overflow-y: auto; font-size: 12px; white-space: pre-wrap; word-break: break-word">No artifact loaded.</pre>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top: 14px">
         <h2>Backup / Restore</h2>
         <p class="muted small" style="margin: 0 0 10px">
           Export or import device settings, files, and keychain entries via the gateway WebSocket.
@@ -557,6 +627,30 @@
       const backupStatus = el("backup-status");
       const backupResult = el("backup-result");
 
+      const dreamDot = el("dream-dot");
+      const dreamStateText = el("dream-state-text");
+      const dreamIdleText = el("dream-idle-text");
+      const dreamThresholdText = el("dream-threshold-text");
+      const dreamEnabledText = el("dream-enabled-text");
+      const dreamCooldownText = el("dream-cooldown-text");
+      const dreamRunIdText = el("dream-run-id-text");
+      const dreamEnterBtn = el("dream-enter-btn");
+      const dreamWakeBtn = el("dream-wake-btn");
+      const dreamRefreshBtn = el("dream-refresh-btn");
+      const dreamClearCooldownBtn = el("dream-clear-cooldown-btn");
+      const dreamLog = el("dream-log");
+      const dreamLastRunAt = el("dream-last-run-at");
+      const dreamLastEpoch = el("dream-last-epoch");
+      const dreamPendingDigest = el("dream-pending-digest");
+      const dreamReadStateBtn = el("dream-read-state-btn");
+      const dreamReadDigestBtn = el("dream-read-digest-btn");
+      const dreamListJournalBtn = el("dream-list-journal-btn");
+      const dreamArtifactContent = el("dream-artifact-content");
+      const dreamReadDreamMdBtn = el("dream-read-dreammd-btn");
+      const dreamReadHeartbeatMdBtn = el("dream-read-heartbeatmd-btn");
+      const dreamReadLsRootBtn = el("dream-read-ls-root-btn");
+      const dreamReseedBtn = el("dream-reseed-btn");
+
       const connectAuthMode = el("connect-auth-mode");
       const connectSecret = el("connect-secret");
       const gatewayURL = el("gateway-url");
@@ -625,6 +719,17 @@
         pairingApproveBtn.disabled = !connected || busy;
         backupExportBtn.disabled = !connected || busy;
         backupImportBtn.disabled = !connected || busy;
+        dreamEnterBtn.disabled = !connected || busy;
+        dreamWakeBtn.disabled = !connected || busy;
+        dreamRefreshBtn.disabled = !connected || busy;
+        dreamClearCooldownBtn.disabled = !connected || busy;
+        dreamReadStateBtn.disabled = !connected || busy;
+        dreamReadDigestBtn.disabled = !connected || busy;
+        dreamListJournalBtn.disabled = !connected || busy;
+        dreamReadDreamMdBtn.disabled = !connected || busy;
+        dreamReadHeartbeatMdBtn.disabled = !connected || busy;
+        dreamReadLsRootBtn.disabled = !connected || busy;
+        dreamReseedBtn.disabled = !connected || busy;
         if (!connected) {
           monitorStatus.textContent = "monitor off";
         }
@@ -985,6 +1090,7 @@
         const runtime = payload.state && typeof payload.state === "object" ? payload.state : {};
         state.lastRuntimeState = runtime;
         runtimeState.textContent = jsonSafe(runtime);
+        applyDreamState(runtime);
         renderPairingPanel();
       }
 
@@ -1410,6 +1516,183 @@
         cronListContent.textContent = text;
       }
 
+      function formatSeconds(sec) {
+        if (!Number.isFinite(sec) || sec < 0) return "—";
+        if (sec < 60) return `${Math.round(sec)}s`;
+        if (sec < 3600) return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+        return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+      }
+
+      function applyDreamState(runtimeState) {
+        const idleSec = runtimeState?.idleSeconds;
+        const dreamState = runtimeState?.dreamState || "unknown";
+        const dreamEnabled = runtimeState?.dreamEnabled;
+        const thresholdSec = runtimeState?.dreamThresholdSeconds;
+
+        dreamStateText.textContent = dreamState;
+        if (dreamState === "dreaming") {
+          dreamDot.className = "dot warn";
+        } else if (dreamState === "awake") {
+          dreamDot.className = "dot ok";
+        } else {
+          dreamDot.className = "dot";
+        }
+
+        dreamIdleText.textContent = Number.isFinite(idleSec) ? formatSeconds(idleSec) : "—";
+        dreamThresholdText.textContent = Number.isFinite(thresholdSec) ? formatSeconds(thresholdSec) : "—";
+        dreamEnabledText.textContent = dreamEnabled === true ? "yes" : dreamEnabled === false ? "no" : "—";
+      }
+
+      function applyDreamDetail(payload) {
+        if (!payload) return;
+        // Support both camelCase (admin bridge) and snake_case (legacy device tool) field names
+        const state = payload.state || payload.dream_state;
+        const enabled = payload.enabled ?? payload.dream_enabled;
+        const idleSec = payload.idleSeconds ?? payload.idle_seconds;
+        const thresholdSec = payload.thresholdSeconds ?? payload.idle_threshold_seconds;
+        const cooldown = payload.cooldownUntil || payload.cooldown_until;
+        const runId = payload.runId || payload.lastRunId;
+
+        if (state) {
+          dreamStateText.textContent = state;
+          if (state === "dreaming") {
+            dreamDot.className = "dot warn";
+          } else if (state === "awake") {
+            dreamDot.className = "dot ok";
+          } else {
+            dreamDot.className = "dot";
+          }
+        }
+        if (Number.isFinite(idleSec)) {
+          dreamIdleText.textContent = formatSeconds(idleSec);
+        }
+        if (Number.isFinite(thresholdSec)) {
+          dreamThresholdText.textContent = formatSeconds(thresholdSec);
+        }
+        if (enabled === true || enabled === false) {
+          dreamEnabledText.textContent = enabled ? "yes" : "no";
+        }
+        dreamCooldownText.textContent = cooldown || "none";
+        dreamRunIdText.textContent = runId || "none";
+
+        // Artifact fields
+        const lastRunAt = payload.lastRunAt;
+        const lastEpoch = payload.lastDreamForInteraction;
+        const pendingDigest = payload.pendingDigestPath;
+        dreamLastRunAt.textContent = lastRunAt || "—";
+        dreamLastEpoch.textContent = lastEpoch || "—";
+        dreamPendingDigest.textContent = pendingDigest || "none";
+      }
+
+      async function refreshDream() {
+        try {
+          const statusPayload = await request("dream.status", {}, { timeoutMs: 8000, quiet: true });
+          applyDreamDetail(statusPayload);
+          dreamLog.textContent = `refreshed ${now()}`;
+        } catch (error) {
+          dreamLog.textContent = `refresh failed: ${error.message}`;
+        }
+      }
+
+      async function dreamReadFile(path, label) {
+        try {
+          const payload = await request("read", { path }, { timeoutMs: 10000 });
+          if (payload?.ok && payload.text != null) {
+            dreamArtifactContent.textContent = `── ${label}: ${payload.path} (${payload.chars} chars${payload.truncated ? ", truncated" : ""}) ──\n\n${payload.text}`;
+          } else {
+            dreamArtifactContent.textContent = `${label}: file not found or empty`;
+          }
+          dreamLog.textContent = `read ${label} ${now()}`;
+        } catch (error) {
+          dreamArtifactContent.textContent = `Error reading ${label}: ${error.message}`;
+        }
+      }
+
+      async function dreamListJournal() {
+        try {
+          const lsPayload = await request("ls", { path: "dream/journal", recursive: false }, { timeoutMs: 10000, quiet: true });
+          const entries = lsPayload?.entries;
+          if (!Array.isArray(entries) || entries.length === 0) {
+            dreamArtifactContent.textContent = "dream/journal/ — no entries yet";
+            dreamLog.textContent = `listed journal (empty) ${now()}`;
+            return;
+          }
+          // Sort by name descending (newest first)
+          const sorted = entries.filter(e => e.name && e.name.endsWith(".md")).sort((a, b) => (b.name || "").localeCompare(a.name || ""));
+          let text = `── dream/journal/ (${sorted.length} entries) ──\n\n`;
+          for (const e of sorted) {
+            const sizeStr = e.size != null ? ` (${e.size} bytes)` : "";
+            text += `  ${e.name}${sizeStr}\n`;
+          }
+          text += `\nClick a journal file below or use state.json/digest.md buttons.`;
+          dreamArtifactContent.textContent = text;
+
+          // Also try to read the latest journal entry
+          if (sorted.length > 0) {
+            const latest = sorted[0].name;
+            const journalPayload = await request("read", { path: `dream/journal/${latest}` }, { timeoutMs: 10000, quiet: true });
+            if (journalPayload?.ok && journalPayload.text) {
+              text += `\n\n── Latest: ${latest} ──\n\n${journalPayload.text}`;
+              dreamArtifactContent.textContent = text;
+            }
+          }
+          dreamLog.textContent = `listed journal ${now()}`;
+        } catch (error) {
+          dreamArtifactContent.textContent = `Error listing journal: ${error.message}`;
+        }
+      }
+
+      async function dreamLsWorkspace() {
+        try {
+          const payload = await request("ls", { path: ".", recursive: false }, { timeoutMs: 10000 });
+          const entries = payload?.entries;
+          if (!Array.isArray(entries) || entries.length === 0) {
+            dreamArtifactContent.textContent = "workspace root — empty";
+            return;
+          }
+          const sorted = [...entries].sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1;
+            if (!a.isDirectory && b.isDirectory) return 1;
+            return (a.name || "").localeCompare(b.name || "");
+          });
+          let text = `── workspace root (${sorted.length} entries) ──\n\n`;
+          for (const e of sorted) {
+            const dir = e.isDirectory ? "/" : "";
+            const sizeStr = !e.isDirectory && e.size != null ? ` (${e.size} bytes)` : "";
+            text += `  ${e.name}${dir}${sizeStr}\n`;
+          }
+          dreamArtifactContent.textContent = text;
+          dreamLog.textContent = `ls workspace ${now()}`;
+        } catch (error) {
+          dreamArtifactContent.textContent = `Error: ${error.message}`;
+        }
+      }
+
+      async function dreamEnter() {
+        const payload = await request("dream.enter", {}, { timeoutMs: 10000 });
+        renderResult({ method: "dream.enter", payload });
+        log(`dream.enter ok state=${payload?.state || "unknown"} runId=${payload?.runId || "none"}`);
+        dreamLog.textContent = `entered dream ${now()}`;
+        await refreshDream();
+      }
+
+      async function dreamWake() {
+        const payload = await request("dream.wake", {}, { timeoutMs: 10000 });
+        renderResult({ method: "dream.wake", payload });
+        log(`dream.wake ok state=${payload?.state || "unknown"}`);
+        dreamLog.textContent = `woke from dream ${now()}`;
+        await refreshDream();
+      }
+
+      async function dreamClearCooldown() {
+        const payload = await request("dream.clearCooldown", {}, { timeoutMs: 10000 });
+        renderResult({ method: "dream.clearCooldown", payload });
+        log(`dream.clearCooldown ok cleared=${payload?.cleared}`);
+        dreamLog.textContent = `cooldown cleared ${now()}`;
+        dreamCooldownText.textContent = "none";
+        await refreshDream();
+      }
+
       async function loadCronList(options = {}) {
         const quiet = options.quiet === true;
         const optional = options.optional === true;
@@ -1551,6 +1834,7 @@
         applySkills(payload);
         applyPairingPayload(payload);
         await loadCronList({ quiet: true, optional: true });
+        refreshDream().catch(() => {});
         const normalized = normalizedSettingsForCompare(settings);
         log(
           "config.get ok"
@@ -2061,6 +2345,24 @@
         pairingCode.value = "";
         renderPairingPanel();
       });
+      dreamEnterBtn.addEventListener("click", () => withAction(dreamEnter, "dream.enter"));
+      dreamWakeBtn.addEventListener("click", () => withAction(dreamWake, "dream.wake"));
+      dreamRefreshBtn.addEventListener("click", () => withAction(refreshDream, "dream.refresh"));
+      dreamClearCooldownBtn.addEventListener("click", () => withAction(dreamClearCooldown, "dream.clearCooldown"));
+      dreamReadStateBtn.addEventListener("click", () => withAction(() => dreamReadFile("dream/state.json", "state.json"), "read"));
+      dreamReadDigestBtn.addEventListener("click", () => withAction(() => dreamReadFile("dream/digest.md", "digest.md"), "read"));
+      dreamListJournalBtn.addEventListener("click", () => withAction(dreamListJournal, "ls"));
+      dreamReadDreamMdBtn.addEventListener("click", () => withAction(() => dreamReadFile("DREAM.md", "DREAM.md"), "read"));
+      dreamReadHeartbeatMdBtn.addEventListener("click", () => withAction(() => dreamReadFile("HEARTBEAT.md", "HEARTBEAT.md"), "read"));
+      dreamReadLsRootBtn.addEventListener("click", () => withAction(dreamLsWorkspace, "ls"));
+      dreamReseedBtn.addEventListener("click", () => withAction(async () => {
+        const payload = await request("dream.reseedTemplates", {}, { timeoutMs: 15000 });
+        renderResult({ method: "dream.reseedTemplates", payload });
+        const written = payload?.written || [];
+        dreamArtifactContent.textContent = `Reseeded: ${written.join(", ") || "none"}\n${payload?.errors ? "Errors: " + JSON.stringify(payload.errors) : ""}`;
+        dreamLog.textContent = `reseeded templates ${now()}`;
+        log(`dream.reseedTemplates ok written=${written.join(",")}`);
+      }, "dream.reseedTemplates"));
       backupExportBtn.addEventListener("click", () => withAction(backupExport, "backup.export"));
       backupImportBtn.addEventListener("click", () => withAction(backupImport, "backup.import"));
       backupDownloadBtn.addEventListener("click", () => downloadLastBackup());

@@ -24,12 +24,19 @@ struct ChatMarkdownRenderer: View {
         let redacted = ChatSensitiveValueRedactor.redact(self.text)
         let processed = ChatMarkdownPreprocessor.preprocess(markdown: redacted)
         VStack(alignment: .leading, spacing: 10) {
-            StructuredText(markdown: processed.cleaned)
-                .modifier(ChatMarkdownStyle(
-                    variant: self.variant,
-                    context: self.context,
-                    font: self.font,
-                    textColor: self.textColor))
+            if processed.prefersPlainText {
+                Text(processed.cleaned)
+                    .font(self.font)
+                    .foregroundStyle(self.textColor)
+                    .openClawTextSelectionEnabledCompat()
+            } else {
+                StructuredText(markdown: processed.cleaned)
+                    .modifier(ChatMarkdownStyle(
+                        variant: self.variant,
+                        context: self.context,
+                        font: self.font,
+                        textColor: self.textColor))
+            }
 
             if !processed.images.isEmpty {
                 InlineImageList(images: processed.images)

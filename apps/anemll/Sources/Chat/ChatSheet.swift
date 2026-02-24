@@ -298,14 +298,32 @@ struct ChatSheet: View {
         self.modelSwitching = true
         defer { self.modelSwitching = false }
 
-        self.activeProviderID = provider.id
-        LLMProviderStore.setActiveID(provider.id)
+        var resolvedProvider = provider
+        if provider.provider == .openAICompatible, provider.authMode == .openAIOAuthSub {
+            do {
+                let refreshed = try await LLMProviderStore.refreshOpenAIOAuthIfNeeded(provider)
+                if refreshed != provider {
+                    resolvedProvider = refreshed
+                    if let index = self.savedProviders.firstIndex(where: { $0.id == refreshed.id }) {
+                        self.savedProviders[index] = refreshed
+                    }
+                    LLMProviderStore.save(self.savedProviders)
+                }
+            } catch {
+                print("[AnemllClaw iOS] openai oauth refresh failed: \(error.localizedDescription)")
+            }
+        }
+
+        self.activeProviderID = resolvedProvider.id
+        LLMProviderStore.setActiveID(resolvedProvider.id)
 
         var settings = self.localGatewayRuntime.controlPlaneSettings
-        settings.localLLMProvider = provider.provider
-        settings.localLLMBaseURL = provider.baseURL
-        settings.localLLMAPIKey = provider.apiKey
-        settings.localLLMModel = provider.model
+        settings.localLLMProvider = resolvedProvider.provider
+        settings.localLLMBaseURL = resolvedProvider.baseURL
+        settings.localLLMAPIKey = resolvedProvider.apiKey
+        settings.localLLMModel = resolvedProvider.model
+        settings.localLLMTransport = resolvedProvider.transport
+        settings.localLLMToolCallingMode = resolvedProvider.toolCallingMode
         await self.localGatewayRuntime.applyControlPlaneSettings(settings)
     }
 }

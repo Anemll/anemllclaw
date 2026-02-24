@@ -561,6 +561,38 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         XCTAssertEqual(messages.last, "What is the weather?")
     }
 
+    func testLocalRouterNormalizesXHighReasoningDirective() async throws {
+        let dbPath = self.temporaryMemoryStorePath()
+        let llmProvider = StubLLMProvider()
+        let config = GatewayLocalMethodRouterConfig(
+            hostLabel: "unit-test",
+            upstreamConfigured: false,
+            llmConfig: GatewayLocalLLMConfig(
+                provider: .openAICompatible,
+                baseURL: URL(string: "https://example.invalid"),
+                apiKey: "test-key",
+                model: "stub-model"),
+            memoryStorePath: dbPath,
+            enableLocalSafeTools: true)
+        let router = try GatewayLocalMethodRouter(config: config, llmProvider: llmProvider)
+
+        let chatSend = GatewayRequestFrame(
+            id: "chat-directive-xhigh-1",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string("session-directive-xhigh"),
+                "message": .string("/reasoning x-high\nWhat is the weather?"),
+            ]))
+        let chatResponse = await router.handle(chatSend, nowMs: 1_700_000_001_210)
+        XCTAssertEqual(chatResponse?.ok, true)
+
+        let thinking = await llmProvider.observedLastThinkingLevel()
+        XCTAssertEqual(thinking, "xhigh")
+
+        let messages = await llmProvider.observedLastMessageTexts()
+        XCTAssertEqual(messages.last, "What is the weather?")
+    }
+
     func testLocalRouterInjectsBootstrapPromptWhenEnabled() async throws {
         let dbPath = self.temporaryMemoryStorePath()
         let llmProvider = StubLLMProvider()

@@ -4,6 +4,7 @@ import os
 enum GatewaySettingsStore {
     private static let gatewayService = "ai.openclaw.gateway"
     private static let nodeService = "ai.openclaw.node"
+    private static let chatService = "ai.openclaw.chat"
     private static let talkService = "ai.openclaw.talk"
 
     private static let instanceIdDefaultsKey = "node.instanceId"
@@ -25,6 +26,7 @@ enum GatewaySettingsStore {
     private static let instanceIdAccount = "instanceId"
     private static let preferredGatewayStableIDAccount = "preferredStableID"
     private static let lastDiscoveredGatewayStableIDAccount = "lastDiscoveredStableID"
+    private static let chatOpenAIApiKeyAccount = "openai.apiKey"
     private static let talkElevenLabsApiKeyAccount = "elevenlabs.apiKey"
 
     static func bootstrapPersistence() {
@@ -152,6 +154,27 @@ enum GatewaySettingsStore {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if value?.isEmpty == false { return value }
         return nil
+    }
+
+    static func loadChatOpenAIApiKey() -> String? {
+        let value = KeychainStore.loadString(
+            service: self.chatService,
+            account: self.chatOpenAIApiKeyAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if value?.isEmpty == false { return value }
+        return nil
+    }
+
+    static func saveChatOpenAIApiKey(_ apiKey: String?) {
+        let trimmed = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            _ = KeychainStore.delete(service: self.chatService, account: self.chatOpenAIApiKeyAccount)
+            return
+        }
+        _ = KeychainStore.saveString(
+            trimmed,
+            service: self.chatService,
+            account: self.chatOpenAIApiKeyAccount)
     }
 
     static func saveTalkElevenLabsApiKey(_ apiKey: String?) {

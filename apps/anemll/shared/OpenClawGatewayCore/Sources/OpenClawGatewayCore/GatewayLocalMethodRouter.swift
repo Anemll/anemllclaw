@@ -8,6 +8,12 @@ public protocol GatewayLocalMethodRouterAdminBridge: Sendable {
     func pairingApprove(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
     func backupExport(nowMs: Int64) async throws -> GatewayJSONValue
     func backupImport(params: GatewayJSONValue, nowMs: Int64) async throws -> GatewayJSONValue
+    func dreamStatus() async throws -> GatewayJSONValue
+    func dreamEnter() async throws -> GatewayJSONValue
+    func dreamWake() async throws -> GatewayJSONValue
+    func dreamIdle() async throws -> GatewayJSONValue
+    func dreamClearCooldown() async throws -> GatewayJSONValue
+    func dreamReseedTemplates() async throws -> GatewayJSONValue
 }
 
 public enum GatewayLocalLLMToolCallingMode: String, Codable, Sendable, Equatable {
@@ -121,6 +127,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let historyLimit: Int?
         let skipPreamble: Bool?
         let disableTools: Bool?
+        /// Maximum tool-calling loop iterations (default 6).
+        /// Dream mode uses a higher value (e.g. 12) to allow the full
+        /// consolidate → explore → critic → write cycle to complete.
+        let maxToolRounds: Int?
     }
 
     private struct ParsedChatPrompt {
@@ -508,6 +518,18 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleBackupExport(request, nowMs: nowMs)
         case "backup.import":
             return await self.handleBackupImport(request, nowMs: nowMs)
+        case "dream.status":
+            return await self.handleDreamStatus(request)
+        case "dream.enter":
+            return await self.handleDreamEnter(request)
+        case "dream.wake":
+            return await self.handleDreamWake(request)
+        case "dream.idle":
+            return await self.handleDreamIdle(request)
+        case "dream.clearCooldown":
+            return await self.handleDreamClearCooldown(request)
+        case "dream.reseedTemplates":
+            return await self.handleDreamReseedTemplates(request)
         case "tools.time.now", "time.now":
             return await self.handleDirectSafeTool(request, command: "time.now", params: request.params)
         case "tools.device.info", "device.info":
@@ -589,6 +611,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let bootstrapFields = self.config.enableAutoProfileRewrite
             ? Self.extractBootstrapProfileFields(from: message)
             : nil
+        // Respect the configured tool mode even when websocket transport is selected.
+        // Provider-specific implementations can still choose their own fallback path.
         let toolCallingMode = self.config.llmToolCallingMode
 
         do {
@@ -636,7 +660,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                                 sessionKey: sessionKey,
                                 runID: runID,
                                 userMessage: message,
-                                workspaceRoot: workspaceRoot)
+                                workspaceRoot: workspaceRoot,
+                                maxToolRounds: params.maxToolRounds ?? Self.defaultMaxToolRounds)
                         } catch let error as GatewayLocalLLMProviderError
                             where toolCallingMode == .auto && Self.shouldFallbackToPlainCompletion(error)
                         {
@@ -735,6 +760,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 "provider": .string(completion.response.provider.rawValue),
                 "model": .string(completion.response.model),
             ]
+            if let transport = completion.response.transport {
+                payloadObject["transport"] = .string(transport.rawValue)
+            }
             if !usageObject.isEmpty {
                 payloadObject["usage"] = .object(usageObject)
             }
@@ -765,6 +793,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
     }
 
+    private static let defaultMaxToolRounds = 6
+
     private func runToolAwareChat(
         provider: any GatewayLocalLLMToolCallableProvider,
         llmMessages: [GatewayLocalLLMMessage],
@@ -773,7 +803,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         sessionKey: String,
         runID: String,
         userMessage: String,
-        workspaceRoot: URL?) async throws -> ChatExecutionResult
+        workspaceRoot: URL?,
+        maxToolRounds: Int = defaultMaxToolRounds) async throws -> ChatExecutionResult
     {
         let toolDefinitions = self.chatToolDefinitions(workspaceRoot: workspaceRoot)
         if toolDefinitions.isEmpty {
@@ -807,7 +838,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         var accumulatedOutputTokens = 0
         var llmRoundTrips = 0
 
-        for _ in 0..<6 {
+        let resolvedMaxRounds = max(1, min(maxToolRounds, 20))
+        for _ in 0..<resolvedMaxRounds {
             let completion = try await provider.completeWithTools(
                 GatewayLocalLLMToolRequest(
                     messages: conversation,
@@ -853,6 +885,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                     text: assistantText,
                     model: completion.model,
                     provider: completion.provider,
+                    transport: completion.transport,
                     usageInputTokens: completion.usageInputTokens,
                     usageOutputTokens: completion.usageOutputTokens)
                 return ChatExecutionResult(
@@ -2224,6 +2257,116 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 id: request.id,
                 code: .internalError,
                 message: "backup.import failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Dream Admin Handlers
+
+    private func handleDreamStatus(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.status is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamStatus()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.status failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDreamEnter(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.enter is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamEnter()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.enter failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDreamWake(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.wake is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamWake()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.wake failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDreamIdle(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.idle is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamIdle()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.idle failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDreamClearCooldown(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.clearCooldown is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamClearCooldown()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.clearCooldown failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDreamReseedTemplates(_ request: GatewayRequestFrame) async -> GatewayResponseFrame {
+        guard let adminBridge = self.config.adminBridge else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .unsupportedOnHost,
+                message: "dream.reseedTemplates is not available on this host")
+        }
+        do {
+            let payload = try await adminBridge.dreamReseedTemplates()
+            return GatewayResponseFrame.success(id: request.id, payload: payload)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "dream.reseedTemplates failed: \(error.localizedDescription)")
         }
     }
 
@@ -4254,6 +4397,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return "medium"
         case "high", "on", "true":
             return "high"
+        case "xhigh", "x-high", "extra-high", "extra_high":
+            return "xhigh"
         default:
             return value
         }

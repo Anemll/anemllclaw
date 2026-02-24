@@ -73,6 +73,7 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
     var localLLMBaseURL: String
     var localLLMAPIKey: String
     var localLLMModel: String
+    var localLLMTransport: GatewayLocalLLMTransport
     var localLLMToolCallingMode: GatewayLocalLLMToolCallingMode
 
     var telegramBotToken: String
@@ -99,6 +100,7 @@ struct TVOSGatewayControlPlaneSettings: Sendable, Equatable {
         localLLMBaseURL: "",
         localLLMAPIKey: "",
         localLLMModel: "",
+        localLLMTransport: .http,
         localLLMToolCallingMode: .auto,
         telegramBotToken: "",
         telegramDefaultChatID: "",
@@ -214,6 +216,48 @@ private actor TVOSRuntimeAdminBridge: GatewayLocalMethodRouterAdminBridge {
             throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
         }
         return try await runtime.adminBackupImport(params: params, nowMs: nowMs)
+    }
+
+    func dreamStatus() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamStatus()
+    }
+
+    func dreamEnter() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamEnter()
+    }
+
+    func dreamWake() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamWake()
+    }
+
+    func dreamIdle() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamIdle()
+    }
+
+    func dreamClearCooldown() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamClearCooldown()
+    }
+
+    func dreamReseedTemplates() async throws -> GatewayJSONValue {
+        guard let runtime = self.runtime else {
+            throw TVOSRuntimeAdminBridgeError.runtimeUnavailable
+        }
+        return await runtime.adminDreamReseedTemplates()
     }
 }
 
@@ -675,6 +719,9 @@ final class TVOSLocalGatewayRuntime {
     private(set) var lanAccessEnabled: Bool
     #if os(iOS)
     private var deviceToolBridge: DeviceToolBridgeImpl?
+    private var idleTrackerRef: UserIdleTracker?
+    private var dreamManagerRef: DreamModeManager?
+    private var dreamStateStoreRef: DreamStateStore?
     #endif
 
     private var deviceBridgeConfigured: Bool {
@@ -883,6 +930,29 @@ final class TVOSLocalGatewayRuntime {
             }
         } else {
             dreamStateStore = nil
+        }
+
+        self.idleTrackerRef = idleTracker
+        self.dreamManagerRef = dreamManager
+        self.dreamStateStoreRef = dreamStateStore
+
+        // When dream enters, optionally switch provider, then send chat.send.
+        dreamManager.onDreamEntered = { [weak self] runId in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.switchToDreamProviderIfNeeded()
+                await self.sendDreamChatPrompt(runId: runId)
+            }
+        }
+
+        // When dream exits, restore provider, refresh chat, deliver digest.
+        dreamManager.onDreamExited = { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.restorePreviousProvider()
+                await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
+                await self.sendDreamDigest()
+            }
         }
 
         self.deviceToolBridge = DeviceToolBridgeImpl(
@@ -1129,6 +1199,7 @@ final class TVOSLocalGatewayRuntime {
                 "control plane settings applied auth=\(normalized.authMode.rawValue)"
                     + " upstream=\(Self.trimmed(normalized.upstreamURL) ?? "(none)")"
                     + " llm=\(normalized.localLLMProvider.rawValue)"
+                    + " llmTransport=\(normalized.localLLMTransport.rawValue)"
                     + " llmTools=\(normalized.localLLMToolCallingMode.rawValue)"
                     + " deviceTools=\(normalized.enableLocalDeviceTools)"
                     + " telegram=\(Self.presenceState(normalized.telegramBotToken))")
@@ -1322,6 +1393,225 @@ final class TVOSLocalGatewayRuntime {
         }
     }
 
+    // MARK: - Dream Chat Prompt
+
+    /// Sends a background chat.send to kick off the LLM dream cycle.
+    /// Unlike `sendChatMessage`, this does NOT block the UI or show progress.
+    /// Dedicated session key for dream mode chat — keeps dream traffic
+    /// out of the user's main conversation.
+    private static let dreamSessionKey = "dream-journal"
+
+    /// Read dream iteration limit from Settings (default 12, clamped 6–20).
+    private static var dreamMaxToolRounds: Int {
+        let stored = UserDefaults.standard.integer(forKey: "dream.maxToolRounds")
+        return stored > 0 ? min(max(stored, 6), 20) : 12
+    }
+
+    /// Read dream reasoning level from Settings (default "medium").
+    private static var dreamThinkingLevel: String {
+        let stored = UserDefaults.standard.string(forKey: "dream.thinkingLevel") ?? "medium"
+        let valid = ["off", "low", "medium", "high"]
+        return valid.contains(stored) ? stored : "medium"
+    }
+
+    /// Read dream provider ID from Settings (empty = use current/default).
+    private static var dreamProviderID: String {
+        UserDefaults.standard.string(forKey: "dream.providerID") ?? ""
+    }
+
+    /// Saved control-plane settings before dream model switch, for restore on exit.
+    private var preDreamSettings: TVOSGatewayControlPlaneSettings?
+
+    /// Switch to dream-specific model if configured. Returns true if switched.
+    private func switchToDreamProviderIfNeeded() async -> Bool {
+        let providerID = Self.dreamProviderID
+        guard !providerID.isEmpty else { return false }
+
+        let providers = LLMProviderStore.load()
+        guard let dreamProvider = providers.first(where: { $0.id == providerID && $0.isConfigured }) else {
+            self.appendLog("dream provider \(providerID) not found or not configured", level: .warning)
+            return false
+        }
+
+        // Save current settings for restore.
+        self.preDreamSettings = self.controlPlaneSettings
+
+        var settings = self.controlPlaneSettings
+        settings.localLLMProvider = dreamProvider.provider
+        settings.localLLMBaseURL = dreamProvider.baseURL
+        settings.localLLMAPIKey = dreamProvider.apiKey
+        settings.localLLMModel = dreamProvider.model
+        settings.localLLMTransport = dreamProvider.transport
+        settings.localLLMToolCallingMode = dreamProvider.toolCallingMode
+        await self.applyControlPlaneSettings(settings)
+        self.appendLog("dream: switched to provider \(dreamProvider.shortDisplayName)")
+        return true
+    }
+
+    /// Restore the original model after dream completes.
+    func restorePreviousProvider() async {
+        guard let previous = self.preDreamSettings else { return }
+        self.preDreamSettings = nil
+        await self.applyControlPlaneSettings(previous)
+        self.appendLog("dream: restored previous provider")
+    }
+
+    private func sendDreamChatPrompt(runId: String) async {
+        guard self.state == .running, let host = self.host else {
+            self.appendLog("dream chat.send skipped: runtime not running or host unavailable", level: .warning)
+            return
+        }
+
+        let dreamPrompt = """
+        [dream-mode runId=\(runId)] \
+        Dream Mode has been activated. Read DREAM.md for instructions. \
+        Execute the dream cycle: \
+        consolidate memory, explore hypotheses, write journal to dream/journal/ and digest to dream/digest.md, \
+        then call `dream_mode({ "action": "exit" })` when finished.
+        """
+
+        self.appendLog("dream chat.send start runId=\(runId) session=\(Self.dreamSessionKey)")
+
+        let request = GatewayRequestFrame(
+            id: "dream-\(runId)",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string(Self.dreamSessionKey),
+                "message": .string(dreamPrompt),
+                "thinking": .string(Self.dreamThinkingLevel),
+                "idempotencyKey": .string("dream-\(runId)"),
+                "maxToolRounds": .integer(Int64(Self.dreamMaxToolRounds)),
+            ]))
+
+        do {
+            let response = try await host.invoke(request)
+            if response.ok {
+                let chatRunID = Self.extractChatRunID(from: response.payload) ?? "(unknown)"
+                self.appendLog("dream chat.send ok chatRunId=\(chatRunID)")
+            } else {
+                let code = response.error?.code ?? "UNKNOWN"
+                let message = response.error?.message ?? "dream chat.send failed"
+                self.appendLog("dream chat.send failed code=\(code) message=\(message)", level: .error)
+            }
+        } catch {
+            self.appendLog("dream chat.send threw: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    /// Deliver dream digest: clean summary to dream-journal, then
+    /// actionable prompt to main chat.
+    func sendDreamDigest() async {
+        guard self.state == .running, let host = self.host else {
+            self.appendLog("dream digest skipped: runtime not running or host unavailable", level: .warning)
+            return
+        }
+
+        #if os(iOS)
+        guard let manager = self.dreamManagerRef else { return }
+        guard let digestPath = manager.pendingDigestPath else { return }
+
+        let workspacePath = Self.defaultBootstrapWorkspacePath()
+        let digestURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+            .appendingPathComponent(digestPath, isDirectory: false)
+
+        guard let digestContent = try? String(contentsOf: digestURL, encoding: .utf8),
+              !digestContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            self.appendLog("dream digest skipped: digest file empty or missing at \(digestPath)", level: .warning)
+            manager.markDigestDelivered()
+            return
+        }
+
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+
+        // 1) Post clean readable summary to dream-journal session.
+        //    Uses disableTools + skipPreamble so the LLM just echoes
+        //    without tool calls or system prompt overhead.
+        let journalSummary = """
+        ---
+        **Dream Cycle Complete** — \(timestamp)
+
+        \(digestContent)
+
+        **Proposed Actions:**
+        - Review the hypotheses above and tell me which ones to explore further
+        - Check the dream journal at `dream/journal/` for full details
+        - Any [LOW-RISK] items will be auto-executed when you return to the main chat
+        - Say "verify H1" or "verify H2" to dig into a specific hypothesis
+        ---
+        """
+
+        let journalRequest = GatewayRequestFrame(
+            id: "dream-summary-\(UUID().uuidString)",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string(Self.dreamSessionKey),
+                "message": .string(journalSummary),
+                "thinking": .string("off"),
+                "disableTools": .bool(true),
+                "skipPreamble": .bool(true),
+                "idempotencyKey": .string("dream-summary-\(UUID().uuidString)"),
+            ]))
+
+        do {
+            let response = try await host.invoke(journalRequest)
+            if response.ok {
+                self.appendLog("dream journal summary posted ok")
+            }
+        } catch {
+            self.appendLog("dream journal summary failed: \(error.localizedDescription)", level: .warning)
+        }
+
+        // 2) Send actionable digest to main chat session.
+        let digestMessage = """
+        [dream-digest] A dream cycle just finished (\(timestamp)). Here is the digest:
+
+        \(digestContent)
+
+        ---
+        **Instructions:** Act on the "Verify Next" items from this digest.
+
+        1. **Low-risk items** (read-only: fetching URLs, searching, reading files, \
+        checking repos) — execute these now automatically. Report what you found.
+
+        2. **Higher-risk items** (writing to MEMORY.md, modifying files, API calls \
+        with side effects, installing packages) — list these for the user with a \
+        brief explanation of what each would do, and ask which ones they want you \
+        to proceed with.
+
+        Start with the low-risk items now.
+        """
+
+        self.appendLog("dream digest delivery start session=\(self.chatSessionKey)")
+
+        let digestRequest = GatewayRequestFrame(
+            id: "digest-\(UUID().uuidString)",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string(self.chatSessionKey),
+                "message": .string(digestMessage),
+                "thinking": .string("low"),
+                "idempotencyKey": .string("digest-\(UUID().uuidString)"),
+            ]))
+
+        do {
+            let response = try await host.invoke(digestRequest)
+            if response.ok {
+                self.appendLog("dream digest delivered ok")
+                manager.markDigestDelivered()
+            } else {
+                let code = response.error?.code ?? "UNKNOWN"
+                let message = response.error?.message ?? "digest delivery failed"
+                self.appendLog("dream digest delivery failed code=\(code) message=\(message)", level: .error)
+            }
+        } catch {
+            self.appendLog("dream digest delivery threw: \(error.localizedDescription)", level: .error)
+        }
+
+        await self.refreshChatHistory(limit: Self.defaultChatHistoryLimit, quiet: true)
+        #endif
+    }
+
     private func startChatProgressPolling() {
         self.stopChatProgressPolling()
         self.chatHistoryPollTask = Task { @MainActor in
@@ -1477,7 +1767,9 @@ final class TVOSLocalGatewayRuntime {
         let modelText = Self.trimmed(self.controlPlaneSettings.localLLMModel) ?? "(none)"
         self.appendLog(
             "local llm probe start provider=\(self.controlPlaneSettings.localLLMProvider.rawValue)"
-                + " baseURL=\(baseURLText) model=\(modelText) session=\(sessionKey)"
+                + " baseURL=\(baseURLText) model=\(modelText)"
+                + " transport=\(self.controlPlaneSettings.localLLMTransport.rawValue)"
+                + " session=\(sessionKey)"
                 + " skipPreamble=1 disableTools=1")
 
         do {
@@ -2206,6 +2498,10 @@ final class TVOSLocalGatewayRuntime {
             } catch {
                 self.appendLog("bootstrap install failed: \(error.localizedDescription)", level: .error)
             }
+
+            // Force-reseed DREAM.md on every launch so the latest template
+            // is always on device (writeFileIfMissing never overwrites).
+            Self.forceReseedDreamTemplate(workspacePath: bootstrapWorkspacePath)
         }
 
         var resolvedFileNames = Self.bootstrapInjectionFileNames(
@@ -2446,6 +2742,249 @@ final class TVOSLocalGatewayRuntime {
         ])
     }
 
+    // MARK: - Dream Admin Methods
+
+    fileprivate func adminDreamStatus() -> GatewayJSONValue {
+        #if os(iOS)
+        var dict: [String: GatewayJSONValue] = [
+            "ok": .bool(true),
+            "command": .string("dream_mode"),
+        ]
+        if let dream = self.dreamManagerRef {
+            dict["state"] = .string(dream.state.rawValue)
+            dict["enabled"] = .bool(dream.enabled)
+            dict["thresholdSeconds"] = .integer(Int64(dream.idleThresholdSeconds))
+            if let runId = dream.runId {
+                dict["runId"] = .string(runId)
+            }
+        }
+        if let idle = self.idleTrackerRef {
+            dict["idleSeconds"] = .integer(Int64(idle.idleSeconds))
+            dict["lastInteractionAt"] = .string(
+                ISO8601DateFormatter().string(from: idle.lastInteractionAt))
+        }
+        if let store = self.dreamStateStoreRef {
+            let state = store.load()
+            if let cooldown = state.cooldownUntil {
+                dict["cooldownUntil"] = .string(cooldown)
+            }
+            if let lastRunId = state.lastRunId {
+                dict["lastRunId"] = .string(lastRunId)
+            }
+            if let lastRunAt = state.lastRunAt {
+                dict["lastRunAt"] = .string(lastRunAt)
+            }
+            if let pending = state.pendingDigestPath {
+                dict["pendingDigestPath"] = .string(pending)
+            }
+            if let lastDream = state.lastDreamForInteraction {
+                dict["lastDreamForInteraction"] = .string(lastDream)
+            }
+        }
+        return .object(dict)
+        #else
+        return .object(["ok": .bool(false), "error": .string("dream not available on this platform")])
+        #endif
+    }
+
+    fileprivate func adminDreamEnter() -> GatewayJSONValue {
+        #if os(iOS)
+        if let dream = self.dreamManagerRef {
+            dream.enterDream()
+            return .object([
+                "ok": .bool(true),
+                "action": .string("enter"),
+                "state": .string(dream.state.rawValue),
+                "runId": dream.runId.map { .string($0) } ?? .null,
+            ])
+        }
+        return .object(["ok": .bool(false), "error": .string("dreamManager unavailable")])
+        #else
+        return .object(["ok": .bool(false), "error": .string("dream not available on this platform")])
+        #endif
+    }
+
+    fileprivate func adminDreamWake() -> GatewayJSONValue {
+        #if os(iOS)
+        if let dream = self.dreamManagerRef {
+            dream.wake()
+            return .object([
+                "ok": .bool(true),
+                "action": .string("wake"),
+                "state": .string(dream.state.rawValue),
+            ])
+        }
+        return .object(["ok": .bool(false), "error": .string("dreamManager unavailable")])
+        #else
+        return .object(["ok": .bool(false), "error": .string("dream not available on this platform")])
+        #endif
+    }
+
+    fileprivate func adminDreamIdle() -> GatewayJSONValue {
+        #if os(iOS)
+        var dict: [String: GatewayJSONValue] = [
+            "ok": .bool(true),
+            "command": .string("get_idle_time"),
+        ]
+        if let idle = self.idleTrackerRef {
+            dict["idleSeconds"] = .integer(Int64(idle.idleSeconds))
+            dict["lastInteractionAt"] = .string(
+                ISO8601DateFormatter().string(from: idle.lastInteractionAt))
+        }
+        if let dream = self.dreamManagerRef {
+            dict["dreamState"] = .string(dream.state.rawValue)
+            dict["dreamEnabled"] = .bool(dream.enabled)
+            dict["thresholdSeconds"] = .integer(Int64(dream.idleThresholdSeconds))
+        }
+        return .object(dict)
+        #else
+        return .object(["ok": .bool(false), "error": .string("idle tracking not available on this platform")])
+        #endif
+    }
+
+    fileprivate func adminDreamClearCooldown() -> GatewayJSONValue {
+        #if os(iOS)
+        if let store = self.dreamStateStoreRef {
+            store.update { state in
+                state.cooldownUntil = nil
+                state.lastDreamForInteraction = nil
+            }
+            return .object([
+                "ok": .bool(true),
+                "cleared": .bool(true),
+            ])
+        }
+        return .object(["ok": .bool(false), "error": .string("dreamStateStore unavailable")])
+        #else
+        return .object(["ok": .bool(false), "error": .string("dream not available on this platform")])
+        #endif
+    }
+
+    /// Force-overwrite DREAM.md from the compiled-in template on every launch.
+    /// This ensures the device always has the latest dream cycle spec until
+    /// the feature stabilises and we can switch back to writeFileIfMissing.
+    ///
+    /// For HEARTBEAT.md we do a **surgical** section replace: content between
+    /// `## Dream Mode Integration` and `## end of Dream Mode Integration`
+    /// (inclusive) is replaced from the template, leaving user-added tasks intact.
+    private static func forceReseedDreamTemplate(workspacePath: String) {
+        #if os(iOS)
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+
+        // --- DREAM.md: full overwrite ---
+        if let dreamTemplate = TVOSBootstrapTemplateStore.template(for: "DREAM.md") {
+            let normalized = dreamTemplate.replacingOccurrences(of: "\r\n", with: "\n")
+            let content = normalized.hasSuffix("\n") ? normalized : normalized + "\n"
+            let fileURL = workspaceURL.appendingPathComponent("DREAM.md", isDirectory: false)
+            try? Data(content.utf8).write(to: fileURL, options: .atomic)
+        }
+
+        // --- HEARTBEAT.md: surgical section replace ---
+        let heartbeatURL = workspaceURL.appendingPathComponent("HEARTBEAT.md", isDirectory: false)
+        guard let heartbeatTemplate = TVOSBootstrapTemplateStore.template(for: "HEARTBEAT.md") else { return }
+        let templateNorm = heartbeatTemplate.replacingOccurrences(of: "\r\n", with: "\n")
+
+        let sectionStart = "## Dream Mode Integration"
+        let sectionEnd = "## end of Dream Mode Integration"
+
+        // Extract the dream section from the template (between sentinels, inclusive).
+        guard let templateSection = Self.extractSentinelSection(
+            from: templateNorm, start: sectionStart, end: sectionEnd)
+        else { return }
+
+        // Read current on-device HEARTBEAT.md (or use template as base).
+        var existing = (try? String(contentsOf: heartbeatURL, encoding: .utf8)) ?? ""
+        existing = existing.replacingOccurrences(of: "\r\n", with: "\n")
+
+        if existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // No file yet — write full template.
+            let content = templateNorm.hasSuffix("\n") ? templateNorm : templateNorm + "\n"
+            try? Data(content.utf8).write(to: heartbeatURL, options: .atomic)
+            return
+        }
+
+        // Replace existing section or append if absent.
+        if let existingSection = Self.extractSentinelSection(
+            from: existing, start: sectionStart, end: sectionEnd)
+        {
+            existing = existing.replacingOccurrences(of: existingSection, with: templateSection)
+        } else {
+            // Section not found — append it.
+            existing = existing.trimmingCharacters(in: .newlines) + "\n\n" + templateSection
+        }
+        let final = existing.hasSuffix("\n") ? existing : existing + "\n"
+        try? Data(final.utf8).write(to: heartbeatURL, options: .atomic)
+        #endif
+    }
+
+    /// Extract text from `start` marker through the end of the line
+    /// containing `end` marker (inclusive of both sentinel lines).
+    private static func extractSentinelSection(
+        from text: String, start: String, end: String
+    ) -> String? {
+        guard let startRange = text.range(of: start) else { return nil }
+        guard let endRange = text.range(of: end, range: startRange.upperBound..<text.endIndex) else {
+            // No closing sentinel — take everything from start to EOF.
+            return String(text[startRange.lowerBound...])
+        }
+        // Include the full closing sentinel line (up to next newline or EOF).
+        var endIdx = endRange.upperBound
+        if let newline = text[endIdx...].firstIndex(of: "\n") {
+            endIdx = text.index(after: newline)
+        } else {
+            endIdx = text.endIndex
+        }
+        return String(text[startRange.lowerBound..<endIdx])
+    }
+
+    fileprivate func adminDreamReseedTemplates() -> GatewayJSONValue {
+        #if os(iOS)
+        let workspacePath = Self.defaultBootstrapWorkspacePath()
+        guard !workspacePath.isEmpty else {
+            return .object(["ok": .bool(false), "error": .string("workspace path unavailable")])
+        }
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        let fileManager = FileManager.default
+        let filesToReseed = ["DREAM.md", "HEARTBEAT.md"]
+        var written: [String] = []
+        var errors: [String: String] = [:]
+
+        for fileName in filesToReseed {
+            guard let template = TVOSBootstrapTemplateStore.template(for: fileName) else {
+                errors[fileName] = "no template found"
+                continue
+            }
+            let normalized = template
+                .replacingOccurrences(of: "\r\n", with: "\n")
+            let content = normalized.hasSuffix("\n") ? normalized : normalized + "\n"
+            let fileURL = workspaceURL.appendingPathComponent(fileName, isDirectory: false)
+            do {
+                try fileManager.createDirectory(
+                    at: fileURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
+                try Data(content.utf8).write(to: fileURL, options: .atomic)
+                written.append(fileName)
+            } catch {
+                errors[fileName] = error.localizedDescription
+            }
+        }
+
+        var result: [String: GatewayJSONValue] = [
+            "ok": .bool(errors.isEmpty),
+            "written": .array(written.map { .string($0) }),
+        ]
+        if !errors.isEmpty {
+            var errObj: [String: GatewayJSONValue] = [:]
+            for (k, v) in errors { errObj[k] = .string(v) }
+            result["errors"] = .object(errObj)
+        }
+        self.appendLog("dream reseed templates: written=\(written) errors=\(errors)")
+        return .object(result)
+        #else
+        return .object(["ok": .bool(false), "error": .string("not available on this platform")])
+        #endif
+    }
+
     private func adminSettingsFromParams(_ params: GatewayJSONValue) throws -> TVOSGatewayControlPlaneSettings {
         guard let root = params.objectValue else {
             throw TVOSRuntimeAdminBridgeError.invalidRequest("config.set params must be an object")
@@ -2563,6 +3102,19 @@ final class TVOSLocalGatewayRuntime {
             next.localLLMModel = model
         }
 
+        let transportRaw =
+            Self.firstString(
+                in: source,
+                keys: ["localLLMTransport", "localLlmTransport", "llmTransport", "transport"])
+            ?? localLLMObject?["transport"]?.stringValue
+        if let transportRaw {
+            guard let transport = Self.parseLocalLLMTransport(transportRaw) else {
+                throw TVOSRuntimeAdminBridgeError.invalidRequest(
+                    "invalid localLLMTransport: \(transportRaw)")
+            }
+            next.localLLMTransport = transport
+        }
+
         let toolCallingModeRaw =
             Self.firstString(
                 in: source,
@@ -2620,6 +3172,7 @@ final class TVOSLocalGatewayRuntime {
             "localLLMBaseURL": .string(settings.localLLMBaseURL),
             "localLLMAPIKey": .string(settings.localLLMAPIKey),
             "localLLMModel": .string(settings.localLLMModel),
+            "localLLMTransport": .string(settings.localLLMTransport.rawValue),
             "localLLMToolCallingMode": .string(settings.localLLMToolCallingMode.rawValue),
             "telegramBotToken": .string(settings.telegramBotToken),
             "telegramDefaultChatID": .string(settings.telegramDefaultChatID),
@@ -2633,23 +3186,36 @@ final class TVOSLocalGatewayRuntime {
     }
 
     private func adminRuntimeStatePayload(nowMs: Int64) -> GatewayJSONValue {
-        .object([
+        var dict: [String: GatewayJSONValue] = [
             "runtime": .string(self.state.rawValue),
             "webSocket": .string(self.listenerState.rawValue),
-            "webSocketPort": self.listenerPort.map { .integer(Int64($0)) } ?? .null,
             "tcpDebug": .string(self.tcpListenerState.rawValue),
-            "tcpDebugPort": self.tcpListenerPort.map { .integer(Int64($0)) } ?? .null,
             "upstreamConfigured": .bool(self.upstreamConfigured),
             "localLLMConfigured": .bool(self.localLLMConfigured),
-            "telegramConfigured": .bool(Self.trimmed(self.controlPlaneSettings.telegramBotToken) != nil),
-            "telegramDefaultChatID": .string(self.controlPlaneSettings.telegramDefaultChatID),
-            "pairingPendingCount": .integer(Int64(self.telegramPairingStore.requests.count)),
-            "pairingAllowCount": .integer(Int64(self.telegramPairingStore.allowFrom.count)),
-            "pairingLastUpdateID": .integer(self.telegramPairingStore.lastUpdateID),
-            "pairingPollSucceeded": self.lastTelegramPairingPollSucceeded.map { .bool($0) } ?? .null,
-            "pairingPollErrorText": self.lastTelegramPairingPollErrorText.map { .string($0) } ?? .null,
             "ts": .integer(nowMs),
-        ])
+        ]
+        dict["webSocketPort"] = self.listenerPort.map { .integer(Int64($0)) } ?? .null
+        dict["tcpDebugPort"] = self.tcpListenerPort.map { .integer(Int64($0)) } ?? .null
+        let telegramToken = Self.trimmed(self.controlPlaneSettings.telegramBotToken)
+        dict["telegramConfigured"] = .bool(telegramToken != nil)
+        dict["telegramDefaultChatID"] = .string(self.controlPlaneSettings.telegramDefaultChatID)
+        dict["pairingPendingCount"] = .integer(Int64(self.telegramPairingStore.requests.count))
+        dict["pairingAllowCount"] = .integer(Int64(self.telegramPairingStore.allowFrom.count))
+        dict["pairingLastUpdateID"] = .integer(self.telegramPairingStore.lastUpdateID)
+        dict["pairingPollSucceeded"] = self.lastTelegramPairingPollSucceeded.map { .bool($0) } ?? .null
+        dict["pairingPollErrorText"] = self.lastTelegramPairingPollErrorText.map { .string($0) } ?? .null
+        // Idle & dream state
+        #if os(iOS)
+        if let idle = self.idleTrackerRef {
+            dict["idleSeconds"] = .integer(Int64(idle.idleSeconds))
+        }
+        if let dream = self.dreamManagerRef {
+            dict["dreamState"] = .string(dream.state.rawValue)
+            dict["dreamEnabled"] = .bool(dream.enabled)
+            dict["dreamThresholdSeconds"] = .integer(Int64(dream.idleThresholdSeconds))
+        }
+        #endif
+        return .object(dict)
     }
 
     private func adminBootstrapPayload() -> GatewayJSONValue {
@@ -3129,6 +3695,18 @@ final class TVOSLocalGatewayRuntime {
             return .off
         default:
             return GatewayLocalLLMToolCallingMode(rawValue: normalized)
+        }
+    }
+
+    private static func parseLocalLLMTransport(_ raw: String) -> GatewayLocalLLMTransport? {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "http", "":
+            return .http
+        case "websocket", "ws":
+            return .websocket
+        default:
+            return GatewayLocalLLMTransport(rawValue: normalized)
         }
     }
 
@@ -3653,6 +4231,10 @@ final class TVOSLocalGatewayRuntime {
         settings.localLLMAPIKey = persistedAPIKey ?? ""
         settings.localLLMModel = persistedModel
             ?? TVOSGatewayControlPlaneSettings.default.localLLMModel
+        let localTransportRaw =
+            Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.transport"))
+            ?? GatewayLocalLLMTransport.http.rawValue
+        settings.localLLMTransport = Self.parseLocalLLMTransport(localTransportRaw) ?? .http
         let localToolCallingModeRaw =
             Self.trimmed(defaults.string(forKey: "gateway.tvos.localLLM.toolCallingMode"))
             ?? GatewayLocalLLMToolCallingMode.auto.rawValue
@@ -3722,6 +4304,9 @@ final class TVOSLocalGatewayRuntime {
         defaults.removeObject(forKey: "gateway.tvos.localLLM.apiKey") // clean up legacy
         defaults.set(self.trimmed(settings.localLLMModel), forKey: "gateway.tvos.localLLM.model")
         defaults.set(
+            settings.localLLMTransport.rawValue,
+            forKey: "gateway.tvos.localLLM.transport")
+        defaults.set(
             settings.localLLMToolCallingMode.rawValue,
             forKey: "gateway.tvos.localLLM.toolCallingMode")
         defaults.set(self.trimmed(settings.telegramBotToken), forKey: "gateway.tvos.telegram.botToken")
@@ -3757,6 +4342,7 @@ final class TVOSLocalGatewayRuntime {
         markIfDifferent("localLLMBaseURL", expected.localLLMBaseURL, persisted.localLLMBaseURL)
         markIfDifferent("localLLMAPIKey", expected.localLLMAPIKey, persisted.localLLMAPIKey)
         markIfDifferent("localLLMModel", expected.localLLMModel, persisted.localLLMModel)
+        markIfDifferent("localLLMTransport", expected.localLLMTransport, persisted.localLLMTransport)
         markIfDifferent(
             "localLLMToolCallingMode",
             expected.localLLMToolCallingMode,
@@ -3771,17 +4357,43 @@ final class TVOSLocalGatewayRuntime {
             expected.enableLocalDeviceTools,
             persisted.enableLocalDeviceTools)
 
+        let runtimeUpstream = " runtime.upstream=\(Self.trimmed(expected.upstreamURL) ?? "(none)")"
+            + " role=\(Self.trimmed(expected.upstreamRole) ?? "node")"
+            + " scopes=\(Self.trimmed(expected.upstreamScopesCSV) ?? "(none)")"
+            + " token=\(Self.presenceState(expected.upstreamToken))"
+            + " password=\(Self.presenceState(expected.upstreamPassword))"
+        let persistedUpstream = " persisted.upstream=\(Self.trimmed(persisted.upstreamURL) ?? "(none)")"
+            + " role=\(Self.trimmed(persisted.upstreamRole) ?? "node")"
+            + " scopes=\(Self.trimmed(persisted.upstreamScopesCSV) ?? "(none)")"
+            + " token=\(Self.presenceState(persisted.upstreamToken))"
+            + " password=\(Self.presenceState(persisted.upstreamPassword))"
+        let runtimeLLM = " runtime.llm=\(expected.localLLMProvider.rawValue)"
+            + " baseURL=\(Self.trimmed(expected.localLLMBaseURL) ?? "(none)")"
+            + " model=\(Self.trimmed(expected.localLLMModel) ?? "(none)")"
+            + " apiKey=\(Self.presenceState(expected.localLLMAPIKey))"
+            + " transport=\(expected.localLLMTransport.rawValue)"
+            + " tools=\(expected.localLLMToolCallingMode.rawValue)"
+        let persistedLLM = " persisted.llm=\(persisted.localLLMProvider.rawValue)"
+            + " baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)")"
+            + " model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)")"
+            + " apiKey=\(Self.presenceState(persisted.localLLMAPIKey))"
+            + " transport=\(persisted.localLLMTransport.rawValue)"
+            + " tools=\(persisted.localLLMToolCallingMode.rawValue)"
+        let runtimeTelegram = " runtime.telegram.chat=\(Self.trimmed(expected.telegramDefaultChatID) ?? "(none)")"
+            + " token=\(Self.presenceState(expected.telegramBotToken))"
+        let persistedTelegram =
+            " persisted.telegram.chat=\(Self.trimmed(persisted.telegramDefaultChatID) ?? "(none)")"
+                + " token=\(Self.presenceState(persisted.telegramBotToken))"
         self.appendLog(
             "settings persistence mismatch fields=\(mismatches.joined(separator: ","))"
                 + " runtime.auth=\(expected.authMode.rawValue)/\(Self.redacted(expected.authToken))/\(Self.redacted(expected.authPassword))"
                 + " persisted.auth=\(persisted.authMode.rawValue)/\(Self.redacted(persisted.authToken))/\(Self.redacted(persisted.authPassword))"
-                + " runtime.upstream=\(Self.trimmed(expected.upstreamURL) ?? "(none)") role=\(Self.trimmed(expected.upstreamRole) ?? "node") scopes=\(Self.trimmed(expected.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(expected.upstreamToken)) password=\(Self.presenceState(expected.upstreamPassword))"
-                + " persisted.upstream=\(Self.trimmed(persisted.upstreamURL) ?? "(none)") role=\(Self.trimmed(persisted.upstreamRole) ?? "node") scopes=\(Self.trimmed(persisted.upstreamScopesCSV) ?? "(none)") token=\(Self.presenceState(persisted.upstreamToken)) password=\(Self.presenceState(persisted.upstreamPassword))"
-                + " runtime.llm=\(expected.localLLMProvider.rawValue) baseURL=\(Self.trimmed(expected.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(expected.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(expected.localLLMAPIKey)) tools=\(expected.localLLMToolCallingMode.rawValue)"
-                + " persisted.llm=\(persisted.localLLMProvider.rawValue) baseURL=\(Self.trimmed(persisted.localLLMBaseURL) ?? "(none)") model=\(Self.trimmed(persisted.localLLMModel) ?? "(none)") apiKey=\(Self.presenceState(persisted.localLLMAPIKey)) tools=\(persisted.localLLMToolCallingMode.rawValue)"
-                + " runtime.telegram.chat=\(Self.trimmed(expected.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(expected.telegramBotToken))"
-                +
-                " persisted.telegram.chat=\(Self.trimmed(persisted.telegramDefaultChatID) ?? "(none)") token=\(Self.presenceState(persisted.telegramBotToken))",
+                + runtimeUpstream
+                + persistedUpstream
+                + runtimeLLM
+                + persistedLLM
+                + runtimeTelegram
+                + persistedTelegram,
             level: .warning)
     }
 
@@ -4472,6 +5084,7 @@ final class TVOSLocalGatewayRuntime {
             localLLMBaseURL: Self.trimmed(settings.localLLMBaseURL) ?? "",
             localLLMAPIKey: Self.trimmed(settings.localLLMAPIKey) ?? "",
             localLLMModel: Self.trimmed(settings.localLLMModel) ?? "",
+            localLLMTransport: settings.localLLMTransport,
             localLLMToolCallingMode: settings.localLLMToolCallingMode,
             telegramBotToken: Self.trimmed(settings.telegramBotToken) ?? "",
             telegramDefaultChatID: Self.trimmed(settings.telegramDefaultChatID) ?? "",
@@ -4555,6 +5168,7 @@ final class TVOSLocalGatewayRuntime {
                 + " baseURL=\(localBaseURL)"
                 + " apiKey=\(localAPIKeyState)"
                 + " llmConfigured=\(self.localLLMConfigured)"
+                + " transport=\(self.controlPlaneSettings.localLLMTransport.rawValue)"
                 + " tools=\(self.controlPlaneSettings.localLLMToolCallingMode.rawValue)"
                 + " deviceTools=\(self.controlPlaneSettings.enableLocalDeviceTools)"
                 + " deviceBridge=\(self.deviceBridgeConfigured ? "yes" : "no")"
@@ -4608,7 +5222,8 @@ final class TVOSLocalGatewayRuntime {
             provider: settings.localLLMProvider,
             baseURL: baseURL,
             apiKey: Self.trimmed(settings.localLLMAPIKey),
-            model: Self.trimmed(settings.localLLMModel))
+            model: Self.trimmed(settings.localLLMModel),
+            transport: settings.localLLMTransport)
     }
 
     private static func makeLocalTelegramConfig(

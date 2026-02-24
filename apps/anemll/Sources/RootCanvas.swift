@@ -129,6 +129,10 @@ struct RootCanvas: View {
                     self.dreamModeManager
                         .evaluateDigestDelivery(
                             idleTracker: self.idleTracker)
+                    // Deliver pending digest to main chat when user returns.
+                    if self.dreamModeManager.pendingDigestPath != nil {
+                        await self.localGatewayRuntime.sendDreamDigest()
+                    }
                 }
             }
             .onAppear { self.updateIdleTimer() }
@@ -137,6 +141,9 @@ struct RootCanvas: View {
             .onAppear { self.maybePromptForLLMSetupOnLaunch() }
             .onChange(of: self.preventSleep) { _, _ in self.updateIdleTimer() }
             .onChange(of: self.scenePhase) { _, _ in self.updateIdleTimer() }
+            .onChange(of: self.dreamEnabled) { _, _ in self.syncDreamSettings() }
+            .onChange(of: self.dreamIdleThreshold) { _, _ in self.syncDreamSettings() }
+            .onChange(of: self.dreamAnimationRaw) { _, _ in self.syncDreamSettings() }
             .onChange(of: self.localGatewayRuntime.state) { _, _ in
                 self.maybePromptForLLMSetupOnLaunch()
             }
@@ -272,6 +279,9 @@ struct RootCanvas: View {
         if let anim = DreamAnimation(rawValue: self.dreamAnimationRaw) {
             self.dreamModeManager.selectedAnimation = anim
         }
+        // Reset cooldown on app launch / settings change so the next
+        // idle period can trigger a new dream immediately.
+        self.dreamModeManager.clearCooldown()
     }
 
     private func updateCanvasDebugStatus() {
@@ -493,7 +503,7 @@ private struct LLMSetupPromptSheet: View {
                 Text(
                     "\(self.appName) needs an LLM provider. "
                         + "Tap the gear icon in the top bar to open Settings, then choose provider, "
-                        + "base URL, API key, and model, and tap Apply, Restart & Test.")
+                        + "base URL, auth (API key or OpenAI-OAuth-sub), and model, then tap Save, Restart & Test.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 

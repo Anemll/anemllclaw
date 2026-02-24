@@ -29,6 +29,7 @@ public final class OpenClawChatViewModel {
     public var appName: String = "OpenClaw"
     public private(set) var healthOK: Bool = false
     public private(set) var pendingRunCount: Int = 0
+    public private(set) var lastSuccessfulTransportBySession: [String: String] = [:]
 
     public private(set) var sessionKey: String
     public private(set) var sessionId: String?
@@ -36,6 +37,10 @@ public final class OpenClawChatViewModel {
     public private(set) var pendingToolCalls: [OpenClawChatPendingToolCall] = []
     public private(set) var sessions: [OpenClawChatSessionEntry] = []
     private let transport: any OpenClawChatTransport
+
+    public var activeSessionTransportLabel: String? {
+        self.lastSuccessfulTransportBySession[self.sessionKey]
+    }
 
     @ObservationIgnored
     private nonisolated(unsafe) var eventTask: Task<Void, Never>?
@@ -200,7 +205,7 @@ public final class OpenClawChatViewModel {
                 previous: self.messages,
                 incoming: Self.decodeMessages(payload.messages ?? []))
             self.sessionId = payload.sessionId
-            if let level = payload.thinkingLevel, !level.isEmpty {
+            if let level = Self.normalizedThinkingLevel(payload.thinkingLevel) {
                 self.thinkingLevel = level
             }
             await self.pollHealthIfNeeded(force: true)
@@ -225,7 +230,8 @@ public final class OpenClawChatViewModel {
 
         let timestamp: String = {
             guard let value = message.timestamp, value.isFinite else { return "" }
-            return String(format: "%.3f", value)
+            let normalized = (value * 1000).rounded() / 1000
+            return String(normalized)
         }()
 
         let contentFingerprint = message.content.map { item in
@@ -390,6 +396,9 @@ public final class OpenClawChatViewModel {
                     thinking: self.thinkingLevel,
                     idempotencyKey: currentRunId,
                     attachments: currentAttachments)
+                if let transportLabel = Self.normalizedTransportLabel(response.transport) {
+                    self.lastSuccessfulTransportBySession[self.sessionKey] = transportLabel
+                }
                 if response.runId != currentRunId {
                     self.clearPendingRun(currentRunId)
                     self.pendingRuns.insert(response.runId)
@@ -560,6 +569,36 @@ public final class OpenClawChatViewModel {
         }
     }
 
+    private static func normalizedTransportLabel(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return nil }
+        switch normalized {
+        case "websocket", "ws", "wss":
+            return "WebSocket"
+        case "http", "https":
+            return "HTTPS"
+        default:
+            return normalized.uppercased()
+        }
+    }
+
+    private static func normalizedThinkingLevel(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalized.isEmpty else { return nil }
+        switch normalized {
+        case "x-high", "extra-high", "extra_high":
+            return "xhigh"
+        default:
+            return normalized
+        }
+    }
+
     private func handleAgentEvent(_ evt: OpenClawAgentEventPayload) {
         if let sessionId, evt.runId != sessionId {
             return
@@ -597,7 +636,7 @@ public final class OpenClawChatViewModel {
                 previous: self.messages,
                 incoming: Self.decodeMessages(payload.messages ?? []))
             self.sessionId = payload.sessionId
-            if let level = payload.thinkingLevel, !level.isEmpty {
+            if let level = Self.normalizedThinkingLevel(payload.thinkingLevel) {
                 self.thinkingLevel = level
             }
         } catch {

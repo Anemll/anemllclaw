@@ -8,6 +8,11 @@ public enum GatewayLocalLLMProviderKind: String, Codable, Sendable, Equatable {
     case grokCompatible = "grok-compatible"
 }
 
+public enum GatewayLocalLLMTransport: String, Codable, Sendable, Equatable {
+    case http
+    case websocket
+}
+
 public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
     private static let minRequestTimeoutSeconds: TimeInterval = 10
     public static let defaultRequestTimeoutSeconds: TimeInterval = 1200
@@ -17,6 +22,7 @@ public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
     public let baseURL: URL?
     public let apiKey: String?
     public let model: String?
+    public let transport: GatewayLocalLLMTransport
     public let systemPrompt: String?
     public let temperature: Double?
     public let maxOutputTokens: Int?
@@ -27,6 +33,7 @@ public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
         baseURL: URL? = nil,
         apiKey: String? = nil,
         model: String? = nil,
+        transport: GatewayLocalLLMTransport = .http,
         systemPrompt: String? = nil,
         temperature: Double? = nil,
         maxOutputTokens: Int? = nil,
@@ -36,6 +43,7 @@ public struct GatewayLocalLLMConfig: Codable, Sendable, Equatable {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
+        self.transport = transport
         self.systemPrompt = systemPrompt
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
@@ -145,6 +153,7 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
     public let toolCalls: [GatewayLocalLLMToolCall]
     public let model: String
     public let provider: GatewayLocalLLMProviderKind
+    public let transport: GatewayLocalLLMTransport?
     public let usageInputTokens: Int?
     public let usageOutputTokens: Int?
     public let requestBodyBytes: Int?
@@ -154,6 +163,7 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
         toolCalls: [GatewayLocalLLMToolCall],
         model: String,
         provider: GatewayLocalLLMProviderKind,
+        transport: GatewayLocalLLMTransport? = nil,
         usageInputTokens: Int? = nil,
         usageOutputTokens: Int? = nil,
         requestBodyBytes: Int? = nil)
@@ -162,6 +172,7 @@ public struct GatewayLocalLLMToolResponse: Sendable, Codable, Equatable {
         self.toolCalls = toolCalls
         self.model = model
         self.provider = provider
+        self.transport = transport
         self.usageInputTokens = usageInputTokens
         self.usageOutputTokens = usageOutputTokens
         self.requestBodyBytes = requestBodyBytes
@@ -188,6 +199,7 @@ public struct GatewayLocalLLMResponse: Sendable, Equatable {
     public let text: String
     public let model: String
     public let provider: GatewayLocalLLMProviderKind
+    public let transport: GatewayLocalLLMTransport?
     public let usageInputTokens: Int?
     public let usageOutputTokens: Int?
     public let requestBodyBytes: Int?
@@ -196,6 +208,7 @@ public struct GatewayLocalLLMResponse: Sendable, Equatable {
         text: String,
         model: String,
         provider: GatewayLocalLLMProviderKind,
+        transport: GatewayLocalLLMTransport? = nil,
         usageInputTokens: Int? = nil,
         usageOutputTokens: Int? = nil,
         requestBodyBytes: Int? = nil)
@@ -203,6 +216,7 @@ public struct GatewayLocalLLMResponse: Sendable, Equatable {
         self.text = text
         self.model = model
         self.provider = provider
+        self.transport = transport
         self.usageInputTokens = usageInputTokens
         self.usageOutputTokens = usageOutputTokens
         self.requestBodyBytes = requestBodyBytes
@@ -274,10 +288,18 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         "minimax-m2.5-lightning": "MiniMax-M2.5-Lightning",
     ]
     private static let maxOpenAIToolNameLength = 64
+    private static let openAIResponsesWebSocketBetaHeader = "responses_websockets=2026-02-06"
+    private static let openAICodexResponsesHTTPBetaHeader = "responses=experimental"
+    private static let openAICodexJWTClaimPath = "https://api.openai.com/auth"
+    private static let defaultOpenAICodexInstructions = "You are a helpful AI assistant."
 
     private let config: GatewayLocalLLMConfig
     private let endpointURL: URL
+    private let responsesEndpointURL: URL
+    private let websocketResponsesEndpointURL: URL
+    private let transport: GatewayLocalLLMTransport
     private let session: URLSession
+    private var didLogWebSocketToolBypass = false
 
     public init(
         config: GatewayLocalLLMConfig,
@@ -289,6 +311,12 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         self.model = Self.normalizedModelName(config.model ?? "", for: kind)
         let defaultEndpoint = Self.defaultEndpointURL(for: kind)
         self.endpointURL = Self.resolveEndpoint(baseURL: config.baseURL, defaultEndpoint: defaultEndpoint)
+        let defaultResponsesEndpoint = Self.defaultResponsesEndpointURL(for: kind)
+        self.responsesEndpointURL = Self.resolveResponsesEndpoint(
+            baseURL: config.baseURL,
+            defaultEndpoint: defaultResponsesEndpoint)
+        self.websocketResponsesEndpointURL = Self.resolveWebSocketEndpoint(from: self.responsesEndpointURL)
+        self.transport = config.transport
         self.session = session
     }
 
@@ -392,6 +420,49 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         for message in request.messages {
             self.appendOpenAIMessage(role: message.role, text: message.text, into: &payloadMessages)
         }
+        if self.shouldUseOpenAIResponsesWebSocket {
+            Self.trace(
+                "openai websocket request start model=\(self.model)"
+                    + " endpoint=\(self.websocketResponsesEndpointURL.absoluteString)")
+            do {
+                let response = try await self.completeViaOpenAIResponsesWebSocket(
+                    apiKey: apiKey,
+                    payloadMessages: payloadMessages,
+                    thinkingLevel: request.thinkingLevel)
+                Self.trace(
+                    "openai websocket request success model=\(self.model)"
+                        + " inputTokens=\(Self.tokenLogValue(response.usageInputTokens))"
+                        + " outputTokens=\(Self.tokenLogValue(response.usageOutputTokens))")
+                return GatewayLocalLLMResponse(
+                    text: response.text,
+                    model: self.model,
+                    provider: self.kind,
+                    transport: .websocket,
+                    usageInputTokens: response.usageInputTokens,
+                    usageOutputTokens: response.usageOutputTokens,
+                    requestBodyBytes: response.requestBodyBytes)
+            } catch {
+                Self.trace(
+                    "openai websocket request failed model=\(self.model)"
+                        + " reason=\(Self.errorLogMessage(error))"
+                        + " fallback=http")
+            }
+        }
+
+        if self.kind == .openAICompatible, self.isOpenAICodexBackend {
+            let response = try await self.completeViaOpenAIResponsesHTTP(
+                apiKey: apiKey,
+                payloadMessages: payloadMessages,
+                thinkingLevel: request.thinkingLevel)
+            return GatewayLocalLLMResponse(
+                text: response.text,
+                model: self.model,
+                provider: self.kind,
+                transport: .http,
+                usageInputTokens: response.usageInputTokens,
+                usageOutputTokens: response.usageOutputTokens,
+                requestBodyBytes: response.requestBodyBytes)
+        }
 
         var body: [String: Any] = [
             "model": self.model,
@@ -448,6 +519,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             text: trimmed,
             model: self.model,
             provider: self.kind,
+            transport: .http,
             usageInputTokens: input,
             usageOutputTokens: output,
             requestBodyBytes: bodyBytes)
@@ -457,6 +529,47 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         let apiKey = (self.config.apiKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !request.messages.isEmpty else {
             throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
+        }
+        if self.kind == .openAICompatible, self.isOpenAICodexBackend {
+            let downgradedMessages = request.messages.compactMap { message -> GatewayLocalLLMMessage? in
+                let text = (message.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else {
+                    return nil
+                }
+                let role: String = switch message.role {
+                case .assistant:
+                    Self.openAIRoleAssistant
+                case .system:
+                    Self.openAIRoleSystem
+                case .user:
+                    Self.openAIRoleUser
+                case .tool:
+                    Self.openAIRoleUser
+                }
+                return GatewayLocalLLMMessage(role: role, text: text)
+            }
+            guard !downgradedMessages.isEmpty else {
+                throw GatewayLocalLLMProviderError.invalidRequest(
+                    "tool-calling request had no message text to send")
+            }
+            let response = try await self.complete(
+                GatewayLocalLLMRequest(
+                    messages: downgradedMessages,
+                    thinkingLevel: request.thinkingLevel,
+                    systemPrompt: request.systemPrompt))
+            return GatewayLocalLLMToolResponse(
+                text: response.text,
+                toolCalls: [],
+                model: self.model,
+                provider: self.kind,
+                transport: response.transport,
+                usageInputTokens: response.usageInputTokens,
+                usageOutputTokens: response.usageOutputTokens,
+                requestBodyBytes: response.requestBodyBytes)
+        }
+        if self.shouldUseOpenAIResponsesWebSocket, !self.didLogWebSocketToolBypass {
+            Self.trace("openai websocket transport configured but tool-calling requests use HTTP chat/completions")
+            self.didLogWebSocketToolBypass = true
         }
         let toolNameMap = Self.makeOpenAIToolNameMap(toolNames: request.tools.map(\.name))
         let reverseToolNameMap = Dictionary(uniqueKeysWithValues: toolNameMap.map { ($1, $0) })
@@ -594,9 +707,566 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             toolCalls: toolCalls,
             model: self.model,
             provider: self.kind,
+            transport: .http,
             usageInputTokens: input,
             usageOutputTokens: output,
             requestBodyBytes: bodyBytes)
+    }
+
+    private struct OpenAIResponsesWebSocketResult {
+        let text: String
+        let usageInputTokens: Int?
+        let usageOutputTokens: Int?
+        let requestBodyBytes: Int
+    }
+
+    private enum OpenAIResponsesWebSocketEventOutcome {
+        case none
+        case completed(usage: [String: Any]?)
+        case failed(String)
+    }
+
+    private enum OpenAIResponsesWebSocketPayloadStyle: String {
+        case nestedResponseCreate = "nested-response"
+        case topLevelResponseCreate = "top-level"
+    }
+
+    private var shouldUseOpenAIResponsesWebSocket: Bool {
+        self.transport == .websocket && self.kind == .openAICompatible
+    }
+
+    private var isOpenAICodexBackend: Bool {
+        guard self.kind == .openAICompatible else {
+            return false
+        }
+        let host = self.responsesEndpointURL.host?.lowercased() ?? ""
+        guard host.hasSuffix("chatgpt.com") else {
+            return false
+        }
+        let path = self.responsesEndpointURL.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        return path == "backend-api"
+            || path.hasPrefix("backend-api/")
+            || path == "backend-api/codex"
+            || path == "backend-api/codex/responses"
+    }
+
+    private func completeViaOpenAIResponsesWebSocket(
+        apiKey: String,
+        payloadMessages: [[String: Any]],
+        thinkingLevel: String?) async throws -> OpenAIResponsesWebSocketResult
+    {
+        let responsePayload = try self.makeOpenAIResponsesPayload(
+            payloadMessages: payloadMessages,
+            thinkingLevel: thinkingLevel)
+        do {
+            return try await self.sendOpenAIResponsesWebSocketRequest(
+                apiKey: apiKey,
+                responsePayload: responsePayload,
+                payloadStyle: .topLevelResponseCreate)
+        } catch {
+            guard Self.shouldRetryWebSocketWithNestedPayload(after: error) else {
+                throw error
+            }
+            Self.trace("openai websocket retrying with nested response.create payload")
+            return try await self.sendOpenAIResponsesWebSocketRequest(
+                apiKey: apiKey,
+                responsePayload: responsePayload,
+                payloadStyle: .nestedResponseCreate)
+        }
+    }
+
+    private func completeViaOpenAIResponsesHTTP(
+        apiKey: String,
+        payloadMessages: [[String: Any]],
+        thinkingLevel: String?) async throws -> OpenAIResponsesWebSocketResult
+    {
+        var payload = try self.makeOpenAIResponsesPayload(
+            payloadMessages: payloadMessages,
+            thinkingLevel: thinkingLevel)
+        payload["stream"] = false
+        let jsonBody = try Self.makeJSONBody(payload)
+        let bodyBytes = jsonBody.count
+
+        var request = URLRequest(url: self.responsesEndpointURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = self.config.effectiveRequestTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if self.isOpenAICodexBackend {
+            try self.applyOpenAICodexHeaders(
+                to: &request,
+                apiKey: apiKey,
+                webSocket: false)
+        }
+        request.httpBody = jsonBody
+
+        let (data, response) = try await self.session.data(for: request)
+        let httpResponse = response as? HTTPURLResponse
+        if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
+            throw GatewayLocalLLMProviderError.httpError(
+                status: statusCode,
+                message: Self.errorText(data))
+        }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GatewayLocalLLMProviderError.invalidResponse(
+                "openai responses HTTP payload was not a JSON object: \(Self.responsePreview(data))")
+        }
+        let text = Self.extractOpenAIResponsesText(from: root)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidResponse(
+                "openai responses HTTP response content is empty: \(Self.responsePreview(data))")
+        }
+        let usage = root["usage"] as? [String: Any]
+        let input = Self.readInt(usage?["input_tokens"]) ?? Self.readInt(usage?["prompt_tokens"])
+        let output = Self.readInt(usage?["output_tokens"]) ?? Self.readInt(usage?["completion_tokens"])
+        return OpenAIResponsesWebSocketResult(
+            text: text,
+            usageInputTokens: input,
+            usageOutputTokens: output,
+            requestBodyBytes: bodyBytes)
+    }
+
+    private func sendOpenAIResponsesWebSocketRequest(
+        apiKey: String,
+        responsePayload: [String: Any],
+        payloadStyle: OpenAIResponsesWebSocketPayloadStyle) async throws -> OpenAIResponsesWebSocketResult
+    {
+        let payload = Self.makeOpenAIResponsesWebSocketPayload(
+            responsePayload: responsePayload,
+            payloadStyle: payloadStyle)
+        let payloadData = try Self.makeJSONBody(payload)
+        let bodyBytes = payloadData.count
+        guard let payloadText = String(data: payloadData, encoding: .utf8) else {
+            throw GatewayLocalLLMProviderError.invalidRequest("failed to encode websocket payload")
+        }
+
+        var request = URLRequest(url: self.websocketResponsesEndpointURL)
+        request.timeoutInterval = self.config.effectiveRequestTimeoutSeconds
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if self.isOpenAICodexBackend {
+            try self.applyOpenAICodexHeaders(
+                to: &request,
+                apiKey: apiKey,
+                webSocket: true)
+        } else {
+            request.setValue(Self.openAIResponsesWebSocketBetaHeader, forHTTPHeaderField: "OpenAI-Beta")
+        }
+
+        let socket = self.session.webSocketTask(with: request)
+        socket.resume()
+        defer {
+            socket.cancel(with: .normalClosure, reason: nil)
+        }
+
+        Self.trace("openai websocket payload style=\(payloadStyle.rawValue)")
+        try await socket.send(.string(payloadText))
+
+        var accumulated = ""
+        var completedResponse: [String: Any]?
+        while true {
+            let message = try await socket.receive()
+            let frameText: String
+            switch message {
+            case let .string(text):
+                frameText = text
+            case let .data(data):
+                frameText = String(data: data, encoding: .utf8) ?? ""
+            @unknown default:
+                continue
+            }
+            guard !frameText.isEmpty,
+                  let frameData = frameText.data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: frameData) as? [String: Any]
+            else {
+                continue
+            }
+
+            switch Self.handleOpenAIResponsesWebSocketEvent(
+                event,
+                accumulated: &accumulated,
+                completedResponse: &completedResponse)
+            {
+            case .none:
+                continue
+            case let .failed(message):
+                throw GatewayLocalLLMProviderError.invalidResponse(message)
+            case let .completed(usage):
+                let text = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else {
+                    throw GatewayLocalLLMProviderError.invalidResponse(
+                        "openai websocket response content is empty")
+                }
+                let input = Self.readInt(usage?["input_tokens"]) ?? Self.readInt(usage?["prompt_tokens"])
+                let output = Self.readInt(usage?["output_tokens"]) ?? Self.readInt(usage?["completion_tokens"])
+                return OpenAIResponsesWebSocketResult(
+                    text: text,
+                    usageInputTokens: input,
+                    usageOutputTokens: output,
+                    requestBodyBytes: bodyBytes)
+            }
+        }
+    }
+
+    private static func makeOpenAIResponsesWebSocketPayload(
+        responsePayload: [String: Any],
+        payloadStyle: OpenAIResponsesWebSocketPayloadStyle) -> [String: Any]
+    {
+        switch payloadStyle {
+        case .nestedResponseCreate:
+            return [
+                "type": "response.create",
+                "response": responsePayload,
+            ]
+        case .topLevelResponseCreate:
+            var payload = responsePayload
+            payload["type"] = "response.create"
+            return payload
+        }
+    }
+
+    private static func shouldRetryWebSocketWithNestedPayload(after error: Error) -> Bool {
+        guard let providerError = error as? GatewayLocalLLMProviderError else {
+            return false
+        }
+        guard case let .invalidResponse(message) = providerError else {
+            return false
+        }
+        let normalized = message.lowercased()
+        return normalized.contains("missing required parameter") && normalized.contains("response")
+    }
+
+    private func makeOpenAIResponsesPayload(
+        payloadMessages: [[String: Any]],
+        thinkingLevel: String?) throws -> [String: Any]
+    {
+        let includeSystemInInput = !self.isOpenAICodexBackend
+        let input = Self.mapOpenAIMessagesToResponsesInput(
+            payloadMessages,
+            includeSystemMessages: includeSystemInInput)
+        guard !input.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
+        }
+
+        var payload: [String: Any] = [
+            "model": self.model,
+            "input": input,
+            "stream": true,
+        ]
+        if self.isOpenAICodexBackend {
+            payload["instructions"] = Self.resolveOpenAICodexInstructions(from: payloadMessages)
+            payload["store"] = false
+            payload["text"] = ["verbosity": "medium"]
+            payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = true
+        }
+        if let effort = Self.resolveReasoningEffort(
+            thinkingLevel,
+            preferXHighForCodex: self.isOpenAICodexBackend)
+        {
+            payload["reasoning"] = [
+                "effort": effort,
+            ]
+        }
+        return payload
+    }
+
+    private static func mapOpenAIMessagesToResponsesInput(
+        _ payloadMessages: [[String: Any]],
+        includeSystemMessages: Bool = true) -> [[String: Any]]
+    {
+        payloadMessages.compactMap { message in
+            let rawRole = (message["role"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? Self.openAIRoleUser
+            // Responses API websocket payloads accept assistant history blocks as
+            // output_text/refusal rather than input_text. Also normalize unknown/tool
+            // roles to user for compatibility.
+            let role: String = switch rawRole {
+            case Self.openAIRoleSystem, Self.openAIRoleUser, Self.openAIRoleAssistant:
+                rawRole
+            default:
+                Self.openAIRoleUser
+            }
+            if role == Self.openAIRoleSystem, !includeSystemMessages {
+                return nil
+            }
+            let text = Self.readOpenAIContent(message["content"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                return nil
+            }
+            let contentType = role == Self.openAIRoleAssistant ? "output_text" : "input_text"
+            return [
+                "role": role,
+                "content": [
+                    [
+                        "type": contentType,
+                        "text": text,
+                    ],
+                ],
+            ]
+        }
+    }
+
+    private static func resolveOpenAICodexInstructions(from payloadMessages: [[String: Any]]) -> String {
+        let instructionBlocks = payloadMessages.compactMap { message -> String? in
+            let role = (message["role"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard role == Self.openAIRoleSystem else {
+                return nil
+            }
+            let text = Self.readOpenAIContent(message["content"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+        if instructionBlocks.isEmpty {
+            return Self.defaultOpenAICodexInstructions
+        }
+        return instructionBlocks.joined(separator: "\n\n")
+    }
+
+    private static func handleOpenAIResponsesWebSocketEvent(
+        _ event: [String: Any],
+        accumulated: inout String,
+        completedResponse: inout [String: Any]?) -> OpenAIResponsesWebSocketEventOutcome
+    {
+        let type = (event["type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        switch type {
+        case "response.output_text.delta":
+            if let delta = event["delta"] as? String {
+                accumulated += delta
+            }
+            return .none
+        case "response.output_text.done":
+            if accumulated.isEmpty, let textChunk = event["text"] as? String {
+                accumulated = textChunk
+            }
+            return .none
+        case "response.completed", "response.done":
+            if let response = event["response"] as? [String: Any] {
+                completedResponse = response
+            }
+            if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let completedResponse {
+                    accumulated = Self.extractOpenAIResponsesText(from: completedResponse)
+                }
+                if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    accumulated = Self.extractOpenAIResponsesText(from: event)
+                }
+            }
+            let usage = (completedResponse?["usage"] as? [String: Any])
+                ?? ((event["response"] as? [String: Any])?["usage"] as? [String: Any])
+                ?? (event["usage"] as? [String: Any])
+            return .completed(usage: usage)
+        case "error", "response.failed":
+            return .failed(
+                Self.extractOpenAIResponsesErrorMessage(from: event)
+                    ?? "openai websocket request failed")
+        default:
+            if type.hasSuffix(".delta"),
+               let delta = event["delta"] as? String
+            {
+                accumulated += delta
+            }
+            return .none
+        }
+    }
+
+    private static func extractOpenAIResponsesText(from object: [String: Any]) -> String {
+        if let direct = object["output_text"] as? String, !direct.isEmpty {
+            return direct
+        }
+        if let list = object["output_text"] as? [String], !list.isEmpty {
+            return list.joined()
+        }
+        if let response = object["response"] as? [String: Any] {
+            let nested = Self.extractOpenAIResponsesText(from: response)
+            if !nested.isEmpty {
+                return nested
+            }
+        }
+
+        guard let output = object["output"] as? [Any] else {
+            return ""
+        }
+        var chunks: [String] = []
+        for entry in output {
+            guard let item = entry as? [String: Any] else {
+                continue
+            }
+            let itemType = (item["type"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            let role = (item["role"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            guard itemType == "message" || role == Self.openAIRoleAssistant else {
+                continue
+            }
+
+            if let text = item["text"] as? String, !text.isEmpty {
+                chunks.append(text)
+            }
+            guard let content = item["content"] as? [Any] else {
+                continue
+            }
+            for blockRaw in content {
+                guard let block = blockRaw as? [String: Any] else {
+                    continue
+                }
+                let blockType = (block["type"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() ?? ""
+                if blockType == "output_text" || blockType == "text",
+                   let blockText = block["text"] as? String,
+                   !blockText.isEmpty
+                {
+                    chunks.append(blockText)
+                }
+            }
+        }
+        return chunks.joined()
+    }
+
+    private static func extractOpenAIResponsesErrorMessage(from event: [String: Any]) -> String? {
+        if let message = event["message"] as? String, !message.isEmpty {
+            return message
+        }
+        if let error = event["error"] as? String, !error.isEmpty {
+            return error
+        }
+        if let error = event["error"] as? [String: Any] {
+            if let message = error["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let code = error["code"] as? String, !code.isEmpty {
+                return code
+            }
+        }
+        if let response = event["response"] as? [String: Any],
+           let error = response["error"] as? [String: Any],
+           let message = error["message"] as? String,
+           !message.isEmpty
+        {
+            return message
+        }
+        return nil
+    }
+
+    private func applyOpenAICodexHeaders(
+        to request: inout URLRequest,
+        apiKey: String,
+        webSocket: Bool) throws
+    {
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let accountID = Self.extractOpenAICodexAccountID(fromToken: apiKey) ?? ""
+        guard !accountID.isEmpty else {
+            throw GatewayLocalLLMProviderError.invalidRequest(
+                "OpenAI OAuth token is missing ChatGPT account ID.")
+        }
+        request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        request.setValue("pi-ios", forHTTPHeaderField: "originator")
+        request.setValue(
+            webSocket
+                ? Self.openAIResponsesWebSocketBetaHeader
+                : Self.openAICodexResponsesHTTPBetaHeader,
+            forHTTPHeaderField: "OpenAI-Beta")
+    }
+
+    private static func extractOpenAICodexAccountID(fromToken token: String) -> String? {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let segments = trimmed.split(separator: ".")
+        guard segments.count == 3,
+              let payloadData = Self.decodeBase64URL(String(segments[1])),
+              let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              let auth = payload[Self.openAICodexJWTClaimPath] as? [String: Any],
+              let accountID = auth["chatgpt_account_id"] as? String
+        else {
+            return nil
+        }
+        let normalized = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func decodeBase64URL(_ raw: String) -> Data? {
+        var normalized = raw
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        switch normalized.count % 4 {
+        case 0:
+            break
+        case 2:
+            normalized += "=="
+        case 3:
+            normalized += "="
+        default:
+            return nil
+        }
+        return Data(base64Encoded: normalized)
+    }
+
+    private static func errorLogMessage(_ error: Error) -> String {
+        let text: String
+        if let providerError = error as? GatewayLocalLLMProviderError {
+            switch providerError {
+            case .notConfigured:
+                text = "notConfigured"
+            case let .invalidRequest(message):
+                text = "invalidRequest: \(message)"
+            case let .httpError(status, message):
+                text = "httpError(\(status)): \(message)"
+            case let .invalidResponse(message):
+                text = "invalidResponse: \(message)"
+            }
+        } else {
+            text = error.localizedDescription
+        }
+        return text
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func tokenLogValue(_ value: Int?) -> String {
+        guard let value else { return "n/a" }
+        return String(value)
+    }
+
+    private static func trace(_ message: String) {
+        print("[OpenClawGatewayCore][LocalLLM] \(message)")
+    }
+
+    private static func resolveReasoningEffort(
+        _ thinkingLevel: String?,
+        preferXHighForCodex: Bool = false) -> String?
+    {
+        guard let thinkingLevel else {
+            return nil
+        }
+        switch thinkingLevel
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        {
+        case "minimal":
+            return "minimal"
+        case "low":
+            return "low"
+        case "medium":
+            return "medium"
+        case "high":
+            return "high"
+        case "xhigh", "x-high", "extra-high", "extra_high":
+            return preferXHighForCodex ? "xhigh" : "high"
+        default:
+            return nil
+        }
     }
 
     private var shouldRemapSystemRole: Bool {
@@ -644,6 +1314,17 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         }
     }
 
+    private static func defaultResponsesEndpointURL(for provider: GatewayLocalLLMProviderKind) -> URL {
+        switch provider {
+        case .minimaxCompatible:
+            URL(string: "https://api.minimax.io/v1/responses")!
+        case .grokCompatible:
+            URL(string: "https://api.x.ai/v1/responses")!
+        case .disabled, .openAICompatible, .anthropicCompatible:
+            URL(string: "https://api.openai.com/v1/responses")!
+        }
+    }
+
     private static func resolveEndpoint(baseURL: URL?, defaultEndpoint: URL) -> URL {
         guard let baseURL else {
             return defaultEndpoint
@@ -660,6 +1341,59 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             return baseURL.appendingPathComponent("chat/completions")
         }
         return baseURL.appendingPathComponent("v1/chat/completions")
+    }
+
+    private static func resolveResponsesEndpoint(baseURL: URL?, defaultEndpoint: URL) -> URL {
+        guard let baseURL else {
+            return defaultEndpoint
+        }
+
+        let path = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let lowerPath = path.lowercased()
+        let host = baseURL.host?.lowercased() ?? ""
+        if host.hasSuffix("chatgpt.com"), path.isEmpty {
+            return baseURL.appendingPathComponent("backend-api/codex/responses")
+        }
+        if lowerPath.hasSuffix("backend-api/codex/responses") || lowerPath.hasSuffix("codex/responses") {
+            return baseURL
+        }
+        if lowerPath.hasSuffix("backend-api/codex") {
+            return baseURL.appendingPathComponent("responses")
+        }
+        if lowerPath.hasSuffix("backend-api") {
+            return baseURL.appendingPathComponent("codex/responses")
+        }
+        if path.isEmpty {
+            return baseURL.appendingPathComponent("v1/responses")
+        }
+        if path.hasSuffix("responses") {
+            return baseURL
+        }
+        if path.hasSuffix("chat/completions") {
+            return baseURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("responses")
+        }
+        if path.hasSuffix("v1") {
+            return baseURL.appendingPathComponent("responses")
+        }
+        return baseURL.appendingPathComponent("v1/responses")
+    }
+
+    private static func resolveWebSocketEndpoint(from responsesURL: URL) -> URL {
+        guard var components = URLComponents(url: responsesURL, resolvingAgainstBaseURL: false) else {
+            return responsesURL
+        }
+        switch components.scheme?.lowercased() {
+        case "http":
+            components.scheme = "ws"
+        case "https":
+            components.scheme = "wss"
+        default:
+            break
+        }
+        return components.url ?? responsesURL
     }
 
     static func normalizeOpenAIToolParameters(_ raw: [String: Any]?) -> [String: Any] {
@@ -765,6 +1499,7 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
             text: trimmed,
             model: self.model,
             provider: self.kind,
+            transport: .http,
             usageInputTokens: input,
             usageOutputTokens: output,
             requestBodyBytes: bodyBytes)
@@ -939,6 +1674,7 @@ public actor GatewayAnthropicCompatibleLLMProvider: GatewayLocalLLMToolCallableP
             toolCalls: toolCalls,
             model: self.model,
             provider: self.kind,
+            transport: .http,
             usageInputTokens: input,
             usageOutputTokens: output,
             requestBodyBytes: bodyBytes)

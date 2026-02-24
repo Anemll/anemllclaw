@@ -42,6 +42,9 @@ struct SettingsTab: View {
     @AppStorage("dream.enabled") private var dreamModeEnabled: Bool = false
     @AppStorage("dream.idleThreshold") private var dreamIdleThreshold: Int = 600
     @AppStorage("dream.animation") private var dreamAnimationRaw: String = DreamAnimation.flamePulse.rawValue
+    @AppStorage("dream.maxToolRounds") private var dreamMaxToolRounds: Int = 12
+    @AppStorage("dream.thinkingLevel") private var dreamThinkingLevel: String = "medium"
+    @AppStorage("dream.providerID") private var dreamProviderID: String = ""
     @AppStorage("llm.setupPrompt.suppressed") private var llmSetupPromptSuppressed: Bool = false
 
     // Onboarding control (RootCanvas listens to onboarding.requestID and force-opens the wizard).
@@ -67,6 +70,7 @@ struct SettingsTab: View {
     @State private var llmBaseURL: String = ""
     @State private var llmAPIKey: String = ""
     @State private var llmModel: String = ""
+    @State private var llmTransport: GatewayLocalLLMTransport = .http
     @State private var llmToolCallingMode: GatewayLocalLLMToolCallingMode = .auto
     @State private var llmApplying: Bool = false
 
@@ -317,7 +321,11 @@ struct SettingsTab: View {
                     Text(provider.displayName)
                         .font(.body.weight(isActive ? .semibold : .regular))
                         .foregroundStyle(.primary)
-                    Text(provider.provider.displayLabel + (provider.model.isEmpty ? "" : " · \(provider.model)"))
+                    let modelSuffix = provider.model.isEmpty ? "" : " · \(provider.model)"
+                    let authSuffix = provider.provider == .openAICompatible
+                        && provider.authMode == .openAIOAuthSub ? " · OpenAI-OAuth-sub" : ""
+                    let transportSuffix = provider.transport == .websocket ? " · WebSocket" : ""
+                    Text(provider.provider.displayLabel + authSuffix + modelSuffix + transportSuffix)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -359,7 +367,9 @@ struct SettingsTab: View {
         if test {
             let quickTestLogLine = "llm editor quick test start"
                 + " provider=\(saved.provider.rawValue)"
+                + " auth=\(saved.authMode.rawValue)"
                 + " model=\(saved.model)"
+                + " transport=\(saved.transport.rawValue)"
             print("[AnemllClaw iOS] \(quickTestLogLine)")
             self.gatewayLogger.info("\(quickTestLogLine, privacy: .public)")
             await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
@@ -375,21 +385,54 @@ struct SettingsTab: View {
         defer { self.llmApplying = false }
 
         if let provider {
-            self.activeProviderID = provider.id
-            LLMProviderStore.setActiveID(provider.id)
+            var resolvedProvider = provider
+            if provider.provider == .openAICompatible, provider.authMode == .openAIOAuthSub {
+                do {
+                    let refreshed = try await LLMProviderStore.refreshOpenAIOAuthIfNeeded(provider)
+                    if refreshed != provider {
+                        resolvedProvider = refreshed
+                        if let index = self.savedProviders.firstIndex(where: { $0.id == refreshed.id }) {
+                            self.savedProviders[index] = refreshed
+                        }
+                        LLMProviderStore.save(self.savedProviders)
+                    }
+                } catch {
+                    let providerID = provider.id
+                    let reason = error.localizedDescription
+                    let providerLog = "oauth refresh failed provider=\(providerID)"
+                    let reasonLog = "oauth refresh failed reason=\(reason)"
+                    self.gatewayLogger.warning("\(providerLog, privacy: .public)")
+                    self.gatewayLogger.warning("\(reasonLog, privacy: .public)")
+                }
 
-            self.llmProvider = provider.provider
-            self.llmBaseURL = provider.baseURL
-            self.llmAPIKey = provider.apiKey
-            self.llmModel = provider.model
-            self.llmToolCallingMode = provider.toolCallingMode
+                if resolvedProvider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                    != OpenAIOAuthSubClient.subscriptionBaseURL
+                {
+                    resolvedProvider.baseURL = OpenAIOAuthSubClient.subscriptionBaseURL
+                    if let index = self.savedProviders.firstIndex(where: { $0.id == resolvedProvider.id }) {
+                        self.savedProviders[index] = resolvedProvider
+                    }
+                    LLMProviderStore.save(self.savedProviders)
+                }
+            }
+
+            self.activeProviderID = resolvedProvider.id
+            LLMProviderStore.setActiveID(resolvedProvider.id)
+
+            self.llmProvider = resolvedProvider.provider
+            self.llmBaseURL = resolvedProvider.baseURL
+            self.llmAPIKey = resolvedProvider.apiKey
+            self.llmModel = resolvedProvider.model
+            self.llmTransport = resolvedProvider.transport
+            self.llmToolCallingMode = resolvedProvider.toolCallingMode
 
             var settings = self.localGatewayRuntime.controlPlaneSettings
-            settings.localLLMProvider = provider.provider
-            settings.localLLMBaseURL = provider.baseURL
-            settings.localLLMAPIKey = provider.apiKey
-            settings.localLLMModel = provider.model
-            settings.localLLMToolCallingMode = provider.toolCallingMode
+            settings.localLLMProvider = resolvedProvider.provider
+            settings.localLLMBaseURL = resolvedProvider.baseURL
+            settings.localLLMAPIKey = resolvedProvider.apiKey
+            settings.localLLMModel = resolvedProvider.model
+            settings.localLLMTransport = resolvedProvider.transport
+            settings.localLLMToolCallingMode = resolvedProvider.toolCallingMode
             await self.localGatewayRuntime.applyControlPlaneSettings(settings)
         } else {
             self.activeProviderID = nil
@@ -399,12 +442,14 @@ struct SettingsTab: View {
             self.llmBaseURL = ""
             self.llmAPIKey = ""
             self.llmModel = ""
+            self.llmTransport = .http
 
             var settings = self.localGatewayRuntime.controlPlaneSettings
             settings.localLLMProvider = .disabled
             settings.localLLMBaseURL = ""
             settings.localLLMAPIKey = ""
             settings.localLLMModel = ""
+            settings.localLLMTransport = .http
             settings.localLLMToolCallingMode = self.llmToolCallingMode
             await self.localGatewayRuntime.applyControlPlaneSettings(settings)
         }
@@ -418,6 +463,7 @@ struct SettingsTab: View {
             || self.llmBaseURL != settings.localLLMBaseURL
             || self.llmAPIKey != settings.localLLMAPIKey
             || self.llmModel != settings.localLLMModel
+            || self.llmTransport != settings.localLLMTransport
             || self.llmToolCallingMode != settings.localLLMToolCallingMode
     }
 
@@ -1039,6 +1085,7 @@ struct SettingsTab: View {
                 "Idle Threshold",
                 selection: self.$dreamIdleThreshold)
             {
+                Text("1 minute").tag(60)
                 Text("10 minutes").tag(600)
                 Text("30 minutes").tag(1800)
                 Text("1 hour").tag(3600)
@@ -1046,8 +1093,55 @@ struct SettingsTab: View {
                 Text("4 hours").tag(14400)
             }
 
+            Picker(
+                "Dream Iterations",
+                selection: self.$dreamMaxToolRounds)
+            {
+                Text("6").tag(6)
+                Text("8").tag(8)
+                Text("10").tag(10)
+                Text("12").tag(12)
+                Text("16").tag(16)
+                Text("20").tag(20)
+            }
+
+            Picker(
+                "Reasoning Level",
+                selection: self.$dreamThinkingLevel)
+            {
+                Text("Off").tag("off")
+                Text("Low").tag("low")
+                Text("Medium").tag("medium")
+                Text("High").tag("high")
+            }
+
+            Picker(
+                "Model",
+                selection: self.$dreamProviderID)
+            {
+                Text("Default (current)").tag("")
+                ForEach(self.savedProviders.filter(\.isConfigured)) { provider in
+                    Text(provider.shortDisplayName).tag(provider.id)
+                }
+            }
+
             self.dreamAnimationPicker()
             self.dreamAnimationPreview()
+
+            Button {
+                self.dreamModeManager.clearCooldown()
+                self.dreamModeManager.enterDream()
+                self.dismiss()
+            } label: {
+                HStack {
+                    Image(systemName: "moon.zzz.fill")
+                    Text("Enter Dream Now")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.indigo)
+            .disabled(self.dreamModeManager.state != .awake)
         }
     }
 
@@ -1181,6 +1275,7 @@ struct SettingsTab: View {
         self.llmBaseURL = settings.localLLMBaseURL
         self.llmAPIKey = settings.localLLMAPIKey
         self.llmModel = settings.localLLMModel
+        self.llmTransport = settings.localLLMTransport
         self.llmToolCallingMode = settings.localLLMToolCallingMode
     }
 
@@ -1569,6 +1664,7 @@ struct SettingsTab: View {
         settings.localLLMBaseURL = self.llmBaseURL
         settings.localLLMAPIKey = self.llmAPIKey
         settings.localLLMModel = self.llmModel
+        settings.localLLMTransport = self.llmTransport
         settings.localLLMToolCallingMode = self.llmToolCallingMode
         await self.localGatewayRuntime.applyControlPlaneSettings(settings)
         if test {

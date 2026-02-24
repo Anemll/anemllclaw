@@ -17,6 +17,10 @@ struct SettingsTab: View {
     @AppStorage("talk.button.enabled") private var talkButtonEnabled: Bool = true
     @AppStorage("talk.background.enabled") private var talkBackgroundEnabled: Bool = false
     @AppStorage("talk.voiceDirectiveHint.enabled") private var talkVoiceDirectiveHintEnabled: Bool = true
+    @AppStorage(ChatTransportPreferences.openAIWebSocketEnabledDefaultsKey)
+    private var chatOpenAIWebSocketEnabled: Bool = false
+    @AppStorage(ChatTransportPreferences.openAIModelDefaultsKey)
+    private var chatOpenAIModel: String = ChatTransportPreferences.defaultOpenAIModel
     @AppStorage("camera.enabled") private var cameraEnabled: Bool = true
     @AppStorage("location.enabledMode") private var locationEnabledModeRaw: String = OpenClawLocationMode.off.rawValue
     @AppStorage("location.preciseEnabled") private var locationPreciseEnabled: Bool = true
@@ -41,6 +45,7 @@ struct SettingsTab: View {
     @State private var lastLocationModeRaw: String = OpenClawLocationMode.off.rawValue
     @State private var gatewayToken: String = ""
     @State private var gatewayPassword: String = ""
+    @State private var chatOpenAIApiKey: String = ""
     @State private var talkElevenLabsApiKey: String = ""
     @AppStorage("gateway.setupCode") private var setupCode: String = ""
     @State private var setupStatusText: String?
@@ -262,11 +267,35 @@ struct SettingsTab: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         Toggle("Voice Directive Hint", isOn: self.$talkVoiceDirectiveHintEnabled)
-                        Text("Include ElevenLabs voice switching instructions in the Talk Mode prompt. Disable to save tokens.")
+                        Text(
+                            "Include ElevenLabs voice switching instructions in the Talk Mode prompt. "
+                                + "Disable to save tokens.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         // Keep this separate so users can hide the side bubble without disabling Talk Mode.
                         Toggle("Show Talk Button", isOn: self.$talkButtonEnabled)
+
+                        Toggle("OpenAI WebSocket (Experimental)", isOn: self.$chatOpenAIWebSocketEnabled)
+
+                        if self.chatOpenAIWebSocketEnabled {
+                            SecureField("OpenAI API Key", text: self.$chatOpenAIApiKey)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+
+                            TextField("OpenAI Model", text: self.$chatOpenAIModel)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+
+                            Text(
+                                "Experimental mode: direct OpenAI WebSocket with automatic HTTP fallback. "
+                                    + "Current iOS path is text-only (no image attachments/tools).")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Off by default. Chat continues to use your gateway provider routing.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
 
                         NavigationLink {
                             VoiceWakeWordsSettingsView()
@@ -346,11 +375,14 @@ struct SettingsTab: View {
                 self.localIPAddress = NetworkInterfaces.primaryIPv4Address()
                 self.lastLocationModeRaw = self.locationEnabledModeRaw
                 self.syncManualPortText()
+                ChatTransportPreferences.migrateLegacyModeIfNeeded()
+                self.chatOpenAIWebSocketEnabled = ChatTransportPreferences.isOpenAIWebSocketEnabled()
                 let trimmedInstanceId = self.instanceId.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmedInstanceId.isEmpty {
                     self.gatewayToken = GatewaySettingsStore.loadGatewayToken(instanceId: trimmedInstanceId) ?? ""
                     self.gatewayPassword = GatewaySettingsStore.loadGatewayPassword(instanceId: trimmedInstanceId) ?? ""
                 }
+                self.chatOpenAIApiKey = GatewaySettingsStore.loadChatOpenAIApiKey() ?? ""
                 self.talkElevenLabsApiKey = GatewaySettingsStore.loadTalkElevenLabsApiKey() ?? ""
                 // Keep setup front-and-center when disconnected; keep things compact once connected.
                 self.gatewayExpanded = !self.isGatewayConnected
@@ -386,6 +418,9 @@ struct SettingsTab: View {
             }
             .onChange(of: self.talkElevenLabsApiKey) { _, newValue in
                 GatewaySettingsStore.saveTalkElevenLabsApiKey(newValue)
+            }
+            .onChange(of: self.chatOpenAIApiKey) { _, newValue in
+                GatewaySettingsStore.saveChatOpenAIApiKey(newValue)
             }
             .onChange(of: self.manualGatewayPort) { _, _ in
                 self.syncManualPortText()

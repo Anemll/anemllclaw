@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import SwiftUI
 
 // MARK: - Dream State
@@ -64,6 +65,9 @@ enum DreamAnimation: String, CaseIterable, Identifiable, Codable, Sendable {
 @MainActor
 @Observable
 final class DreamModeManager {
+    private static let logger = Logger(
+        subsystem: "ai.openclaw.ios", category: "DreamMode")
+
     private(set) var state: DreamState = .awake
     var enabled: Bool = false
     var idleThresholdSeconds: TimeInterval = 600
@@ -84,11 +88,23 @@ final class DreamModeManager {
     /// is known (via `configureDeviceServices`).
     var dreamStateStore: DreamStateStore?
 
+    /// Called after dream enters — the runtime sets this to send a
+    /// chat.send to the LLM with the dream prompt.
+    var onDreamEntered: ((String) -> Void)?
+
+    /// Called after dream exits (wake) — the runtime sets this to
+    /// deliver the digest to the main chat session.
+    var onDreamExited: (() -> Void)?
+
     // MARK: - State Transitions
 
     func enterDream() {
-        guard self.state == .awake else { return }
+        guard self.state == .awake else {
+            Self.logger.debug("enterDream ignored: state=\(self.state.rawValue)")
+            return
+        }
         let newRunId = UUID().uuidString.lowercased()
+        Self.logger.info("entering dream runId=\(newRunId)")
         self.runId = newRunId
         self.state = .dreaming
 
@@ -98,16 +114,25 @@ final class DreamModeManager {
                 .string(from: Date())
             state.pendingDigestPath = "dream/digest.md"
         }
+
+        Self.logger.info("firing onDreamEntered callback runId=\(newRunId)")
+        self.onDreamEntered?(newRunId)
     }
 
     func wake() {
-        guard self.state == .dreaming else { return }
+        guard self.state == .dreaming else {
+            Self.logger.debug("wake ignored: state=\(self.state.rawValue)")
+            return
+        }
+        Self.logger.info("waking from dream runId=\(self.runId ?? "nil")")
         self.state = .waking
         self.currentTaskLabel = nil
         self.runId = nil
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(600))
             self.state = .awake
+            Self.logger.info("firing onDreamExited callback")
+            self.onDreamExited?()
         }
     }
 
@@ -118,9 +143,17 @@ final class DreamModeManager {
     // MARK: - Auto-Trigger with Cooldown
 
     func evaluateAutoTrigger(idleTracker: UserIdleTracker) {
-        guard self.enabled, self.state == .awake else { return }
-        guard idleTracker.idleSeconds >= self.idleThresholdSeconds
-        else { return }
+        let idle = idleTracker.idleSeconds
+        guard self.enabled, self.state == .awake else {
+            Self.logger.debug(
+                "dream auto-trigger skip: enabled=\(self.enabled) state=\(self.state.rawValue)")
+            return
+        }
+        guard idle >= self.idleThresholdSeconds else {
+            Self.logger.debug(
+                "dream auto-trigger: idle \(Int(idle))s < threshold \(Int(self.idleThresholdSeconds))s")
+            return
+        }
 
         if let store = self.dreamStateStore {
             let state = store.load()
@@ -132,6 +165,8 @@ final class DreamModeManager {
                     from: cooldownStr),
                     Date() < cooldownDate
                 {
+                    Self.logger.info(
+                        "dream auto-trigger blocked: cooldown until \(cooldownStr)")
                     return
                 }
             }
@@ -140,10 +175,17 @@ final class DreamModeManager {
             let key = Self.epochKey(
                 for: idleTracker.lastInteractionAt)
             if state.lastDreamForInteraction == key {
+                Self.logger.debug(
+                    "dream auto-trigger skip: already dreamed for epoch \(key)")
                 return
             }
+        } else {
+            Self.logger.warning(
+                "dream auto-trigger: dreamStateStore is nil — cannot check cooldown/epoch")
         }
 
+        Self.logger.info(
+            "dream auto-trigger: entering dream (idle \(Int(idle))s >= threshold \(Int(self.idleThresholdSeconds))s)")
         self.enterDream()
 
         // Record interaction epoch + set 4-hour cooldown
@@ -160,17 +202,13 @@ final class DreamModeManager {
     // MARK: - Digest Delivery
 
     /// Called periodically (e.g. every 30s from RootCanvas).
-    /// Sets `pendingDigestPath` when the user has returned from idle
-    /// and a dream digest is ready for delivery via the next heartbeat.
+    /// Sets `pendingDigestPath` when a dream digest is ready for delivery.
+    /// Delivers on the next evaluation cycle after dream exits — no idle
+    /// time constraint so the digest is sent even if the user hasn't
+    /// returned yet.
     func evaluateDigestDelivery(idleTracker: UserIdleTracker) {
         guard self.state == .awake else { return }
         guard let store = self.dreamStateStore else { return }
-
-        // Only deliver if user recently returned (idle < 5 min)
-        guard idleTracker.idleSeconds < 300 else {
-            self.pendingDigestPath = nil
-            return
-        }
 
         let state = store.load()
         guard let pending = state.pendingDigestPath,
@@ -191,6 +229,18 @@ final class DreamModeManager {
             state.deliveredForInteraction =
                 state.lastDreamForInteraction
             state.pendingDigestPath = nil
+        }
+    }
+
+    // MARK: - Cooldown
+
+    /// Clear cooldown and interaction epoch so the next idle period
+    /// can trigger a new dream. Called on app launch and settings change.
+    func clearCooldown() {
+        Self.logger.info("clearing dream cooldown and epoch")
+        self.dreamStateStore?.update { state in
+            state.cooldownUntil = nil
+            state.lastDreamForInteraction = nil
         }
     }
 

@@ -34,4 +34,13 @@ import Testing
         let segments = AssistantTextParser.segments(from: "<think></think>")
         #expect(segments.isEmpty)
     }
+
+    @Test func segmentIDsAreStableAcrossParses() {
+        let raw = "<think>internal</think><final>done</final>"
+        let first = AssistantTextParser.segments(from: raw)
+        let second = AssistantTextParser.segments(from: raw)
+
+        #expect(first.map(\.id) == [0, 1])
+        #expect(second.map(\.id) == [0, 1])
+    }
 }

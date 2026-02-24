@@ -143,6 +143,7 @@ struct OpenClawChatComposer: View {
             Text("Low").tag("low")
             Text("Medium").tag("medium")
             Text("High").tag("high")
+            Text("X-High").tag("xhigh")
         }
         .labelsHidden()
         .pickerStyle(.menu)
@@ -310,6 +311,11 @@ struct OpenClawChatComposer: View {
             Circle()
                 .fill(self.viewModel.healthOK ? .green : .orange)
                 .frame(width: 7, height: 7)
+            if let transportIconName = self.connectionTransportIconName {
+                Image(systemName: transportIconName)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(self.connectionTransportIconColor)
+            }
             Text(self.activeSessionLabel)
                 .font(.caption2.weight(.semibold))
             Text(self.viewModel.healthOK ? "Connected" : "Connecting…")
@@ -320,12 +326,47 @@ struct OpenClawChatComposer: View {
         .padding(.vertical, 4)
         .background(OpenClawChatTheme.subtleCard)
         .clipShape(Capsule())
+        .accessibilityLabel(self.connectionPillAccessibilityLabel)
     }
 
     private var activeSessionLabel: String {
         let match = self.viewModel.sessions.first { $0.key == self.viewModel.sessionKey }
         let trimmed = match?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? self.viewModel.sessionKey : trimmed
+    }
+
+    private var connectionTransportIconName: String? {
+        guard self.viewModel.healthOK else { return nil }
+        guard let transport = self.viewModel.activeSessionTransportLabel else { return nil }
+        switch transport {
+        case "WebSocket":
+            return "dot.radiowaves.left.and.right"
+        case "HTTPS":
+            return "lock.shield.fill"
+        default:
+            return "network"
+        }
+    }
+
+    private var connectionTransportIconColor: Color {
+        guard let transport = self.viewModel.activeSessionTransportLabel else { return .secondary }
+        switch transport {
+        case "WebSocket":
+            return .cyan
+        case "HTTPS":
+            return .blue
+        default:
+            return .secondary
+        }
+    }
+
+    private var connectionPillAccessibilityLabel: String {
+        if self.viewModel.healthOK,
+           let transport = self.viewModel.activeSessionTransportLabel
+        {
+            return "\(self.activeSessionLabel), Connected, \(transport)"
+        }
+        return "\(self.activeSessionLabel), \(self.viewModel.healthOK ? "Connected" : "Connecting")"
     }
 
     private var sessionPickerMaxWidth: CGFloat {

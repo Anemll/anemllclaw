@@ -259,6 +259,7 @@ public struct OpenClawSessionsPreviewPayload: Codable, Sendable {
 public struct OpenClawChatSendResponse: Codable, Sendable {
     public let runId: String
     public let status: String
+    public let transport: String?
 }
 
 public struct OpenClawChatEventPayload: Codable, Sendable {

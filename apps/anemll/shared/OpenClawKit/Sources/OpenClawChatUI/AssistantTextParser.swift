@@ -6,7 +6,7 @@ struct AssistantTextSegment: Identifiable {
         case response
     }
 
-    let id = UUID()
+    let id: Int
     let kind: Kind
     let text: String
 }
@@ -16,10 +16,11 @@ enum AssistantTextParser {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
         guard raw.contains("<") else {
-            return [AssistantTextSegment(kind: .response, text: trimmed)]
+            return [AssistantTextSegment(id: 0, kind: .response, text: trimmed)]
         }
 
         var segments: [AssistantTextSegment] = []
+        var nextID = 0
         var cursor = raw.startIndex
         var currentKind: AssistantTextSegment.Kind = .response
         var matchedTag = false
@@ -27,7 +28,11 @@ enum AssistantTextParser {
         while let match = self.nextTag(in: raw, from: cursor) {
             matchedTag = true
             if match.range.lowerBound > cursor {
-                self.appendSegment(kind: currentKind, text: raw[cursor..<match.range.lowerBound], to: &segments)
+                self.appendSegment(
+                    kind: currentKind,
+                    text: raw[cursor..<match.range.lowerBound],
+                    nextID: &nextID,
+                    to: &segments)
             }
 
             guard let tagEnd = raw.range(of: ">", range: match.range.upperBound..<raw.endIndex) else {
@@ -47,11 +52,15 @@ enum AssistantTextParser {
         }
 
         if cursor < raw.endIndex {
-            self.appendSegment(kind: currentKind, text: raw[cursor..<raw.endIndex], to: &segments)
+            self.appendSegment(
+                kind: currentKind,
+                text: raw[cursor..<raw.endIndex],
+                nextID: &nextID,
+                to: &segments)
         }
 
         guard matchedTag else {
-            return [AssistantTextSegment(kind: .response, text: trimmed)]
+            return [AssistantTextSegment(id: 0, kind: .response, text: trimmed)]
         }
 
         return segments
@@ -130,10 +139,12 @@ enum AssistantTextParser {
     private static func appendSegment(
         kind: AssistantTextSegment.Kind,
         text: Substring,
+        nextID: inout Int,
         to segments: inout [AssistantTextSegment])
     {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        segments.append(AssistantTextSegment(kind: kind, text: trimmed))
+        segments.append(AssistantTextSegment(id: nextID, kind: kind, text: trimmed))
+        nextID += 1
     }
 }

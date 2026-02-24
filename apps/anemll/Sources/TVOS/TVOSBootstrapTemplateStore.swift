@@ -548,36 +548,35 @@ enum TVOSBootstrapTemplateStore {
 
         ## Dream Mode Integration
 
-        On each heartbeat, call `get_idle_time()` and branch:
+        Dream Mode is triggered **automatically by native code** when the device is idle.
+        You do NOT need to call `dream_mode({ "action": "enter" })` — the app does that.
 
-        ### A) Start dream when idle (respond HEARTBEAT_OK)
+        When you receive a chat message starting with `[dream-mode runId=...]`,
+        native code has already entered dream mode. Your job:
 
-        If `idle_seconds > idle_threshold_seconds` AND `dream_enabled` is true
-        AND `cooldown_until` is absent or in the past:
-
-        1. `dream_mode({ "action": "enter" })` → note `runId` and `outputRoot`
-        2. Run dream cycle per DREAM.md (consolidate → explore → critic)
+        1. Read `DREAM.md` for the full dream cycle specification
+        2. Execute the dream cycle per DREAM.md:
+           - **Consolidate** (temp 0.1–0.3): summarise, deduplicate, link grounded memory
+           - **Explore** (temp 0.7–1.1): generate candidate ideas, hypotheses
+           - **Critic/Gate** (temp 0.1–0.2): score hypotheses for value and plausibility
         3. Write journal: `write({ "path": "dream/journal/YYYY-MM-DD.md", "content": "..." })`
         4. Write digest: `write({ "path": "dream/digest.md", "content": "## Wake Digest\n..." })`
         5. Optionally write patches: `write({ "path": "dream/patches/<name>.patch", "content": "..." })`
-        6. `dream_mode({ "action": "exit" })` — triggers retention cleanup
-        7. Respond `HEARTBEAT_OK`
+        6. Call `dream_mode({ "action": "exit" })` — triggers retention cleanup
 
-        ### B) Deliver digest when user returns
-
-        If `idle_seconds < 300` AND `pending_digest_path` is set in the response:
-
-        1. `read({ "path": "dream/digest.md" })`
-        2. Summarize findings to user as the heartbeat response
-        3. The native harness marks the digest as delivered
+        Digest delivery to the user is handled by native code after dream exits.
 
         ### Important
 
+        - Do NOT call `dream_mode({ "action": "enter" })` — native code handles entry
+        - Do NOT call `get_idle_time()` during dream — it wastes a tool round
         - Use the `write` tool (NOT `memory.append`) for all `dream/` paths
         - `dream/state.json` is managed by native code — do not write to it
         - Dream artifacts are NOT included in memory search (kept separate)
         - Only propose MEMORY.md changes via `dream/patches/`; never overwrite directly during dream
         - Native cooldown (4h default) prevents re-running while continuously idle
+
+        ## end of Dream Mode Integration
 
         """#,
         "DREAM.md": #"""
@@ -625,8 +624,20 @@ enum TVOSBootstrapTemplateStore {
 
         - **Grounded changes** — consolidations, links, dedup performed (2–3 bullets)
         - **Hypotheses** — H1–H3 with title, summary, expected impact, verification plan
-        - **Verify next** — 1–3 actions to take on wake
+        - **Verify next** — 1–3 actions to take on wake. **Tag each item with a risk level:**
+          - `[LOW-RISK]` — read-only actions: fetch a URL, search, read files, check a repo.
+            These will be executed automatically after the dream ends.
+          - `[HIGH-RISK]` — write actions: update MEMORY.md, modify workspace files, call
+            external APIs with side effects, install packages. These require user approval.
         - **Patches available** — list filenames in `dream/patches/` if any
+
+        Example verify-next format:
+        ```
+        ### Verify Next
+        1. [LOW-RISK] Fetch arXiv:2602.05269 abstract — assess ANEMLL compatibility
+        2. [LOW-RISK] Search HN for "ANEMLL" — check recent discussion
+        3. [HIGH-RISK] Update MEMORY.md with consolidated quantization findings
+        ```
 
         ---
 
