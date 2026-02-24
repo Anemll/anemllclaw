@@ -1419,7 +1419,7 @@ final class TVOSLocalGatewayRuntime {
     private func sendHeartbeat() async {
         #if os(iOS)
         // Skip heartbeat while dreaming — the dream cycle is already running.
-        if let dream = self.dreamManager, dream.state == .dreaming {
+        if let dream = self.dreamManagerRef, dream.state == .dreaming {
             self.appendLog("heartbeat skipped: dream mode active")
             return
         }
