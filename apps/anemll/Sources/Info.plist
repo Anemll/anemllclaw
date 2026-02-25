@@ -31,8 +31,12 @@
 	<array>
 		<string>_openclaw-gw._tcp</string>
 	</array>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>AnemllClaw can read and create calendar events when you enable the Calendar tool.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>AnemllClaw can capture photos or short video clips when requested via the gateway.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>AnemllClaw can search and add contacts when you enable the Contacts tool.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>AnemllClaw discovers and connects to your gateway on the local network.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
@@ -45,6 +49,8 @@
 	<string>AnemllClaw uses motion data to detect device orientation and activity.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>AnemllClaw can save captured photos and videos to your photo library.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>AnemllClaw can read and create reminders when you enable the Reminders tool.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>AnemllClaw uses on-device speech recognition for voice wake.</string>
 	<key>UIApplicationSceneManifest</key>

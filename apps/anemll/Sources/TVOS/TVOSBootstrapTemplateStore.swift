@@ -331,34 +331,73 @@ enum TVOSBootstrapTemplateStore {
 
         Skills define _how_ tools work. This file is for _your_ specifics — the stuff that's unique to your setup.
 
-        ## What Goes Here
+        ## Device Tools Reference
 
-        Things like:
+        These tools access iOS device features. Each requires the user to grant permission in Settings → Tools before use.
 
-        - Camera names and locations
-        - SSH hosts and aliases
-        - Preferred voices for TTS
-        - Speaker/room names
-        - Device nicknames
-        - Anything environment-specific
+        ### Reminders
 
-        ## Examples
+        | Tool | Description |
+        |------|-------------|
+        | `reminders.list` | List reminders with title, due date, completion status |
+        | `reminders.add` | Create a new reminder |
+
+        **reminders.list** params: `status` (incomplete/completed/all), `limit`
+        **reminders.add** params: `title` (**required**), `dueISO` (ISO-8601), `notes`, `listName`
+
+        ### Calendar
+
+        | Tool | Description |
+        |------|-------------|
+        | `calendar.events` | Query calendar events in a date range |
+        | `calendar.add` | Create a new calendar event |
+
+        **calendar.events** params: `startISO` (default: now), `endISO` (default: +7d), `limit`
+        **calendar.add** params: `title` (**required**), `startISO` (**required**), `endISO` (**required**), `isAllDay`, `location`, `notes`
+
+        ### Contacts
+
+        | Tool | Description |
+        |------|-------------|
+        | `contacts.search` | Search contacts by name |
+        | `contacts.add` | Add a new contact |
+
+        **contacts.search** params: `query`, `limit`
+        **contacts.add** params: `givenName`, `familyName`, `phoneNumbers` (array), `emails` (array)
+
+        ### Location
+
+        | Tool | Description |
+        |------|-------------|
+        | `location.get` | Get current GPS coordinates |
+
+        **location.get** params: `desiredAccuracy` (coarse/balanced/precise)
+
+        ### Photos & Camera
+
+        | Tool | Description |
+        |------|-------------|
+        | `photos.latest` | Get recent photos from photo library (base64 JPEG) |
+        | `camera.snap` | Take a photo with device camera (app must be in foreground) |
+
+        **photos.latest** params: `limit`, `maxWidth` (px), `quality` (0.0–1.0)
+        **camera.snap** params: `facing` (back/front), `maxWidth` (px), `quality` (0.0–1.0)
+
+        ### Motion & Fitness
+
+        | Tool | Description |
+        |------|-------------|
+        | `motion.activity` | Query motion activity history (walking, running, driving, cycling) |
+        | `motion.pedometer` | Query step count, distance, floors climbed |
+
+        **motion.activity** params: `startISO`, `endISO`, `limit`
+        **motion.pedometer** params: `startISO`, `endISO`
+
+        ## Your Environment Notes
+
+        Add environment-specific notes below: camera names, SSH hosts, TTS voices, device nicknames, cron jobs.
 
         ```markdown
-        ### Cameras
-
-        - living-room → Main area, 180° wide angle
-        - front-door → Entrance, motion-triggered
-
-        ### SSH
-
-        - home-server → 192.168.1.100, user: admin
-
-        ### TTS
-
-        - Preferred voice: "Nova" (warm, slightly British)
-        - Default speaker: Kitchen HomePod
-
         ### Cron jobs
 
         (Add your own periodic tasks here. Example format:)
@@ -370,11 +409,7 @@ enum TVOSBootstrapTemplateStore {
           - `payload.message = "Describe what the agent should do"`
         ```
 
-        ## Why Separate?
-
-        Skills are shared. Your setup is yours. Keeping them apart means you can update skills without losing your notes, and share skills without leaking your infrastructure.
-
-                ---
+        ---
 
         Add whatever helps you do your job. This is your cheat sheet.
         """#,
