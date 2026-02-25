@@ -782,10 +782,12 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         payloadMessages: [[String: Any]],
         thinkingLevel: String?) async throws -> OpenAIResponsesWebSocketResult
     {
+        // OpenAI Responses API requires stream=true.
+        // We use SSE streaming over HTTP and accumulate the result.
         var payload = try self.makeOpenAIResponsesPayload(
             payloadMessages: payloadMessages,
             thinkingLevel: thinkingLevel)
-        payload["stream"] = false
+        payload["stream"] = true
         let jsonBody = try Self.makeJSONBody(payload)
         let bodyBytes = jsonBody.count
 
@@ -793,7 +795,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         request.httpMethod = "POST"
         request.timeoutInterval = self.config.effectiveRequestTimeoutSeconds
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         if self.isOpenAICodexBackend {
             try self.applyOpenAICodexHeaders(
@@ -803,26 +805,54 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         }
         request.httpBody = jsonBody
 
-        let (data, response) = try await self.session.data(for: request)
+        let (bytes, response) = try await self.session.bytes(for: request)
         let httpResponse = response as? HTTPURLResponse
         if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
+            // Collect error body from stream.
+            var errorChunks: [UInt8] = []
+            for try await byte in bytes { errorChunks.append(byte) }
+            let errorData = Data(errorChunks)
             throw GatewayLocalLLMProviderError.httpError(
                 status: statusCode,
-                message: Self.errorText(data))
+                message: Self.errorText(errorData))
         }
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw GatewayLocalLLMProviderError.invalidResponse(
-                "openai responses HTTP payload was not a JSON object: \(Self.responsePreview(data))")
+
+        // Parse SSE lines: each event is "data: <json>\n".
+        var accumulated = ""
+        var completedResponse: [String: Any]?
+        var finalUsage: [String: Any]?
+
+        for try await line in bytes.lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("data: ") else { continue }
+            let jsonStr = String(trimmed.dropFirst(6))
+            if jsonStr == "[DONE]" { break }
+            guard let jsonData = jsonStr.data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+            else { continue }
+
+            let outcome = Self.handleOpenAIResponsesWebSocketEvent(
+                event,
+                accumulated: &accumulated,
+                completedResponse: &completedResponse)
+            switch outcome {
+            case .completed(let usage):
+                finalUsage = usage
+            case .failed(let message):
+                throw GatewayLocalLLMProviderError.invalidResponse(
+                    "openai responses stream error: \(message)")
+            case .none:
+                break
+            }
         }
-        let text = Self.extractOpenAIResponsesText(from: root)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let text = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw GatewayLocalLLMProviderError.invalidResponse(
-                "openai responses HTTP response content is empty: \(Self.responsePreview(data))")
+                "openai responses HTTP stream content is empty")
         }
-        let usage = root["usage"] as? [String: Any]
-        let input = Self.readInt(usage?["input_tokens"]) ?? Self.readInt(usage?["prompt_tokens"])
-        let output = Self.readInt(usage?["output_tokens"]) ?? Self.readInt(usage?["completion_tokens"])
+        let input = Self.readInt(finalUsage?["input_tokens"]) ?? Self.readInt(finalUsage?["prompt_tokens"])
+        let output = Self.readInt(finalUsage?["output_tokens"]) ?? Self.readInt(finalUsage?["completion_tokens"])
         return OpenAIResponsesWebSocketResult(
             text: text,
             usageInputTokens: input,
