@@ -1,4 +1,10 @@
+import AVFoundation
+import Contacts
+import CoreLocation
+import CoreMotion
+import EventKit
 import OpenClawGatewayCore
+import Photos
 import SwiftUI
 
 struct ToolEntryViewModel: Identifiable, Equatable {
@@ -56,6 +62,8 @@ struct ToolsSettingsView: View {
     @Binding var selectedToolInfo: ToolEntryViewModel?
 
     @State private var toolEntries: [ToolEntryViewModel] = []
+    @State private var showPermissionDeniedAlert = false
+    @State private var permissionDeniedToolName: String = ""
 
     var body: some View {
         Group {
@@ -91,6 +99,24 @@ struct ToolsSettingsView: View {
             }
         }
         .onAppear { self.loadToolEntries() }
+        .alert(
+            "Permission Required",
+            isPresented: self.$showPermissionDeniedAlert)
+        {
+            Button("Open Settings") {
+                if let url = URL(
+                    string: UIApplication.openSettingsURLString)
+                {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "\(self.permissionDeniedToolName) permission"
+                    + " was denied. Please enable it in"
+                    + " Settings \u{2192} AnemllClaw.")
+        }
     }
 
     @ViewBuilder
@@ -179,9 +205,219 @@ struct ToolsSettingsView: View {
                     .firstIndex(
                         where: { $0.id == entry.id })
                 else { return }
-                self.toolEntries[idx].enabled = newValue
-                self.persistToolSettings()
+                if newValue, entry.category == "Device" {
+                    Task {
+                        await self.requestPermissionIfNeeded(
+                            for: entry, index: idx)
+                    }
+                } else {
+                    self.toolEntries[idx].enabled = newValue
+                    self.persistToolSettings()
+                }
             })
+    }
+
+    // MARK: - Permission Requests
+
+    /// Maps a tool ID to the iOS permission it requires and
+    /// requests it when the status is `.notDetermined`.
+    /// If denied/restricted, shows an alert to open Settings.
+    @MainActor
+    private func requestPermissionIfNeeded(
+        for entry: ToolEntryViewModel,
+        index: Int) async
+    {
+        let result = await Self.ensurePermission(
+            for: entry.id)
+        switch result {
+        case .granted:
+            self.toolEntries[index].enabled = true
+            self.persistToolSettings()
+        case .denied:
+            self.permissionDeniedToolName =
+                Self.permissionDisplayName(for: entry.id)
+            self.showPermissionDeniedAlert = true
+        }
+    }
+
+    private enum PermissionResult {
+        case granted
+        case denied
+    }
+
+    private static func ensurePermission(
+        for toolID: String) async -> PermissionResult
+    {
+        switch toolID {
+        case "reminders.list", "reminders.add":
+            await self.ensureRemindersPermission()
+        case "calendar.events", "calendar.add":
+            await self.ensureCalendarPermission()
+        case "contacts.search", "contacts.add":
+            await self.ensureContactsPermission()
+        case "location.get":
+            await self.ensureLocationPermission()
+        case "photos.latest":
+            await self.ensurePhotosPermission()
+        case "camera.snap":
+            await self.ensureCameraPermission()
+        case "motion.activity", "motion.pedometer":
+            await self.ensureMotionPermission()
+        default:
+            .granted
+        }
+    }
+
+    private static func ensureRemindersPermission()
+        async -> PermissionResult
+    {
+        let status = EKEventStore.authorizationStatus(
+            for: .reminder)
+        if status == .authorized || status == .fullAccess
+            || status == .writeOnly
+        {
+            return .granted
+        }
+        guard status == .notDetermined else { return .denied }
+        let store = EKEventStore()
+        let ok =
+            await (try? store
+                .requestFullAccessToReminders()) ?? false
+        return ok ? .granted : .denied
+    }
+
+    private static func ensureCalendarPermission()
+        async -> PermissionResult
+    {
+        let status = EKEventStore.authorizationStatus(
+            for: .event)
+        if status == .authorized || status == .fullAccess
+            || status == .writeOnly
+        {
+            return .granted
+        }
+        guard status == .notDetermined else { return .denied }
+        let store = EKEventStore()
+        let ok =
+            await (try? store
+                .requestFullAccessToEvents()) ?? false
+        return ok ? .granted : .denied
+    }
+
+    private static func ensureContactsPermission()
+        async -> PermissionResult
+    {
+        let status = CNContactStore.authorizationStatus(
+            for: .contacts)
+        if status == .authorized || status == .limited {
+            return .granted
+        }
+        guard status == .notDetermined else { return .denied }
+        let store = CNContactStore()
+        let ok =
+            await (try? store
+                .requestAccess(for: .contacts)) ?? false
+        return ok ? .granted : .denied
+    }
+
+    private static func ensureLocationPermission()
+        async -> PermissionResult
+    {
+        let manager = CLLocationManager()
+        let status = manager.authorizationStatus
+        if status == .authorizedWhenInUse
+            || status == .authorizedAlways
+        {
+            return .granted
+        }
+        guard status == .notDetermined else { return .denied }
+        manager.requestWhenInUseAuthorization()
+        // Give the system time to show and resolve
+        // the prompt; the toggle can be retried.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let updated = manager.authorizationStatus
+        return (updated == .authorizedWhenInUse
+            || updated == .authorizedAlways)
+            ? .granted : .denied
+    }
+
+    private static func ensurePhotosPermission()
+        async -> PermissionResult
+    {
+        let status = PHPhotoLibrary.authorizationStatus(
+            for: .readWrite)
+        if status == .authorized || status == .limited {
+            return .granted
+        }
+        guard status == .notDetermined else { return .denied }
+        let result = await PHPhotoLibrary
+            .requestAuthorization(for: .readWrite)
+        return (result == .authorized || result == .limited)
+            ? .granted : .denied
+    }
+
+    private static func ensureCameraPermission()
+        async -> PermissionResult
+    {
+        let status = AVCaptureDevice.authorizationStatus(
+            for: .video)
+        if status == .authorized { return .granted }
+        guard status == .notDetermined else { return .denied }
+        let ok = await AVCaptureDevice
+            .requestAccess(for: .video)
+        return ok ? .granted : .denied
+    }
+
+    private static func ensureMotionPermission()
+        async -> PermissionResult
+    {
+        // CoreMotion permission is triggered on first data
+        // access. We do a small query to trigger the prompt.
+        let status = CMMotionActivityManager
+            .authorizationStatus()
+        if status == .authorized { return .granted }
+        guard status == .notDetermined else { return .denied }
+        let mgr = CMMotionActivityManager()
+        let now = Date()
+        let start = now.addingTimeInterval(-60)
+        return await withCheckedContinuation { cont in
+            mgr.queryActivityStarting(
+                from: start, to: now,
+                to: .main)
+            { _, error in
+                if let nsErr = error as? NSError,
+                   nsErr.domain == CMErrorDomain,
+                   nsErr.code == Int(CMErrorMotionActivityNotAuthorized.rawValue)
+                {
+                    cont.resume(returning: .denied)
+                } else {
+                    cont.resume(returning: .granted)
+                }
+            }
+        }
+    }
+
+    private static func permissionDisplayName(
+        for toolID: String) -> String
+    {
+        switch toolID {
+        case "reminders.list", "reminders.add":
+            "Reminders"
+        case "calendar.events", "calendar.add":
+            "Calendar"
+        case "contacts.search", "contacts.add":
+            "Contacts"
+        case "location.get":
+            "Location"
+        case "photos.latest":
+            "Photos"
+        case "camera.snap":
+            "Camera"
+        case "motion.activity", "motion.pedometer":
+            "Motion & Fitness"
+        default:
+            "Device"
+        }
     }
 
     private func persistToolSettings() {
