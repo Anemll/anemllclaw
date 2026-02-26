@@ -13,7 +13,9 @@ struct OpenClawChatComposer: View {
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
+    var dictation: (any ChatDictationProvider)?
     @Binding var showSessionsSheet: Bool
+    @State private var isDictating = false
     @State private var showCreateConversation = false
     @State private var showClearConfirmation = false
     @State private var newConversationName: String = ""
@@ -40,6 +42,11 @@ struct OpenClawChatComposer: View {
                         self.sessionPicker
                     }
                     self.thinkingPicker
+                    #if os(iOS)
+                    if self.dictation != nil {
+                        self.dictationButton
+                    }
+                    #endif
                     #if os(macOS)
                     self.textScaleMenu
                     #endif
@@ -148,7 +155,7 @@ struct OpenClawChatComposer: View {
         .labelsHidden()
         .pickerStyle(.menu)
         .controlSize(.small)
-        .frame(maxWidth: 140, alignment: .leading)
+        .fixedSize()
     }
 
     private var sessionPicker: some View {
@@ -400,6 +407,13 @@ struct OpenClawChatComposer: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
                 .focused(self.$isFocused)
+                .onChange(of: self.viewModel.input) {
+                    // During dictation the text is set programmatically so
+                    // TextEditor doesn't auto-scroll.  Find the underlying
+                    // UITextView and scroll to the end.
+                    guard self.isDictating else { return }
+                    Self.scrollTextEditorToEnd()
+                }
             #else
             TextField("", text: self.$viewModel.input)
                 .font(.system(size: 15))
@@ -544,6 +558,37 @@ struct OpenClawChatComposer: View {
         .controlSize(.small)
         .help("Dismiss Keyboard")
     }
+
+    private var dictationButton: some View {
+        Button {
+            if self.isDictating {
+                self.dictation?.stopDictation()
+                self.isDictating = false
+            } else {
+                self.isDictating = true
+                Task {
+                    await self.dictation?.startDictation { [weak viewModel] transcript in
+                        viewModel?.input = transcript
+                    }
+                    // If dictation ended on its own (final result / error),
+                    // sync the toggle back.
+                    if self.dictation?.isListening == false {
+                        self.isDictating = false
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: self.isDictating ? "mic.fill" : "mic")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(self.isDictating ? .white : .secondary)
+                .scaleEffect(self.isDictating ? 1.15 : 1.0)
+                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: self.isDictating)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(self.isDictating ? .red : nil)
+        .help(self.isDictating ? "Stop Dictation" : "Dictate")
+    }
     #endif
 
     private var showsToolbar: Bool {
@@ -588,6 +633,12 @@ struct OpenClawChatComposer: View {
 
     private func sendFromComposer() {
         #if os(iOS)
+        // Stop dictation before sending so the onTranscript callback
+        // doesn't re-populate the input after send() clears it.
+        if self.isDictating {
+            self.dictation?.stopDictation()
+            self.isDictating = false
+        }
         self.dismissKeyboardFromComposer()
         #endif
         self.viewModel.send()
@@ -602,6 +653,28 @@ struct OpenClawChatComposer: View {
             to: nil,
             from: nil,
             for: nil)
+    }
+
+    /// Walk the key window's view hierarchy to find any UITextView and
+    /// scroll it to the very end.  Used during dictation where text is set
+    /// programmatically and TextEditor doesn't auto-scroll.
+    private static func scrollTextEditorToEnd() {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene }).first,
+            let window = scene.windows.first(where: \.isKeyWindow)
+        else { return }
+
+        func findTextView(in view: UIView) -> UITextView? {
+            if let tv = view as? UITextView { return tv }
+            for sub in view.subviews {
+                if let found = findTextView(in: sub) { return found }
+            }
+            return nil
+        }
+
+        guard let textView = findTextView(in: window) else { return }
+        let end = NSRange(location: textView.text.count, length: 0)
+        textView.scrollRangeToVisible(end)
     }
     #endif
 

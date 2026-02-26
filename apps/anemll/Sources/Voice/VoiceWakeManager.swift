@@ -240,7 +240,16 @@ final class VoiceWakeManager: NSObject {
     /// Returns `true` when listening was active and was suspended.
     func suspendForExternalAudioCapture() -> Bool {
         guard self.isEnabled, self.isListening else { return false }
+        self.suspendRecognitionOnly()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        return true
+    }
 
+    /// Stops the audio engine and recognition task without touching
+    /// ``AVAudioSession``.  Callers that need to deactivate the audio session
+    /// on a background queue (to avoid system-framework queue assertions) can
+    /// call this first, then deactivate the session themselves.
+    func suspendRecognitionOnly() {
         self.isListening = false
         self.statusText = "Paused"
 
@@ -257,9 +266,6 @@ final class VoiceWakeManager: NSObject {
             self.audioEngine.stop()
             self.audioEngine.inputNode.removeTap(onBus: 0)
         }
-
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        return true
     }
 
     func resumeAfterExternalAudioCapture(wasSuspended: Bool) {

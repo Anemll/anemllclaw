@@ -24,6 +24,7 @@ public struct OpenClawChatView: View {
     private let autoloadOnAppear: Bool
     private let syncedMessageAnchor: Binding<UUID?>?
     private let textScale: CGFloat
+    private let dictation: (any ChatDictationProvider)?
 
     private enum Layout {
         #if os(macOS)
@@ -58,7 +59,8 @@ public struct OpenClawChatView: View {
         showsComposer: Bool = true,
         autoloadOnAppear: Bool = true,
         syncedMessageAnchor: Binding<UUID?>? = nil,
-        textScale: CGFloat = 1.0)
+        textScale: CGFloat = 1.0,
+        dictation: (any ChatDictationProvider)? = nil)
     {
         self._viewModel = State(initialValue: viewModel)
         self.showsSessionSwitcher = showsSessionSwitcher
@@ -71,6 +73,7 @@ public struct OpenClawChatView: View {
         self.autoloadOnAppear = autoloadOnAppear
         self.syncedMessageAnchor = syncedMessageAnchor
         self.textScale = max(0.7, min(1.8, textScale))
+        self.dictation = dictation
     }
 
     public var body: some View {
@@ -88,6 +91,7 @@ public struct OpenClawChatView: View {
                         viewModel: self.viewModel,
                         style: self.style,
                         showsSessionSwitcher: self.showsSessionSwitcher,
+                        dictation: self.dictation,
                         showSessionsSheet: self.$showSessions)
                         .padding(.horizontal, Layout.composerPaddingHorizontal)
                 }

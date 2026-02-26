@@ -12,6 +12,7 @@ struct OpenClawChatComposer: View {
     @Bindable var viewModel: OpenClawChatViewModel
     let style: OpenClawChatView.Style
     let showsSessionSwitcher: Bool
+    var dictation: (any ChatDictationProvider)?
 
     #if !os(macOS)
     @State private var pickerItems: [PhotosPickerItem] = []

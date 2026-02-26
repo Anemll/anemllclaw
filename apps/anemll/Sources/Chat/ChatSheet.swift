@@ -51,6 +51,7 @@ struct ChatSheet: View {
     @State private var savedProviders: [SavedLLMProvider] = []
     @State private var activeProviderID: String?
     @State private var modelSwitching = false
+    @State private var dictationManager = ComposerDictationManager()
     private let userAccent: Color?
     private let agentName: String?
     private let allowDismiss: Bool
@@ -120,6 +121,7 @@ struct ChatSheet: View {
                 LastThreadStore.save(self.viewModel.sessionKey)
                 self.savedProviders = LLMProviderStore.load()
                 self.activeProviderID = LLMProviderStore.activeID()
+                self.dictationManager.voiceWake = self.voiceWake
             }
             .onChange(of: self.autoRetryAttemptsOnError) { _, newValue in
                 self.viewModel.autoRetryAttemptsOnError = max(0, newValue)
@@ -162,7 +164,8 @@ struct ChatSheet: View {
             assistantName: self.agentName,
             userAccent: self.userAccent,
             syncedMessageAnchor: self.$transcriptMessageAnchor,
-            textScale: self.mainChatZoomLevel.textScale)
+            textScale: self.mainChatZoomLevel.textScale,
+            dictation: self.dictationManager)
             .toolbar(.hidden, for: .navigationBar)
     }
 

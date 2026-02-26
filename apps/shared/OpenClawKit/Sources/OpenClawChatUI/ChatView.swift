@@ -18,6 +18,7 @@ public struct OpenClawChatView: View {
     private let style: Style
     private let markdownVariant: ChatMarkdownVariant
     private let userAccent: Color?
+    private let dictation: (any ChatDictationProvider)?
 
     private enum Layout {
         #if os(macOS)
@@ -46,13 +47,15 @@ public struct OpenClawChatView: View {
         showsSessionSwitcher: Bool = false,
         style: Style = .standard,
         markdownVariant: ChatMarkdownVariant = .standard,
-        userAccent: Color? = nil)
+        userAccent: Color? = nil,
+        dictation: (any ChatDictationProvider)? = nil)
     {
         self._viewModel = State(initialValue: viewModel)
         self.showsSessionSwitcher = showsSessionSwitcher
         self.style = style
         self.markdownVariant = markdownVariant
         self.userAccent = userAccent
+        self.dictation = dictation
     }
 
     public var body: some View {
@@ -68,7 +71,8 @@ public struct OpenClawChatView: View {
                 OpenClawChatComposer(
                     viewModel: self.viewModel,
                     style: self.style,
-                    showsSessionSwitcher: self.showsSessionSwitcher)
+                    showsSessionSwitcher: self.showsSessionSwitcher,
+                    dictation: self.dictation)
                     .padding(.horizontal, Layout.composerPaddingHorizontal)
             }
             .padding(.vertical, Layout.outerPaddingVertical)

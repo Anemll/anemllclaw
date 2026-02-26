@@ -120,6 +120,7 @@
 		E867FCBC351F61786F110AD1 /* NodeDisplayName.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED5628CD3C4D5D8871635E0C /* NodeDisplayName.swift */; };
 		E8E2D2F3DB51247F40930E89 /* VoiceWakeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B275C31AB48987F3582DCFEC /* VoiceWakeManager.swift */; };
 		EB48B22338AFAEDB182DA5FB /* TalkModeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */; };
+		EB7CD1C4A1B2E3F4D5068790 /* ComposerDictationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD9AE2B3F4C5D6E7A8190B12 /* ComposerDictationManager.swift */; };
 		EC85A724C972E5762995C7EF /* OpenClawProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = 5901CD5BAA72A8EE9A965482 /* OpenClawProtocol */; };
 		ED5947FF5E5A30FC0EF407D9 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1160ED9A6303F3B11500BE8 /* CalendarService.swift */; };
 		F05A047562DEC8811997CEFC /* LLMProviderEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41D5D938DB984538C587CE8D /* LLMProviderEditorSheet.swift */; };
@@ -192,6 +193,7 @@
 		80A012480A0E1D69C91FEC14 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkModeManager.swift; sourceTree = "<group>"; };
 		86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoverageTests.swift; sourceTree = "<group>"; };
+		CD9AE2B3F4C5D6E7A8190B12 /* ComposerDictationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictationManager.swift; sourceTree = "<group>"; };
 		8B1809BB98E84F90B7382B3D /* DeviceToolBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolBridgeTests.swift; sourceTree = "<group>"; };
 		9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawBackupManager.swift; sourceTree = "<group>"; };
 		93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryDebugLogView.swift; sourceTree = "<group>"; };
@@ -440,6 +442,7 @@
 		8884ED5A0C96803BCA2F2FB1 /* Voice */ = {
 			isa = PBXGroup;
 			children = (
+				CD9AE2B3F4C5D6E7A8190B12 /* ComposerDictationManager.swift */,
 				85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */,
 				0F8273F51124EF1835D1769D /* TalkOrbOverlay.swift */,
 				6B64A0D09B2BB34E367436A0 /* VoiceTab.swift */,
@@ -910,6 +913,7 @@
 				1AB0339366DB438149E660E6 /* TVOSGatewayHostView.swift in Sources */,
 				DB02E1A2B3C4D5E6F7A8B9C0 /* UserIdleTracker.swift in Sources */,
 				ACED365FE5D0BE13F97B0383 /* TVOSLocalGatewayRuntime.swift in Sources */,
+				EB7CD1C4A1B2E3F4D5068790 /* ComposerDictationManager.swift in Sources */,
 				EB48B22338AFAEDB182DA5FB /* TalkModeManager.swift in Sources */,
 				BD2E4F5D544408D0DB6D28FC /* TalkOrbOverlay.swift in Sources */,
 				D2B995515778687A1951DA63 /* VoiceTab.swift in Sources */,
