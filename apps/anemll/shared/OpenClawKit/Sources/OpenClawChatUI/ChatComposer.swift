@@ -134,6 +134,11 @@ struct OpenClawChatComposer: View {
         #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
                 self.isKeyboardVisible = true
+                // Keyboard and microphone are mutually exclusive.
+                if self.isDictating {
+                    self.dictation?.stopDictation()
+                    self.isDictating = false
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
                 self.isKeyboardVisible = false
@@ -565,6 +570,9 @@ struct OpenClawChatComposer: View {
                 self.dictation?.stopDictation()
                 self.isDictating = false
             } else {
+                // Dismiss keyboard before starting dictation — they share
+                // the audio input and shouldn't be active simultaneously.
+                self.dismissKeyboardFromComposer()
                 self.isDictating = true
                 Task {
                     await self.dictation?.startDictation { [weak viewModel] transcript in
@@ -581,12 +589,12 @@ struct OpenClawChatComposer: View {
             Image(systemName: self.isDictating ? "mic.fill" : "mic")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(self.isDictating ? .white : .secondary)
-                .scaleEffect(self.isDictating ? 1.15 : 1.0)
-                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: self.isDictating)
+                .symbolEffect(.pulse, isActive: self.isDictating)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(self.isDictating ? .red : nil)
+        .animation(.none, value: self.isDictating)
         .help(self.isDictating ? "Stop Dictation" : "Dictate")
     }
     #endif
