@@ -269,6 +269,7 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
     private let dreamManager: DreamModeManager
     private let dreamStateStore: DreamStateStore?
     private let workspaceRoot: URL?
+    var onCameraCapture: (@Sendable (Data, String) -> Void)?
 
     init(
         reminders: any RemindersServicing,
@@ -397,6 +398,10 @@ final class DeviceToolBridgeImpl: GatewayDeviceToolBridge, @unchecked Sendable {
                     "width": .integer(Int64(res.width)),
                     "height": .integer(Int64(res.height)),
                 ]
+                if let imageData = Data(base64Encoded: res.base64) {
+                    let fileName = "camera-\(UUID().uuidString.prefix(8)).jpg"
+                    self.onCameraCapture?(imageData, fileName)
+                }
                 return GatewayLocalTooling.ToolResult(payload: .object(payload), error: nil)
 
             case "motion.activity":
@@ -672,6 +677,17 @@ final class TVOSLocalGatewayRuntime {
     private(set) var tcpRetryAttempt: Int = 0
     private(set) var tcpRetryDelaySeconds: Int?
 
+    /// Published when `camera.snap` captures an image so the chat
+    /// composer can attach it.
+    struct CameraCapture: Equatable {
+        let id = UUID()
+        let data: Data
+        let fileName: String
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+    }
+
+    var lastCameraCapture: CameraCapture?
+
     private(set) var localIPv4Address: String?
     private(set) var localIPv4Addresses: [String]
 
@@ -945,7 +961,7 @@ final class TVOSLocalGatewayRuntime {
             }
         }
 
-        self.deviceToolBridge = DeviceToolBridgeImpl(
+        let bridge = DeviceToolBridgeImpl(
             reminders: reminders,
             calendar: calendar,
             contacts: contacts,
@@ -957,6 +973,12 @@ final class TVOSLocalGatewayRuntime {
             dreamManager: dreamManager,
             dreamStateStore: dreamStateStore,
             workspaceRoot: workspaceRoot)
+        bridge.onCameraCapture = { [weak self] data, fileName in
+            Task { @MainActor in
+                self?.lastCameraCapture = CameraCapture(data: data, fileName: fileName)
+            }
+        }
+        self.deviceToolBridge = bridge
         self.appendLog(
             "device tool bridge configured with \(self.deviceToolBridge?.supportedCommands().count ?? 0) commands")
         // Rebuild so the router picks up the newly configured bridge.

@@ -129,6 +129,14 @@ struct ChatSheet: View {
             .onChange(of: self.viewModel.sessionKey) { _, newValue in
                 LastThreadStore.save(newValue)
             }
+            .onChange(of: self.localGatewayRuntime.lastCameraCapture) { _, capture in
+                guard let capture else { return }
+                self.viewModel.addImageAttachment(
+                    data: capture.data,
+                    fileName: capture.fileName,
+                    mimeType: "image/jpeg")
+                self.localGatewayRuntime.lastCameraCapture = nil
+            }
             .onReceive(NotificationCenter.default.publisher(for: .openclawOpenSettings)) { note in
                 self.settingsAutoAddProvider = (note.userInfo?["addProvider"] as? Bool) == true
                 self.showsSettings = true

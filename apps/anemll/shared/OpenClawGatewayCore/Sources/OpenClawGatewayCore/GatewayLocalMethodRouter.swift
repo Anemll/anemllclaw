@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 
 public protocol GatewayLocalMethodRouterAdminBridge: Sendable {
     func configGet(nowMs: Int64) async throws -> GatewayJSONValue
@@ -935,12 +937,29 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
 
                 let resultText: String
                 let ok: Bool
+                var imageBase64: String?
+                var imageMimeType: String?
                 if let error = result.error {
                     ok = false
                     resultText = "error: \(error)"
                 } else {
                     ok = true
-                    resultText = (try? result.payload.jsonString()) ?? "ok"
+                    // For image-producing tools, extract the base64 image
+                    // data so it can be sent as a vision content block
+                    // instead of a truncated text blob.
+                    let extracted = Self.extractImageFromPayload(
+                        command: toolCall.name,
+                        payload: result.payload)
+                    resultText = (try? extracted.strippedPayload.jsonString()) ?? "ok"
+                    imageBase64 = extracted.base64
+                    imageMimeType = extracted.mimeType
+                    if let b64 = imageBase64 {
+                        print("[OpenClawGatewayCore][ToolRouter] tool=\(toolCall.name)"
+                            + " imageExtracted=true"
+                            + " imageBase64Len=\(b64.count)"
+                            + " mimeType=\(imageMimeType ?? "nil")"
+                            + " resultTextLen=\(resultText.count)")
+                    }
                 }
                 let normalizedResultText = Self.clampUTF16(resultText, to: 8000)
                 toolAudits.append(
@@ -962,11 +981,123 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                         role: .tool,
                         text: normalizedResultText,
                         toolCallID: toolCall.id,
-                        name: toolCall.name))
+                        name: toolCall.name,
+                        imageDataBase64: imageBase64,
+                        imageMimeType: imageMimeType))
             }
         }
 
         throw GatewayLocalLLMProviderError.invalidResponse("tool loop exceeded max iterations")
+    }
+
+    private static let imageToolCommands: Set<String> = [
+        "camera.snap", "photos.latest",
+    ]
+
+    private struct ImageExtraction {
+        var strippedPayload: GatewayJSONValue
+        var base64: String?
+        var mimeType: String?
+    }
+
+    /// Maximum width (px) for images sent to the LLM as vision content.
+    /// Keeps base64 payloads under ~100 KB.
+    private static let llmImageMaxWidth = 512
+
+    /// For image-producing tools (`camera.snap`, `photos.latest`), pull
+    /// the base64 image data out of the payload and return a stripped
+    /// payload (with `"base64"` replaced by `"[image attached]"`) plus
+    /// the raw base64 and MIME type for multimodal content blocks.
+    /// The image is down-scaled to `llmImageMaxWidth` to keep payload
+    /// sizes manageable.
+    private static func extractImageFromPayload(
+        command: String,
+        payload: GatewayJSONValue) -> ImageExtraction
+    {
+        guard imageToolCommands.contains(command) else {
+            return ImageExtraction(strippedPayload: payload)
+        }
+
+        // camera.snap: top-level { "base64": "...", "format": "jpg", ... }
+        if case .object(var dict) = payload,
+           case let .string(b64) = dict["base64"],
+           !b64.isEmpty
+        {
+            let resized = resizeBase64JPEG(b64, maxWidth: llmImageMaxWidth)
+            dict["base64"] = .string("[image attached]")
+            return ImageExtraction(
+                strippedPayload: .object(dict),
+                base64: resized,
+                mimeType: "image/jpeg")
+        }
+
+        // photos.latest: { "photos": [ { "base64": "...", ... }, ... ] }
+        // Attach only the first photo's image.
+        if case .object(var dict) = payload,
+           case .array(var photos) = dict["photos"],
+           !photos.isEmpty,
+           case .object(var firstPhoto) = photos[0],
+           case let .string(b64) = firstPhoto["base64"],
+           !b64.isEmpty
+        {
+            let resized = resizeBase64JPEG(b64, maxWidth: llmImageMaxWidth)
+            firstPhoto["base64"] = .string("[image attached]")
+            photos[0] = .object(firstPhoto)
+            dict["photos"] = .array(photos)
+            return ImageExtraction(
+                strippedPayload: .object(dict),
+                base64: resized,
+                mimeType: "image/jpeg")
+        }
+
+        return ImageExtraction(strippedPayload: payload)
+    }
+
+    /// Decode a base64-encoded image, resize to `maxWidth` (preserving
+    /// aspect ratio), and re-encode as JPEG at 0.7 quality.
+    /// Returns the original base64 if decoding or resizing fails.
+    private static func resizeBase64JPEG(_ base64: String, maxWidth: Int) -> String {
+        guard let data = Data(base64Encoded: base64) else { return base64 }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { return base64 }
+
+        let srcW = cgImage.width
+        let srcH = cgImage.height
+        guard srcW > maxWidth else { return base64 }
+
+        let scale = CGFloat(maxWidth) / CGFloat(srcW)
+        let dstW = maxWidth
+        let dstH = Int(CGFloat(srcH) * scale)
+
+        guard let ctx = CGContext(
+            data: nil,
+            width: dstW,
+            height: dstH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return base64 }
+
+        ctx.interpolationQuality = .high
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        guard let resized = ctx.makeImage() else { return base64 }
+
+        let mutableData = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            mutableData as CFMutableData,
+            "public.jpeg" as CFString,
+            1, nil)
+        else { return base64 }
+        let options: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.7,
+        ]
+        CGImageDestinationAddImage(dest, resized, options as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return base64 }
+
+        return (mutableData as Data).base64EncodedString()
     }
 
     private static let deferredToolExecutionNudge =

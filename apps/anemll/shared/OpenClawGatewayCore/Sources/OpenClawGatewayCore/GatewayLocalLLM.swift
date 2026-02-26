@@ -101,19 +101,29 @@ public struct GatewayLocalLLMToolMessage: Sendable, Codable, Equatable {
     public let toolCallID: String?
     public let name: String?
     public let toolCalls: [GatewayLocalLLMToolCall]
+    /// Base64-encoded image data attached to a tool result (e.g. camera.snap).
+    /// When present the image is sent as a vision-compatible content block
+    /// alongside the text so multimodal LLMs can see it.
+    public var imageDataBase64: String?
+    /// MIME type of the image (e.g. "image/jpeg").
+    public var imageMimeType: String?
 
     public init(
         role: GatewayLocalLLMToolMessageRole,
         text: String? = nil,
         toolCallID: String? = nil,
         name: String? = nil,
-        toolCalls: [GatewayLocalLLMToolCall] = [])
+        toolCalls: [GatewayLocalLLMToolCall] = [],
+        imageDataBase64: String? = nil,
+        imageMimeType: String? = nil)
     {
         self.role = role
         self.text = text
         self.toolCallID = toolCallID
         self.name = name
         self.toolCalls = toolCalls
+        self.imageDataBase64 = imageDataBase64
+        self.imageMimeType = imageMimeType
     }
 }
 
@@ -531,38 +541,125 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
         }
         if self.kind == .openAICompatible, self.isOpenAICodexBackend {
-            let downgradedMessages = request.messages.compactMap { message -> GatewayLocalLLMMessage? in
-                let text = (message.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else {
-                    return nil
-                }
-                let role: String = switch message.role {
-                case .assistant:
-                    Self.openAIRoleAssistant
+            let toolNameMap = Self.makeOpenAIToolNameMap(toolNames: request.tools.map(\.name))
+            let reverseToolNameMap = Dictionary(uniqueKeysWithValues: toolNameMap.map { ($1, $0) })
+            var payloadMessages: [[String: Any]] = []
+            if let systemPrompt = (request.systemPrompt ?? self.config.systemPrompt)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !systemPrompt.isEmpty
+            {
+                self.appendOpenAIMessage(
+                    role: Self.openAIRoleSystem,
+                    text: systemPrompt,
+                    into: &payloadMessages)
+            }
+            for message in request.messages {
+                switch message.role {
                 case .system:
-                    Self.openAIRoleSystem
+                    self.appendOpenAIMessage(
+                        role: GatewayLocalLLMToolMessageRole.system.rawValue,
+                        text: message.text ?? "",
+                        into: &payloadMessages)
                 case .user:
-                    Self.openAIRoleUser
+                    payloadMessages.append([
+                        "role": Self.openAIRoleUser,
+                        "content": message.text ?? "",
+                    ])
+                case .assistant:
+                    var item: [String: Any] = [
+                        "role": Self.openAIRoleAssistant,
+                    ]
+                    item["content"] = message.text ?? ""
+                    if !message.toolCalls.isEmpty {
+                        item["tool_calls"] = message.toolCalls.map { toolCall in
+                            let wireName = toolNameMap[toolCall.name]
+                                ?? Self.openAICompatibleToolName(toolCall.name)
+                            return [
+                                "id": toolCall.id,
+                                "type": "function",
+                                "function": [
+                                    "name": wireName,
+                                    "arguments": toolCall.argumentsJSON,
+                                ],
+                            ] as [String: Any]
+                        }
+                    }
+                    payloadMessages.append(item)
                 case .tool:
-                    Self.openAIRoleUser
+                    var item: [String: Any] = [
+                        "role": "tool",
+                    ]
+                    if let b64 = message.imageDataBase64,
+                       let mime = message.imageMimeType
+                    {
+                        var parts: [[String: Any]] = [
+                            [
+                                "type": "image_url",
+                                "image_url": [
+                                    "url": "data:\(mime);base64,\(b64)",
+                                ],
+                            ],
+                        ]
+                        let text = (message.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !text.isEmpty {
+                            parts.insert(["type": "text", "text": text], at: 0)
+                        }
+                        item["content"] = parts
+                    } else {
+                        item["content"] = message.text ?? ""
+                    }
+                    if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
+                        item["tool_call_id"] = toolCallID
+                    }
+                    if let name = message.name, !name.isEmpty {
+                        let wireName = toolNameMap[name] ?? Self.openAICompatibleToolName(name)
+                        item["name"] = wireName
+                    }
+                    payloadMessages.append(item)
                 }
-                return GatewayLocalLLMMessage(role: role, text: text)
             }
-            guard !downgradedMessages.isEmpty else {
-                throw GatewayLocalLLMProviderError.invalidRequest(
-                    "tool-calling request had no message text to send")
+            let responsesTools: [[String: Any]] = request.tools.map { tool in
+                let wireName = toolNameMap[tool.name] ?? Self.openAICompatibleToolName(tool.name)
+                let params = Self.normalizeOpenAIToolParameters(tool.parameters.foundationJSONObjectValue)
+                return [
+                    "type": "function",
+                    "name": wireName,
+                    "description": tool.description,
+                    "parameters": params,
+                ]
             }
-            let response = try await self.complete(
-                GatewayLocalLLMRequest(
-                    messages: downgradedMessages,
-                    thinkingLevel: request.thinkingLevel,
-                    systemPrompt: request.systemPrompt))
+            // Log tool-aware request details for diagnostics.
+            let toolNames = responsesTools.compactMap { $0["name"] as? String }
+            let hasImage = payloadMessages.contains { msg in
+                if let arr = msg["content"] as? [[String: Any]] {
+                    return arr.contains { ($0["type"] as? String) == "image_url" }
+                }
+                return false
+            }
+            let msgRoles = payloadMessages.compactMap { $0["role"] as? String }
+            Self.trace(
+                "openai codex completeWithTools"
+                    + " tools=[\(toolNames.joined(separator: ", "))]"
+                    + " messages=\(payloadMessages.count)"
+                    + " roles=[\(msgRoles.joined(separator: ", "))]"
+                    + " hasImage=\(hasImage)")
+            let response = try await self.completeViaOpenAIResponsesHTTP(
+                apiKey: apiKey,
+                payloadMessages: payloadMessages,
+                thinkingLevel: request.thinkingLevel,
+                tools: responsesTools,
+                reverseToolNameMap: reverseToolNameMap)
+            Self.trace(
+                "openai codex completeWithTools result"
+                    + " textLen=\(response.text.count)"
+                    + " toolCalls=\(response.toolCalls.count)"
+                    + (response.toolCalls.isEmpty ? "" : " calls=[\(response.toolCalls.map(\.name).joined(separator: ", "))]"))
             return GatewayLocalLLMToolResponse(
                 text: response.text,
-                toolCalls: [],
+                toolCalls: response.toolCalls,
                 model: self.model,
                 provider: self.kind,
-                transport: response.transport,
+                transport: .http,
                 usageInputTokens: response.usageInputTokens,
                 usageOutputTokens: response.usageOutputTokens,
                 requestBodyBytes: response.requestBodyBytes)
@@ -620,8 +717,29 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             case .tool:
                 var item: [String: Any] = [
                     "role": Self.openAIRoleTool,
-                    "content": message.text ?? "",
                 ]
+                // When the tool result includes an image, send it as
+                // a multipart content array so multimodal models can
+                // see the image via a data URI.
+                if let b64 = message.imageDataBase64,
+                   let mime = message.imageMimeType
+                {
+                    var parts: [[String: Any]] = [
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:\(mime);base64,\(b64)",
+                            ],
+                        ],
+                    ]
+                    let text = (message.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        parts.insert(["type": "text", "text": text], at: 0)
+                    }
+                    item["content"] = parts
+                } else {
+                    item["content"] = message.text ?? ""
+                }
                 if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
                     item["tool_call_id"] = toolCallID
                 }
@@ -715,6 +833,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
 
     private struct OpenAIResponsesWebSocketResult {
         let text: String
+        var toolCalls: [GatewayLocalLLMToolCall] = []
         let usageInputTokens: Int?
         let usageOutputTokens: Int?
         let requestBodyBytes: Int
@@ -780,16 +899,25 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     private func completeViaOpenAIResponsesHTTP(
         apiKey: String,
         payloadMessages: [[String: Any]],
-        thinkingLevel: String?) async throws -> OpenAIResponsesWebSocketResult
+        thinkingLevel: String?,
+        tools: [[String: Any]] = [],
+        reverseToolNameMap: [String: String] = [:]) async throws -> OpenAIResponsesWebSocketResult
     {
         // OpenAI Responses API requires stream=true.
         // We use SSE streaming over HTTP and accumulate the result.
         var payload = try self.makeOpenAIResponsesPayload(
             payloadMessages: payloadMessages,
-            thinkingLevel: thinkingLevel)
+            thinkingLevel: thinkingLevel,
+            tools: tools)
         payload["stream"] = true
         let jsonBody = try Self.makeJSONBody(payload)
         let bodyBytes = jsonBody.count
+        Self.trace(
+            "openai responses HTTP request"
+                + " endpoint=\(self.responsesEndpointURL.absoluteString)"
+                + " bodyBytes=\(bodyBytes)"
+                + " tools=\(tools.count)"
+                + " messages=\(payloadMessages.count)")
 
         var request = URLRequest(url: self.responsesEndpointURL)
         request.httpMethod = "POST"
@@ -847,7 +975,21 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         }
 
         let text = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
+        // Extract tool calls from completed response (Responses API uses
+        // output items with type "function_call").
+        var toolCalls: [GatewayLocalLLMToolCall] = []
+        if let completedResponse {
+            toolCalls = Self.extractOpenAIResponsesToolCalls(
+                from: completedResponse,
+                restoreNamesUsing: reverseToolNameMap)
+        }
+        Self.trace(
+            "openai responses HTTP result"
+                + " textLen=\(text.count)"
+                + " toolCalls=\(toolCalls.count)"
+                + " hasCompletedResponse=\(completedResponse != nil)"
+                + (toolCalls.isEmpty ? "" : " toolNames=\(toolCalls.map(\.name).joined(separator: ","))"))
+        if text.isEmpty, toolCalls.isEmpty {
             throw GatewayLocalLLMProviderError.invalidResponse(
                 "openai responses HTTP stream content is empty")
         }
@@ -855,6 +997,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         let output = Self.readInt(finalUsage?["output_tokens"]) ?? Self.readInt(finalUsage?["completion_tokens"])
         return OpenAIResponsesWebSocketResult(
             text: text,
+            toolCalls: toolCalls,
             usageInputTokens: input,
             usageOutputTokens: output,
             requestBodyBytes: bodyBytes)
@@ -972,7 +1115,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
 
     private func makeOpenAIResponsesPayload(
         payloadMessages: [[String: Any]],
-        thinkingLevel: String?) throws -> [String: Any]
+        thinkingLevel: String?,
+        tools: [[String: Any]] = []) throws -> [String: Any]
     {
         let includeSystemInInput = !self.isOpenAICodexBackend
         let input = Self.mapOpenAIMessagesToResponsesInput(
@@ -991,8 +1135,15 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             payload["instructions"] = Self.resolveOpenAICodexInstructions(from: payloadMessages)
             payload["store"] = false
             payload["text"] = ["verbosity": "medium"]
+            if !tools.isEmpty {
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+                payload["parallel_tool_calls"] = true
+            }
+        }
+        if !tools.isEmpty, !self.isOpenAICodexBackend {
+            payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = true
         }
         if let effort = Self.resolveReasoningEffort(
             thinkingLevel,
@@ -1009,12 +1160,88 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         _ payloadMessages: [[String: Any]],
         includeSystemMessages: Bool = true) -> [[String: Any]]
     {
-        payloadMessages.compactMap { message in
+        var result: [[String: Any]] = []
+        for message in payloadMessages {
             let rawRole = (message["role"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased() ?? Self.openAIRoleUser
+
+            // Tool result → function_call_output item (Responses API format).
+            if rawRole == "tool" {
+                let callID = (message["tool_call_id"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let output = Self.readOpenAIContent(message["content"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !callID.isEmpty {
+                    result.append([
+                        "type": "function_call_output",
+                        "call_id": callID,
+                        "output": output,
+                    ])
+                    // If the tool result has an image (multipart content),
+                    // emit a user message with the image so the model can
+                    // see it. function_call_output only supports text.
+                    if let contentArray = message["content"] as? [[String: Any]] {
+                        for part in contentArray {
+                            let partType = (part["type"] as? String) ?? ""
+                            if partType == "image_url",
+                               let imgObj = part["image_url"] as? [String: Any],
+                               let url = imgObj["url"] as? String
+                            {
+                                Self.trace(
+                                    "mapResponses: emitting input_image from tool result"
+                                        + " urlLen=\(url.count)")
+                                result.append([
+                                    "role": Self.openAIRoleUser,
+                                    "content": [
+                                        [
+                                            "type": "input_image",
+                                            "image_url": url,
+                                        ],
+                                    ],
+                                ])
+                            }
+                        }
+                    }
+                    continue
+                }
+            }
+
+            // Assistant with tool_calls → emit function_call items.
+            if rawRole == Self.openAIRoleAssistant,
+               let toolCalls = message["tool_calls"] as? [[String: Any]],
+               !toolCalls.isEmpty
+            {
+                // Emit any assistant text first.
+                let assistantText = Self.readOpenAIContent(message["content"])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !assistantText.isEmpty {
+                    result.append([
+                        "role": Self.openAIRoleAssistant,
+                        "content": [
+                            ["type": "output_text", "text": assistantText],
+                        ],
+                    ])
+                }
+                for tc in toolCalls {
+                    guard let fn = tc["function"] as? [String: Any] else { continue }
+                    let name = (fn["name"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let callID = (tc["id"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? UUID().uuidString
+                    let arguments = (fn["arguments"] as? String) ?? "{}"
+                    result.append([
+                        "type": "function_call",
+                        "name": name,
+                        "call_id": callID,
+                        "arguments": arguments,
+                    ])
+                }
+                continue
+            }
+
             // Responses API websocket payloads accept assistant history blocks as
-            // output_text/refusal rather than input_text. Also normalize unknown/tool
+            // output_text/refusal rather than input_text. Also normalize unknown
             // roles to user for compatibility.
             let role: String = switch rawRole {
             case Self.openAIRoleSystem, Self.openAIRoleUser, Self.openAIRoleAssistant:
@@ -1023,15 +1250,15 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 Self.openAIRoleUser
             }
             if role == Self.openAIRoleSystem, !includeSystemMessages {
-                return nil
+                continue
             }
             let text = Self.readOpenAIContent(message["content"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                return nil
+                continue
             }
             let contentType = role == Self.openAIRoleAssistant ? "output_text" : "input_text"
-            return [
+            result.append([
                 "role": role,
                 "content": [
                     [
@@ -1039,8 +1266,9 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                         "text": text,
                     ],
                 ],
-            ]
+            ])
         }
+        return result
     }
 
     private static func resolveOpenAICodexInstructions(from payloadMessages: [[String: Any]]) -> String {
@@ -1164,6 +1392,41 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             }
         }
         return chunks.joined()
+    }
+
+    /// Extract function_call items from a Responses API completed response.
+    /// The `output` array may contain items with `type: "function_call"`.
+    static func extractOpenAIResponsesToolCalls(
+        from object: [String: Any],
+        restoreNamesUsing reverseToolNameMap: [String: String] = [:]) -> [GatewayLocalLLMToolCall]
+    {
+        let root: [String: Any]
+        if let response = object["response"] as? [String: Any] {
+            root = response
+        } else {
+            root = object
+        }
+        guard let output = root["output"] as? [[String: Any]] else {
+            return []
+        }
+        return output.compactMap { item in
+            let itemType = (item["type"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() ?? ""
+            guard itemType == "function_call" else { return nil }
+            let wireName = (item["name"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !wireName.isEmpty else { return nil }
+            let callID = (item["call_id"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? UUID().uuidString
+            let arguments = (item["arguments"] as? String) ?? "{}"
+            let name = reverseToolNameMap[wireName] ?? wireName
+            return GatewayLocalLLMToolCall(
+                id: callID.isEmpty ? UUID().uuidString : callID,
+                name: name,
+                argumentsJSON: arguments)
+        }
     }
 
     private static func extractOpenAIResponsesErrorMessage(from event: [String: Any]) -> String? {
