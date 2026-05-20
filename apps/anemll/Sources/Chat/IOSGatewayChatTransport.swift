@@ -44,6 +44,30 @@ struct IOSGatewayChatTransport: OpenClawChatTransport, Sendable {
         _ = try await self.gateway.request(method: "sessions.delete", paramsJSON: json, timeoutSeconds: 10)
     }
 
+    func renameSession(sessionKey: String, displayName: String) async throws {
+        struct Params: Codable {
+            var key: String
+            var displayName: String
+        }
+        let data = try JSONEncoder().encode(Params(key: sessionKey, displayName: displayName))
+        let json = String(data: data, encoding: .utf8)
+        _ = try await self.gateway.request(method: "sessions.rename", paramsJSON: json, timeoutSeconds: 10)
+    }
+
+    func updateSessionSettings(
+        sessionKey: String, preferredProviderID: String?, thinkingLevel: String?) async throws
+    {
+        struct Params: Codable {
+            var key: String
+            var preferredProviderID: String?
+            var thinkingLevel: String?
+        }
+        let data = try JSONEncoder().encode(
+            Params(key: sessionKey, preferredProviderID: preferredProviderID, thinkingLevel: thinkingLevel))
+        let json = String(data: data, encoding: .utf8)
+        _ = try await self.gateway.request(method: "sessions.update", paramsJSON: json, timeoutSeconds: 10)
+    }
+
     func setActiveSessionKey(_ sessionKey: String) async throws {
         // Operator clients receive chat events without node-style subscriptions.
         // (chat.subscribe is a node event, not an operator RPC method.)

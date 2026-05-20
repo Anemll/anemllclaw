@@ -5,12 +5,23 @@ public struct GatewaySessionSnapshot: Sendable, Equatable {
     public let turnCount: Int
     public let lastActivityMs: Int64
     public let thinkingLevel: String?
+    public let displayName: String?
+    public let preferredProviderID: String?
 
-    public init(sessionKey: String, turnCount: Int, lastActivityMs: Int64, thinkingLevel: String? = nil) {
+    public init(
+        sessionKey: String,
+        turnCount: Int,
+        lastActivityMs: Int64,
+        thinkingLevel: String? = nil,
+        displayName: String? = nil,
+        preferredProviderID: String? = nil)
+    {
         self.sessionKey = sessionKey
         self.turnCount = turnCount
         self.lastActivityMs = lastActivityMs
         self.thinkingLevel = thinkingLevel
+        self.displayName = displayName
+        self.preferredProviderID = preferredProviderID
     }
 }
 
@@ -53,6 +64,8 @@ public actor GatewaySessionStore {
         var turnCount: Int
         var lastActivityMs: Int64
         var thinkingLevel: String?
+        var displayName: String?
+        var preferredProviderID: String?
         let queue: GatewaySessionOperationQueue
     }
 
@@ -70,6 +83,8 @@ public actor GatewaySessionStore {
             turnCount: 0,
             lastActivityMs: GatewayCore.currentTimestampMs(),
             thinkingLevel: nil,
+            displayName: nil,
+            preferredProviderID: nil,
             queue: queue)
         return queue
     }
@@ -90,6 +105,8 @@ public actor GatewaySessionStore {
                 turnCount: current.turnCount + 1,
                 lastActivityMs: nowMs,
                 thinkingLevel: normalizedThinkingLevel ?? current.thinkingLevel,
+                displayName: current.displayName,
+                preferredProviderID: current.preferredProviderID,
                 queue: current.queue)
             return
         }
@@ -98,7 +115,77 @@ public actor GatewaySessionStore {
             turnCount: 1,
             lastActivityMs: nowMs,
             thinkingLevel: normalizedThinkingLevel,
+            displayName: nil,
+            preferredProviderID: nil,
             queue: GatewaySessionOperationQueue())
+    }
+
+    public func updateDisplayName(sessionKey: String, name: String?) {
+        let key = Self.normalizedSessionKey(sessionKey)
+        if let current = self.sessions[key] {
+            self.sessions[key] = SessionState(
+                turnCount: current.turnCount,
+                lastActivityMs: current.lastActivityMs,
+                thinkingLevel: current.thinkingLevel,
+                displayName: name,
+                preferredProviderID: current.preferredProviderID,
+                queue: current.queue)
+        } else {
+            self.sessions[key] = SessionState(
+                turnCount: 0,
+                lastActivityMs: GatewayCore.currentTimestampMs(),
+                thinkingLevel: nil,
+                displayName: name,
+                preferredProviderID: nil,
+                queue: GatewaySessionOperationQueue())
+        }
+    }
+
+    public func updatePreferredProvider(sessionKey: String, providerID: String?) {
+        let key = Self.normalizedSessionKey(sessionKey)
+        if let current = self.sessions[key] {
+            self.sessions[key] = SessionState(
+                turnCount: current.turnCount,
+                lastActivityMs: current.lastActivityMs,
+                thinkingLevel: current.thinkingLevel,
+                displayName: current.displayName,
+                preferredProviderID: providerID,
+                queue: current.queue)
+        } else {
+            self.sessions[key] = SessionState(
+                turnCount: 0,
+                lastActivityMs: GatewayCore.currentTimestampMs(),
+                thinkingLevel: nil,
+                displayName: nil,
+                preferredProviderID: providerID,
+                queue: GatewaySessionOperationQueue())
+        }
+    }
+
+    public func updateSessionSettings(
+        sessionKey: String,
+        preferredProviderID: String?,
+        thinkingLevel: String?)
+    {
+        let key = Self.normalizedSessionKey(sessionKey)
+        let normalizedThinkingLevel = Self.normalizedThinkingLevel(thinkingLevel)
+        if let current = self.sessions[key] {
+            self.sessions[key] = SessionState(
+                turnCount: current.turnCount,
+                lastActivityMs: current.lastActivityMs,
+                thinkingLevel: normalizedThinkingLevel ?? current.thinkingLevel,
+                displayName: current.displayName,
+                preferredProviderID: preferredProviderID,
+                queue: current.queue)
+        } else {
+            self.sessions[key] = SessionState(
+                turnCount: 0,
+                lastActivityMs: GatewayCore.currentTimestampMs(),
+                thinkingLevel: normalizedThinkingLevel,
+                displayName: nil,
+                preferredProviderID: preferredProviderID,
+                queue: GatewaySessionOperationQueue())
+        }
     }
 
     public func removeSession(sessionKey: String) {
@@ -117,7 +204,9 @@ public actor GatewaySessionStore {
                 sessionKey: key,
                 turnCount: current.turnCount,
                 lastActivityMs: current.lastActivityMs,
-                thinkingLevel: current.thinkingLevel)
+                thinkingLevel: current.thinkingLevel,
+                displayName: current.displayName,
+                preferredProviderID: current.preferredProviderID)
         }
         return GatewaySessionSnapshot(
             sessionKey: key,
@@ -133,7 +222,9 @@ public actor GatewaySessionStore {
                     sessionKey: key,
                     turnCount: current.turnCount,
                     lastActivityMs: current.lastActivityMs,
-                    thinkingLevel: current.thinkingLevel)
+                    thinkingLevel: current.thinkingLevel,
+                    displayName: current.displayName,
+                    preferredProviderID: current.preferredProviderID)
             }
             return GatewaySessionSnapshot(
                 sessionKey: key,

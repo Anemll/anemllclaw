@@ -2,6 +2,7 @@
 #if os(iOS)
 import CoreLocation
 import OpenClawKit
+import UIKit
 #endif
 import Darwin
 import Foundation
@@ -1540,6 +1541,49 @@ final class TVOSLocalGatewayRuntime {
         self.appendLog("dream: restored previous provider")
     }
 
+    /// Pre-flight refresh for the currently-active OAuth provider.
+    ///
+    /// Called before each on-device chat send so an access token that is past
+    /// (or within 90s of) its expiry gets exchanged for a fresh one and pushed
+    /// into the local LLM config. `refreshOAuthIfNeeded` is a fast no-op when
+    /// the token is still valid, so this stays cheap on the common path.
+    /// Failures are logged and swallowed — the send will surface the upstream
+    /// 401 if the refresh truly cannot recover.
+    func refreshActiveProviderOAuthIfNeeded() async {
+        let providers = LLMProviderStore.load()
+        guard let activeID = LLMProviderStore.activeID(),
+              let index = providers.firstIndex(where: { $0.id == activeID })
+        else { return }
+        let provider = providers[index]
+        guard provider.authMode.isOAuth else { return }
+
+        let refreshed: SavedLLMProvider
+        do {
+            refreshed = try await LLMProviderStore.refreshOAuthIfNeeded(provider)
+        } catch {
+            self.appendLog(
+                "oauth pre-flight refresh failed: \(error.localizedDescription)",
+                level: .warning)
+            return
+        }
+        guard refreshed != provider else { return }
+
+        var updatedProviders = providers
+        updatedProviders[index] = refreshed
+        LLMProviderStore.save(updatedProviders)
+
+        let trimmedActiveKey = self.controlPlaneSettings.localLLMAPIKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRefreshedKey = refreshed.apiKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedRefreshedKey != trimmedActiveKey else { return }
+
+        var settings = self.controlPlaneSettings
+        settings.localLLMAPIKey = refreshed.apiKey
+        await self.applyControlPlaneSettings(settings)
+        self.appendLog("oauth pre-flight refresh applied for \(refreshed.shortDisplayName)")
+    }
+
     private func sendDreamChatPrompt(runId: String) async {
         guard self.state == .running, let host = self.host else {
             self.appendLog("dream chat.send skipped: runtime not running or host unavailable", level: .warning)
@@ -1854,7 +1898,7 @@ final class TVOSLocalGatewayRuntime {
                 + " baseURL=\(baseURLText) model=\(modelText)"
                 + " transport=\(self.controlPlaneSettings.localLLMTransport.rawValue)"
                 + " session=\(sessionKey)"
-                + " skipPreamble=1 disableTools=1")
+                + " skipPreamble=1 disableTools=1 thinking=none")
 
         do {
             let sendRequest = GatewayRequestFrame(
@@ -1863,7 +1907,7 @@ final class TVOSLocalGatewayRuntime {
                 params: .object([
                     "sessionKey": .string(sessionKey),
                     "message": .string(normalizedPrompt),
-                    "thinking": .string("low"),
+                    "thinking": .string("none"),
                     "historyLimit": .integer(12),
                     "skipPreamble": .bool(true),
                     "disableTools": .bool(true),
@@ -3476,7 +3520,7 @@ final class TVOSLocalGatewayRuntime {
 
         let sendResult = await self.sendTelegramMessage(
             chatID: approved.id,
-            text: "AnemllClaw tvOS pairing approved. You are now linked.")
+            text: "AnemllClaw \(Self.platformLogLabel) pairing approved. You are now linked.")
         if let sendError = sendResult {
             self.appendLog("telegram pairing approval notice failed: \(sendError)", level: .warning)
         }
@@ -4543,7 +4587,7 @@ final class TVOSLocalGatewayRuntime {
                 let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: update.chatID,
                     senderID: senderID,
-                    text: "AnemllClaw tvOS currently supports Telegram replies in private chats only.")
+                    text: "AnemllClaw \(Self.platformLogLabel) currently supports Telegram replies in private chats only.")
                 if let sendError {
                     self.appendLog("telegram non-private notice failed: \(sendError)", level: .warning)
                 }
@@ -4568,7 +4612,7 @@ final class TVOSLocalGatewayRuntime {
                 let sendError = await self.sendTelegramReplyAndMirror(
                     chatID: approved.id,
                     senderID: senderID,
-                    text: "AnemllClaw tvOS pairing approved. You are now linked.")
+                    text: "AnemllClaw \(Self.platformLogLabel) pairing approved. You are now linked.")
                 if let sendError {
                     self.appendLog("telegram /pair reply failed: \(sendError)", level: .warning)
                 }
@@ -4611,10 +4655,10 @@ final class TVOSLocalGatewayRuntime {
         _ = self.pruneTelegramPairingRequests(nowMs: nowMs)
 
         let message = """
-        OpenClaw tvOS pairing request
+        OpenClaw \(Self.platformLogLabel) pairing request
         Your Telegram user id: \(senderID)
         Pairing code: \(code)
-        Approve in tvOS admin panel (Pairing List + Approve).
+        Approve in \(Self.platformLogLabel) admin panel (Pairing List + Approve).
         """
         let sendError = await self.sendTelegramReplyAndMirror(
             chatID: update.chatID,
@@ -4660,7 +4704,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "AnemllClaw tvOS is linked. Send a message and I will reply.")
+                text: "AnemllClaw \(Self.platformLogLabel) is linked. Send a message and I will reply.")
             if let sendError {
                 self.appendLog("telegram start reply failed: \(sendError)", level: .warning)
             }
@@ -4671,7 +4715,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "AnemllClaw tvOS runtime is not running.")
+                text: "AnemllClaw \(Self.platformLogLabel) runtime is not running.")
             if let sendError {
                 self.appendLog("telegram runtime-not-running reply failed: \(sendError)", level: .warning)
             }
@@ -4681,7 +4725,7 @@ final class TVOSLocalGatewayRuntime {
             let sendError = await self.sendTelegramReplyAndMirror(
                 chatID: update.chatID,
                 senderID: senderID,
-                text: "AnemllClaw tvOS runtime host is unavailable.")
+                text: "AnemllClaw \(Self.platformLogLabel) runtime host is unavailable.")
             if let sendError {
                 self.appendLog("telegram host-unavailable reply failed: \(sendError)", level: .warning)
             }
@@ -5274,7 +5318,9 @@ final class TVOSLocalGatewayRuntime {
                 token: Self.trimmed(settings.upstreamToken),
                 password: Self.trimmed(settings.upstreamPassword),
                 role: Self.trimmed(settings.upstreamRole) ?? "node",
-                scopes: scopes),
+                scopes: scopes,
+                clientDisplayName: "OpenClaw \(Self.platformLogLabel) Gateway",
+                clientPlatform: Self.platformLogLabel),
             urlText: url.absoluteString,
             errorText: nil)
     }
@@ -5438,6 +5484,32 @@ final class TVOSLocalGatewayRuntime {
         return error.localizedDescription.lowercased().contains("address already in use")
     }
 
+    static var platformLogLabel: String {
+        #if os(tvOS)
+        return "tvOS"
+        #elseif os(iOS)
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            return "macOS"
+        }
+        switch UIDevice.current.userInterfaceIdiom {
+        case .pad:
+            return "iPadOS"
+        case .phone:
+            return "iOS"
+        default:
+            return "iOS"
+        }
+        #elseif os(macOS)
+        return "macOS"
+        #elseif os(watchOS)
+        return "watchOS"
+        #elseif os(visionOS)
+        return "visionOS"
+        #else
+        return "AppleOS"
+        #endif
+    }
+
     private static func fallbackMemoryStorePath() -> URL {
         let fileManager = FileManager.default
         if let cachesBase = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
@@ -5453,7 +5525,7 @@ final class TVOSLocalGatewayRuntime {
     }
 
     private func appendLog(_ message: String, level: TVOSGatewayRuntimeLogEntry.Level = .info) {
-        let formattedMessage = "[AnemllClaw tvOS][\(level.rawValue.uppercased())] \(message)"
+        let formattedMessage = "[AnemllClaw \(Self.platformLogLabel)][\(level.rawValue.uppercased())] \(message)"
         #if DEBUG
         print(formattedMessage)
         #endif

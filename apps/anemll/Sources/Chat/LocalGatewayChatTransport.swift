@@ -7,6 +7,7 @@ import OSLog
 struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
     private static let logger = Logger(subsystem: "ai.openclaw", category: "local.chat.transport")
     private let resolveHost: @Sendable () async -> GatewayLoopbackHost?
+    private let refreshOAuthIfNeeded: @Sendable () async -> Void
     var supportsRealtimeRunEvents: Bool {
         false
     }
@@ -14,10 +15,14 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
     init(host: GatewayLoopbackHost) {
         let captured = host
         self.resolveHost = { captured }
+        self.refreshOAuthIfNeeded = {}
     }
 
     init(runtime: TVOSLocalGatewayRuntime) {
         self.resolveHost = { @MainActor in runtime.host }
+        self.refreshOAuthIfNeeded = { @MainActor in
+            await runtime.refreshActiveProviderOAuthIfNeeded()
+        }
     }
 
     // MARK: - OpenClawChatTransport
@@ -40,6 +45,11 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
     {
         Self.logger.info(
             "chat.send start sessionKey=\(sessionKey, privacy: .public) len=\(message.count, privacy: .public) attachments=\(attachments.count, privacy: .public)")
+
+        // Refresh active OAuth token if it is near expiry. Fast no-op when the
+        // token is still valid; transparently rotates the local LLM apiKey and
+        // re-applies the gateway config when a refresh actually fires.
+        await self.refreshOAuthIfNeeded()
 
         var paramsDict: [String: GatewayJSONValue] = [
             "sessionKey": .string(sessionKey),
@@ -108,6 +118,50 @@ struct LocalGatewayChatTransport: OpenClawChatTransport, Sendable {
         let response = try await self.currentHost().invoke(request)
         guard response.ok else {
             let message = response.error?.message ?? "sessions.delete failed"
+            throw NSError(
+                domain: "LocalGatewayChatTransport",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
+
+    func renameSession(sessionKey: String, displayName: String) async throws {
+        let request = GatewayRequestFrame(
+            id: UUID().uuidString,
+            method: "sessions.rename",
+            params: .object([
+                "key": .string(sessionKey),
+                "displayName": .string(displayName),
+            ]))
+        let response = try await self.currentHost().invoke(request)
+        guard response.ok else {
+            let message = response.error?.message ?? "sessions.rename failed"
+            throw NSError(
+                domain: "LocalGatewayChatTransport",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
+
+    func updateSessionSettings(
+        sessionKey: String, preferredProviderID: String?, thinkingLevel: String?) async throws
+    {
+        var paramsDict: [String: GatewayJSONValue] = [
+            "key": .string(sessionKey),
+        ]
+        if let providerID = preferredProviderID {
+            paramsDict["preferredProviderID"] = .string(providerID)
+        }
+        if let level = thinkingLevel {
+            paramsDict["thinkingLevel"] = .string(level)
+        }
+        let request = GatewayRequestFrame(
+            id: UUID().uuidString,
+            method: "sessions.update",
+            params: .object(paramsDict))
+        let response = try await self.currentHost().invoke(request)
+        guard response.ok else {
+            let message = response.error?.message ?? "sessions.update failed"
             throw NSError(
                 domain: "LocalGatewayChatTransport",
                 code: 0,

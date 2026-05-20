@@ -21,10 +21,14 @@ struct ChatMarkdownRenderer: View {
     let textColor: Color
 
     var body: some View {
-        let redacted = ChatSensitiveValueRedactor.redact(self.text)
+        let display = ChatMarkdownDisplayLimiter.displayText(for: self.text)
+        let redacted = ChatSensitiveValueRedactor.redact(display.text)
         let processed = ChatMarkdownPreprocessor.preprocess(markdown: redacted)
+        let usePlainText = display.truncated
+            || processed.prefersPlainText
+            || ChatMarkdownDisplayLimiter.prefersPlainTextRenderer(for: processed.cleaned)
         VStack(alignment: .leading, spacing: 10) {
-            if processed.prefersPlainText {
+            if usePlainText {
                 Text(processed.cleaned)
                     .font(self.font)
                     .foregroundStyle(self.textColor)
@@ -41,7 +45,47 @@ struct ChatMarkdownRenderer: View {
             if !processed.images.isEmpty {
                 InlineImageList(images: processed.images)
             }
+
+            if display.truncated {
+                Text(
+                    "Showing first \(display.renderedUTF16) of \(display.originalUTF16) characters. "
+                        + "Copy still uses the full message.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+}
+
+private enum ChatMarkdownDisplayLimiter {
+    static let maxRenderedUTF16 = 12000
+    private static let maxStructuredTextUTF16 = 6000
+
+    static func displayText(for text: String)
+    -> (text: String, truncated: Bool, originalUTF16: Int, renderedUTF16: Int) {
+        let originalCount = text.utf16.count
+        guard originalCount > self.maxRenderedUTF16 else {
+            return (text, false, originalCount, originalCount)
+        }
+
+        let rendered = self.prefixByUTF16(text, self.maxRenderedUTF16)
+        return (rendered, true, originalCount, rendered.utf16.count)
+    }
+
+    private static func prefixByUTF16(_ text: String, _ maxChars: Int) -> String {
+        String(decoding: text.utf16.prefix(max(0, maxChars)), as: UTF16.self)
+    }
+
+    static func prefersPlainTextRenderer(for text: String) -> Bool {
+        if text.utf16.count > self.maxStructuredTextUTF16 {
+            return true
+        }
+
+        #if os(iOS) || os(tvOS)
+        return true
+        #else
+        return false
+        #endif
     }
 }
 

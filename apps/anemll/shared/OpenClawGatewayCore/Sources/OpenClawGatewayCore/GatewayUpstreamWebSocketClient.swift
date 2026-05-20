@@ -20,9 +20,9 @@ public struct GatewayUpstreamWebSocketConfig: Sendable, Equatable {
         role: String? = "node",
         scopes: [String]? = nil,
         clientID: String = "openclaw.tvos.gateway-core",
-        clientDisplayName: String? = "OpenClaw tvOS Gateway",
+        clientDisplayName: String? = "OpenClaw Gateway",
         clientVersion: String = "0.0.0-dev",
-        clientPlatform: String = "tvOS",
+        clientPlatform: String = "unknown",
         clientMode: String = "gateway-host",
         requestTimeoutMs: UInt64 = 15000)
     {

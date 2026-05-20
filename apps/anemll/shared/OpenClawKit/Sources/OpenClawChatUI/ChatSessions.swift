@@ -31,6 +31,7 @@ public struct OpenClawChatSessionEntry: Codable, Identifiable, Sendable, Hashabl
 
     public let model: String?
     public let contextTokens: Int?
+    public let preferredProviderID: String?
 }
 
 public struct OpenClawChatSessionsListResponse: Codable, Sendable {

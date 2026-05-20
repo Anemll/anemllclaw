@@ -28,6 +28,8 @@ public protocol OpenClawChatTransport: Sendable {
     func setActiveSessionKey(_ sessionKey: String) async throws
 
     func deleteSession(sessionKey: String) async throws
+    func renameSession(sessionKey: String, displayName: String) async throws
+    func updateSessionSettings(sessionKey: String, preferredProviderID: String?, thinkingLevel: String?) async throws
 }
 
 extension OpenClawChatTransport {
@@ -56,5 +58,21 @@ extension OpenClawChatTransport {
             domain: "OpenClawChatTransport",
             code: 0,
             userInfo: [NSLocalizedDescriptionKey: "sessions.delete not supported by this transport"])
+    }
+
+    public func renameSession(sessionKey _: String, displayName _: String) async throws {
+        throw NSError(
+            domain: "OpenClawChatTransport",
+            code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "sessions.rename not supported by this transport"])
+    }
+
+    public func updateSessionSettings(
+        sessionKey _: String, preferredProviderID _: String?, thinkingLevel _: String?) async throws
+    {
+        throw NSError(
+            domain: "OpenClawChatTransport",
+            code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "sessions.update not supported by this transport"])
     }
 }

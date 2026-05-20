@@ -29,13 +29,13 @@ private enum OpenAIOAuthLoopbackServerError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidPort:
-            "OpenAI OAuth callback listener failed to bind localhost:1455."
+            "OAuth callback listener failed to bind localhost."
         case let .listenerFailed(reason):
-            "OpenAI OAuth callback listener failed: \(reason)"
+            "OAuth callback listener failed: \(reason)"
         case .timedOut:
-            "OpenAI OAuth callback timed out waiting for localhost redirect."
+            "OAuth callback timed out waiting for localhost redirect."
         case .canceled:
-            "OpenAI OAuth callback listener was canceled."
+            "OAuth callback listener was canceled."
         }
     }
 }
@@ -44,17 +44,26 @@ private final class OpenAIOAuthLoopbackCallbackServer {
     private let queue = DispatchQueue(label: "ai.openclaw.oauth.loopback")
     private let port: NWEndpoint.Port
     private let expectedPath: String
+    private let providerLabel: String
+    private let allowedOrigins: Set<String>
     private var listener: NWListener?
     private var continuation: CheckedContinuation<URL, Error>?
     private var result: Result<URL, Error>?
     private var timeoutWorkItem: DispatchWorkItem?
 
-    init(port: UInt16 = 1455, expectedPath: String = "/auth/callback") throws {
+    init(
+        port: UInt16 = 1455,
+        expectedPath: String = "/auth/callback",
+        providerLabel: String = "OAuth",
+        allowedOrigins: Set<String> = []) throws
+    {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw OpenAIOAuthLoopbackServerError.invalidPort
         }
         self.port = endpointPort
         self.expectedPath = expectedPath
+        self.providerLabel = providerLabel
+        self.allowedOrigins = allowedOrigins
     }
 
     func start() throws {
@@ -112,26 +121,46 @@ private final class OpenAIOAuthLoopbackCallbackServer {
 
     private func handle(connection: NWConnection) {
         connection.start(queue: self.queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, _, _ in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, _, _ in
             guard let self else {
                 connection.cancel()
                 return
             }
             guard let data,
-                  let request = String(data: data, encoding: .utf8),
-                  let callbackURL = self.extractCallbackURL(from: request)
+                  let request = String(data: data, encoding: .utf8)
             else {
                 self.respond(
                     on: connection,
                     statusLine: "HTTP/1.1 404 Not Found",
-                    body: "OpenAI OAuth callback path not found.")
+                    body: "\(self.providerLabel) callback path not found.",
+                    origin: nil)
+                return
+            }
+
+            let origin = self.headerValue(named: "Origin", in: request)
+            if self.isOptionsRequest(request) {
+                self.respond(
+                    on: connection,
+                    statusLine: "HTTP/1.1 204 No Content",
+                    body: "",
+                    origin: origin)
+                return
+            }
+
+            guard let callbackURL = self.extractCallbackURL(from: request) else {
+                self.respond(
+                    on: connection,
+                    statusLine: "HTTP/1.1 404 Not Found",
+                    body: "\(self.providerLabel) callback path not found.",
+                    origin: origin)
                 return
             }
 
             self.respond(
                 on: connection,
                 statusLine: "HTTP/1.1 200 OK",
-                body: "OpenAI OAuth complete. You can close this page and return to the app.")
+                body: "\(self.providerLabel) complete. You can close this page and return to the app.",
+                origin: origin)
             self.finish(.success(callbackURL))
         }
     }
@@ -179,16 +208,55 @@ private final class OpenAIOAuthLoopbackCallbackServer {
         return callbackURL
     }
 
-    private func respond(on connection: NWConnection, statusLine: String, body: String) {
-        let html = """
-        <html><head><meta charset="utf-8"></head><body>\(body)</body></html>
+    private func isOptionsRequest(_ request: String) -> Bool {
+        guard let firstLine = request.components(separatedBy: "\r\n").first else {
+            return false
+        }
+        return firstLine.split(separator: " ").first?.uppercased() == "OPTIONS"
+    }
+
+    private func headerValue(named name: String, in request: String) -> String? {
+        let normalizedName = name.lowercased()
+        for line in request.components(separatedBy: "\r\n").dropFirst() {
+            guard let separator = line.firstIndex(of: ":") else { continue }
+            let key = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard key == normalizedName else { continue }
+            let value = line[line.index(after: separator)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
+    private func corsHeaders(for origin: String?) -> String {
+        guard let origin,
+              self.allowedOrigins.contains(origin)
+        else {
+            return ""
+        }
+        return """
+        Access-Control-Allow-Origin: \(origin)\r
+        Access-Control-Allow-Methods: GET, OPTIONS\r
+        Access-Control-Allow-Headers: Content-Type\r
+        Access-Control-Allow-Private-Network: true\r
+        Vary: Origin\r
+
         """
+    }
+
+    private func respond(on connection: NWConnection, statusLine: String, body: String, origin: String?) {
+        let html = body.isEmpty
+            ? ""
+            : """
+            <html><head><meta charset="utf-8"></head><body>\(body)</body></html>
+            """
         let payload = """
         \(statusLine)\r
         Content-Type: text/html; charset=utf-8\r
         Content-Length: \(html.utf8.count)\r
         Cache-Control: no-store\r
         Connection: close\r
+        \(self.corsHeaders(for: origin))
         \r
         \(html)
         """
@@ -249,6 +317,7 @@ struct LLMProviderEditorSheet: View {
 
     #if os(iOS)
     @State private var oauthAuthorizationContext: OpenAIOAuthSubAuthorizationContext?
+    @State private var xaiOAuthAuthorizationContext: XaiOAuthAuthorizationContext?
     @State private var oauthSession: ASWebAuthenticationSession?
     @State private var oauthLoopbackServer: OpenAIOAuthLoopbackCallbackServer?
     @State private var oauthLoopbackTask: Task<Void, Never>?
@@ -298,6 +367,8 @@ struct LLMProviderEditorSheet: View {
                             Text("Anthropic-compatible").tag(GatewayLocalLLMProviderKind.anthropicCompatible)
                             Text("MiniMax-compatible").tag(GatewayLocalLLMProviderKind.minimaxCompatible)
                         }
+
+                        self.authModePicker
                     }
 
                     Section("Connection") {
@@ -306,24 +377,15 @@ struct LLMProviderEditorSheet: View {
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
 
-                        if self.provider == .openAICompatible {
-                            Picker("Auth", selection: self.$authMode) {
-                                Text(SavedLLMProviderAuthMode.apiKey.displayLabel).tag(SavedLLMProviderAuthMode.apiKey)
-                                Text(SavedLLMProviderAuthMode.openAIOAuthSub.displayLabel).tag(
-                                    SavedLLMProviderAuthMode.openAIOAuthSub)
-                            }
-                        }
-
-                        if self.provider != .openAICompatible || self.authMode == .apiKey {
+                        if !self.currentAuthModeUsesOAuth {
                             SecureField("API Key", text: self.$apiKey)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                         } else {
-                            self.openAIOAuthControls
+                            self.oauthControls
                         }
 
-                        if self.provider == .openAICompatible,
-                           self.authMode == .openAIOAuthSub,
+                        if self.currentAuthModeUsesOAuth,
                            !self.oauthAvailableModels.isEmpty
                         {
                             Picker("Detected Model", selection: self.$model) {
@@ -336,7 +398,7 @@ struct LLMProviderEditorSheet: View {
                         TextField("Model", text: self.$model)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        if self.provider == .openAICompatible, self.authMode == .openAIOAuthSub {
+                        if self.currentAuthModeUsesOAuth {
                             Text("Select from your OAuth model list, or enter a model ID manually.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
@@ -344,18 +406,17 @@ struct LLMProviderEditorSheet: View {
 
                         Picker("Transport", selection: self.$transport) {
                             Text("HTTP").tag(GatewayLocalLLMTransport.http)
-                            if self.provider == .openAICompatible {
+                            if self.providerSupportsWebSocket {
                                 Text("WebSocket (Experimental)").tag(GatewayLocalLLMTransport.websocket)
                             }
                         }
-                        if self.provider == .openAICompatible {
+                        if self.providerSupportsWebSocket {
                             Text(
-                                "Recommended for lower latency on iterative chats. "
-                                    + "OpenAI + WebSocket defaults Tool Calling to On.")
+                                "Recommended for lower latency on iterative Responses API chats.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("WebSocket is currently available for OpenAI-compatible providers only.")
+                            Text("WebSocket is currently available for OpenAI and Grok providers only.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -449,30 +510,33 @@ struct LLMProviderEditorSheet: View {
                         .disabled(!self.canSave || self.isApplyingChanges)
                     }
                 }
-                .onChange(of: self.provider) { _, newValue in
-                    self.applyDefaults(for: newValue)
-                    if newValue != .openAICompatible {
+                .onChange(of: self.provider) { oldValue, newValue in
+                    self.applyDefaults(for: newValue, replacingDefaultsFrom: oldValue)
+                    self.authMode = SavedLLMProviderAuthMode.normalized(self.authMode, for: newValue)
+                    if newValue != .openAICompatible, newValue != .grokCompatible {
                         self.transport = .http
-                        self.authMode = .apiKey
                         self.clearOAuthStatus()
-                    } else if self.authMode == .openAIOAuthSub, self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    } else if self.currentAuthModeUsesOAuth,
+                              self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    {
                         self.prefillModelFromOAuthCatalog()
                     }
                 }
                 .onChange(of: self.transport) { _, newValue in
-                    guard self.provider == .openAICompatible else { return }
+                    guard self.providerSupportsWebSocket else { return }
                     guard newValue == .websocket else { return }
-                    if self.toolCallingMode == .auto {
+                    if self.provider == .openAICompatible, self.toolCallingMode == .auto {
                         self.toolCallingMode = .on
                     }
                 }
                 .onChange(of: self.authMode) { _, newValue in
-                    if self.provider != .openAICompatible, newValue != .apiKey {
-                        self.authMode = .apiKey
+                    let normalized = SavedLLMProviderAuthMode.normalized(newValue, for: self.provider)
+                    if normalized != newValue {
+                        self.authMode = normalized
                         return
                     }
                     self.clearOAuthStatus()
-                    if newValue == .openAIOAuthSub {
+                    if newValue.isOAuth {
                         self.applyOAuthSubscriptionDefaults()
                         self.prefillModelFromOAuthCatalog()
                     }
@@ -486,12 +550,11 @@ struct LLMProviderEditorSheet: View {
                     }
                 }
                 .onAppear {
-                    if self.provider == .openAICompatible,
-                       self.authMode == .openAIOAuthSub,
+                    if self.currentAuthModeUsesOAuth,
                        !self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     {
                         Task { @MainActor in
-                            await self.reloadOpenAIModelCatalog(force: false)
+                            await self.reloadOAuthModelCatalog(force: false)
                         }
                     }
                 }
@@ -502,6 +565,7 @@ struct LLMProviderEditorSheet: View {
                     #if os(iOS)
                     self.oauthSession?.cancel()
                     self.oauthSession = nil
+                    self.xaiOAuthAuthorizationContext = nil
                     self.oauthLoopbackTask?.cancel()
                     self.oauthLoopbackTask = nil
                     self.oauthLoopbackServer?.stop()
@@ -512,18 +576,18 @@ struct LLMProviderEditorSheet: View {
         }
     }
 
-    private var openAIOAuthControls: some View {
+    private var oauthControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             #if os(iOS)
             Button {
-                self.beginOpenAIOAuthSignIn()
+                self.beginOAuthSignIn()
             } label: {
                 HStack(spacing: 8) {
                     if self.oauthSigningIn {
                         ProgressView()
                             .progressViewStyle(.circular)
                     }
-                    Text(self.oauthSigningIn ? "Signing in…" : "Sign in with OpenAI (Web)")
+                    Text(self.oauthSigningIn ? "Signing in..." : "Sign in with \(self.oauthProviderLabel)")
                 }
             }
             .disabled(self.oauthSigningIn || self.oauthLoadingModels)
@@ -531,7 +595,7 @@ struct LLMProviderEditorSheet: View {
 
             Button {
                 Task { @MainActor in
-                    await self.reloadOpenAIModelCatalog(force: true)
+                    await self.reloadOAuthModelCatalog(force: true)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -542,10 +606,11 @@ struct LLMProviderEditorSheet: View {
                     Text(self.oauthLoadingModels ? "Loading models…" : "Reload Model List")
                 }
             }
-            .disabled(self.oauthSigningIn || self.oauthLoadingModels || self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(self.oauthSigningIn || self.oauthLoadingModels || self.apiKey
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .buttonStyle(.bordered)
             #else
-            Text("OpenAI OAuth web sign-in is available on iOS.")
+            Text("\(self.oauthProviderLabel) web sign-in is available on iOS.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             #endif
@@ -574,10 +639,50 @@ struct LLMProviderEditorSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var authModePicker: some View {
+        switch self.provider {
+        case .openAICompatible:
+            Picker("Auth", selection: self.$authMode) {
+                Text(SavedLLMProviderAuthMode.apiKey.displayLabel).tag(SavedLLMProviderAuthMode.apiKey)
+                Text(SavedLLMProviderAuthMode.openAIOAuthSub.displayLabel).tag(
+                    SavedLLMProviderAuthMode.openAIOAuthSub)
+            }
+        case .grokCompatible:
+            Picker("Auth", selection: self.$authMode) {
+                Text(SavedLLMProviderAuthMode.apiKey.displayLabel).tag(SavedLLMProviderAuthMode.apiKey)
+                Text(SavedLLMProviderAuthMode.xAIOAuthSub.displayLabel).tag(
+                    SavedLLMProviderAuthMode.xAIOAuthSub)
+            }
+        case .disabled, .anthropicCompatible, .minimaxCompatible:
+            EmptyView()
+        }
+    }
+
+    private var currentAuthModeUsesOAuth: Bool {
+        (self.provider == .openAICompatible && self.authMode == .openAIOAuthSub)
+            || (self.provider == .grokCompatible && self.authMode == .xAIOAuthSub)
+    }
+
+    private var providerSupportsWebSocket: Bool {
+        self.provider == .openAICompatible || self.provider == .grokCompatible
+    }
+
+    private var oauthProviderLabel: String {
+        switch self.authMode {
+        case .openAIOAuthSub:
+            "OpenAI"
+        case .xAIOAuthSub:
+            "xAI"
+        case .apiKey:
+            "OAuth"
+        }
+    }
+
     private var canSave: Bool {
         let hasModel = !self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard hasModel else { return false }
-        if self.provider == .openAICompatible, self.authMode == .openAIOAuthSub {
+        if self.currentAuthModeUsesOAuth {
             return !self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return true
@@ -587,8 +692,8 @@ struct LLMProviderEditorSheet: View {
         if self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Model is required."
         }
-        if self.provider == .openAICompatible, self.authMode == .openAIOAuthSub {
-            return "OpenAI OAuth sign-in is required."
+        if self.currentAuthModeUsesOAuth {
+            return "\(self.oauthProviderLabel) sign-in is required."
         }
         return "Provider configuration is incomplete."
     }
@@ -601,26 +706,50 @@ struct LLMProviderEditorSheet: View {
         return "Applying changes…\(suffix)"
     }
 
-    private func applyDefaults(for kind: GatewayLocalLLMProviderKind) {
-        if self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let url = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: kind)
+    private func applyDefaults(
+        for kind: GatewayLocalLLMProviderKind,
+        replacingDefaultsFrom previousKind: GatewayLocalLLMProviderKind? = nil)
+    {
+        let currentBaseURL = self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousBaseURL = previousKind.flatMap(TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for:))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = TVOSLocalGatewayRuntime.defaultLocalLLMBaseURL(for: kind),
+           currentBaseURL.isEmpty || currentBaseURL == previousBaseURL
         {
             self.baseURL = url
         }
-        if self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let m = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: kind)
+
+        let currentModel = self.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousModel = previousKind.flatMap(TVOSLocalGatewayRuntime.defaultLocalLLMModel(for:))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let m = TVOSLocalGatewayRuntime.defaultLocalLLMModel(for: kind),
+           currentModel.isEmpty || currentModel == previousModel
         {
             self.model = m
         }
     }
 
     private func applyOAuthSubscriptionDefaults() {
-        self.baseURL = OpenAIOAuthSubClient.subscriptionBaseURL
-        if self.transport == .http {
-            self.transport = .websocket
-        }
-        if self.toolCallingMode == .auto {
-            self.toolCallingMode = .on
+        switch self.authMode {
+        case .openAIOAuthSub:
+            self.baseURL = OpenAIOAuthSubClient.subscriptionBaseURL
+            if self.transport == .http {
+                self.transport = .websocket
+            }
+            if self.toolCallingMode == .auto {
+                self.toolCallingMode = .on
+            }
+        case .xAIOAuthSub:
+            self.baseURL = XaiOAuthClient.apiBaseURL
+            self.transport = .http
+            let trimmedModel = self.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedModel.isEmpty,
+               let preferred = XaiOAuthClient.preferredModelID(from: XaiOAuthClient.modelFallbackIDs)
+            {
+                self.model = preferred
+            }
+        case .apiKey:
+            break
         }
     }
 
@@ -630,12 +759,24 @@ struct LLMProviderEditorSheet: View {
     }
 
     private func prefillModelFromOAuthCatalog() {
-        guard self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let preferred = OpenAIOAuthSubClient.preferredModelID(from: self.oauthAvailableModels)
-        else {
+        guard self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
-        self.model = preferred
+        switch self.authMode {
+        case .openAIOAuthSub:
+            if let preferred = OpenAIOAuthSubClient.preferredModelID(from: self.oauthAvailableModels) {
+                self.model = preferred
+            }
+        case .xAIOAuthSub:
+            let available = self.oauthAvailableModels.isEmpty
+                ? XaiOAuthClient.modelFallbackIDs
+                : self.oauthAvailableModels
+            if let preferred = XaiOAuthClient.preferredModelID(from: available) {
+                self.model = preferred
+            }
+        case .apiKey:
+            break
+        }
     }
 
     private func applyAndOptionallyDismiss(test: Bool, dismissAfterSave: Bool) {
@@ -651,15 +792,15 @@ struct LLMProviderEditorSheet: View {
         self.startProgressTicker(isTest: test)
         self.statusScrollTrigger = UUID()
 
-        let normalizedAuthMode: SavedLLMProviderAuthMode = if self.provider == .openAICompatible {
-            self.authMode
-        } else {
-            .apiKey
-        }
+        let normalizedAuthMode = SavedLLMProviderAuthMode.normalized(self.authMode, for: self.provider)
         let normalizedBaseURL: String = if self.provider == .openAICompatible,
-            normalizedAuthMode == .openAIOAuthSub
+                                           normalizedAuthMode == .openAIOAuthSub
         {
             OpenAIOAuthSubClient.subscriptionBaseURL
+        } else if self.provider == .grokCompatible,
+                  normalizedAuthMode == .xAIOAuthSub
+        {
+            XaiOAuthClient.apiBaseURL
         } else {
             self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -673,13 +814,13 @@ struct LLMProviderEditorSheet: View {
             apiKey: self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
             model: self.model.trimmingCharacters(in: .whitespacesAndNewlines),
             toolCallingMode: self.toolCallingMode,
-            transport: self.provider == .openAICompatible ? self.transport : .http,
+            transport: self.providerSupportsWebSocket ? self.transport : .http,
             authMode: normalizedAuthMode,
-            oauthAccessExpiresAtMs: normalizedAuthMode == .openAIOAuthSub ? self.oauthAccessExpiresAtMs : nil,
-            oauthAccountID: normalizedAuthMode == .openAIOAuthSub
+            oauthAccessExpiresAtMs: normalizedAuthMode.isOAuth ? self.oauthAccessExpiresAtMs : nil,
+            oauthAccountID: normalizedAuthMode.isOAuth
                 ? self.oauthAccountID.trimmingCharacters(in: .whitespacesAndNewlines)
                 : "",
-            oauthRefreshToken: normalizedAuthMode == .openAIOAuthSub
+            oauthRefreshToken: normalizedAuthMode.isOAuth
                 ? self.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
                 : "")
 
@@ -752,8 +893,8 @@ struct LLMProviderEditorSheet: View {
     }
 
     @MainActor
-    private func reloadOpenAIModelCatalog(force: Bool) async {
-        guard self.provider == .openAICompatible, self.authMode == .openAIOAuthSub else {
+    private func reloadOAuthModelCatalog(force: Bool) async {
+        guard self.currentAuthModeUsesOAuth else {
             return
         }
         guard !self.oauthLoadingModels else { return }
@@ -761,7 +902,7 @@ struct LLMProviderEditorSheet: View {
 
         var accessToken = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if accessToken.isEmpty {
-            self.oauthStatusText = "Sign in to OpenAI before loading models."
+            self.oauthStatusText = "Sign in to \(self.oauthProviderLabel) before loading models."
             self.oauthStatusIsError = true
             return
         }
@@ -771,13 +912,32 @@ struct LLMProviderEditorSheet: View {
 
         do {
             let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-            let refreshSkewMs: Int64 = 90_000
+            let refreshSkewMs: Int64 = 90000
             if let expiry = self.oauthAccessExpiresAtMs,
                expiry <= nowMs + refreshSkewMs,
                !self.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
-                let refreshed = try await OpenAIOAuthSubClient.refresh(
-                    refreshToken: self.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines))
+                let refreshed: (accessToken: String, refreshToken: String, expiresAtMs: Int64, accountID: String)
+                switch self.authMode {
+                case .openAIOAuthSub:
+                    let tokenSet = try await OpenAIOAuthSubClient.refresh(
+                        refreshToken: self.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines))
+                    refreshed = (
+                        accessToken: tokenSet.accessToken,
+                        refreshToken: tokenSet.refreshToken,
+                        expiresAtMs: tokenSet.expiresAtMs,
+                        accountID: tokenSet.accountID)
+                case .xAIOAuthSub:
+                    let tokenSet = try await XaiOAuthClient.refresh(
+                        refreshToken: self.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines))
+                    refreshed = (
+                        accessToken: tokenSet.accessToken,
+                        refreshToken: tokenSet.refreshToken,
+                        expiresAtMs: tokenSet.expiresAtMs,
+                        accountID: tokenSet.accountID)
+                case .apiKey:
+                    return
+                }
                 self.apiKey = refreshed.accessToken
                 self.oauthRefreshToken = refreshed.refreshToken
                 self.oauthAccessExpiresAtMs = refreshed.expiresAtMs
@@ -785,19 +945,43 @@ struct LLMProviderEditorSheet: View {
                 accessToken = refreshed.accessToken
             }
 
-            let models = try await OpenAIOAuthSubClient.fetchModelIDs(accessToken: accessToken)
+            let models: [String]
+            switch self.authMode {
+            case .openAIOAuthSub:
+                models = try await OpenAIOAuthSubClient.fetchModelIDs(accessToken: accessToken)
+            case .xAIOAuthSub:
+                do {
+                    models = try await XaiOAuthClient.fetchModelIDs(accessToken: accessToken)
+                } catch {
+                    self.oauthAvailableModels = XaiOAuthClient.modelFallbackIDs
+                    if self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !XaiOAuthClient.modelFallbackIDs.contains(self.model)
+                    {
+                        self.model = XaiOAuthClient.preferredModelID(from: XaiOAuthClient.modelFallbackIDs)
+                            ?? self.model
+                    }
+                    self.oauthStatusText = "Signed in. Using built-in Grok model list."
+                    self.oauthStatusIsError = false
+                    return
+                }
+            case .apiKey:
+                return
+            }
             self.oauthAvailableModels = models
             if self.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !models.contains(self.model)
             {
-                self.model = OpenAIOAuthSubClient.preferredModelID(from: models) ?? self.model
+                let preferred = self.authMode == .xAIOAuthSub
+                    ? XaiOAuthClient.preferredModelID(from: models)
+                    : OpenAIOAuthSubClient.preferredModelID(from: models)
+                self.model = preferred ?? self.model
             }
 
             if models.isEmpty {
                 self.oauthStatusText = "Signed in, but no models were returned for this account."
                 self.oauthStatusIsError = true
             } else {
-                self.oauthStatusText = "Loaded \(models.count) OpenAI models."
+                self.oauthStatusText = "Loaded \(models.count) \(self.oauthProviderLabel) models."
                 self.oauthStatusIsError = false
             }
         } catch {
@@ -813,19 +997,31 @@ struct LLMProviderEditorSheet: View {
 
     #if os(iOS)
     @MainActor
+    private func beginOAuthSignIn() {
+        switch self.authMode {
+        case .openAIOAuthSub:
+            self.beginOpenAIOAuthSignIn()
+        case .xAIOAuthSub:
+            self.beginXaiOAuthSignIn()
+        case .apiKey:
+            break
+        }
+    }
+
+    @MainActor
     private func beginOpenAIOAuthSignIn() {
         guard !self.oauthSigningIn else { return }
         self.applyOAuthSubscriptionDefaults()
         do {
             let context = try OpenAIOAuthSubClient.makeAuthorizationContext(originator: "pi-ios")
-            let loopback = try OpenAIOAuthLoopbackCallbackServer()
+            let loopback = try OpenAIOAuthLoopbackCallbackServer(providerLabel: "OpenAI OAuth")
             try loopback.start()
 
             self.oauthAuthorizationContext = context
             self.oauthLoopbackServer = loopback
             self.oauthCompletionHandled = false
             self.oauthSigningIn = true
-            self.oauthStatusText = "Opening OpenAI sign-in…"
+            self.oauthStatusText = "Opening OpenAI sign-in..."
             self.oauthStatusIsError = false
 
             self.oauthLoopbackTask = Task { [loopback] in
@@ -868,6 +1064,7 @@ struct LLMProviderEditorSheet: View {
             if !session.start() {
                 self.oauthSigningIn = false
                 self.oauthSession = nil
+                self.oauthAuthorizationContext = nil
                 self.oauthLoopbackTask?.cancel()
                 self.oauthLoopbackTask = nil
                 self.oauthLoopbackServer?.stop()
@@ -877,6 +1074,85 @@ struct LLMProviderEditorSheet: View {
             }
         } catch {
             self.oauthSigningIn = false
+            self.oauthLoopbackTask?.cancel()
+            self.oauthLoopbackTask = nil
+            self.oauthLoopbackServer?.stop()
+            self.oauthLoopbackServer = nil
+            self.oauthStatusText = error.localizedDescription
+            self.oauthStatusIsError = true
+        }
+    }
+
+    @MainActor
+    private func beginXaiOAuthSignIn() {
+        guard !self.oauthSigningIn else { return }
+        self.applyOAuthSubscriptionDefaults()
+        do {
+            let context = try XaiOAuthClient.makeAuthorizationContext(referrer: "openclaw")
+            let loopback = try OpenAIOAuthLoopbackCallbackServer(
+                port: XaiOAuthClient.callbackPort,
+                expectedPath: XaiOAuthClient.callbackPath,
+                providerLabel: "xAI OAuth",
+                allowedOrigins: ["https://accounts.x.ai", "https://auth.x.ai"])
+            try loopback.start()
+
+            self.xaiOAuthAuthorizationContext = context
+            self.oauthLoopbackServer = loopback
+            self.oauthCompletionHandled = false
+            self.oauthSigningIn = true
+            self.oauthStatusText = "Opening xAI sign-in..."
+            self.oauthStatusIsError = false
+
+            self.oauthLoopbackTask = Task { [loopback] in
+                do {
+                    let callbackURL = try await loopback.waitForCallback(timeoutSeconds: 240)
+                    await MainActor.run {
+                        self.oauthSession?.cancel()
+                    }
+                    await self.handleXaiOAuthCompletionIfNeeded(
+                        callbackURL: callbackURL,
+                        error: nil,
+                        context: context)
+                } catch is CancellationError {
+                    return
+                } catch let error as OpenAIOAuthLoopbackServerError where error == .canceled {
+                    return
+                } catch {
+                    await self.handleXaiOAuthCompletionIfNeeded(
+                        callbackURL: nil,
+                        error: error,
+                        context: context)
+                }
+            }
+
+            let session = ASWebAuthenticationSession(
+                url: context.url,
+                callbackURLScheme: XaiOAuthClient.callbackURLScheme)
+            { callbackURL, error in
+                Task { @MainActor in
+                    await self.handleXaiOAuthCompletionIfNeeded(
+                        callbackURL: callbackURL,
+                        error: error,
+                        context: context)
+                }
+            }
+            session.presentationContextProvider = self.oauthPresentationContextProvider
+            session.prefersEphemeralWebBrowserSession = true
+            self.oauthSession = session
+            if !session.start() {
+                self.oauthSigningIn = false
+                self.oauthSession = nil
+                self.xaiOAuthAuthorizationContext = nil
+                self.oauthLoopbackTask?.cancel()
+                self.oauthLoopbackTask = nil
+                self.oauthLoopbackServer?.stop()
+                self.oauthLoopbackServer = nil
+                self.oauthStatusText = "Failed to start xAI web authentication."
+                self.oauthStatusIsError = true
+            }
+        } catch {
+            self.oauthSigningIn = false
+            self.xaiOAuthAuthorizationContext = nil
             self.oauthLoopbackTask?.cancel()
             self.oauthLoopbackTask = nil
             self.oauthLoopbackServer?.stop()
@@ -910,6 +1186,7 @@ struct LLMProviderEditorSheet: View {
             self.oauthSigningIn = false
             self.oauthSession = nil
             self.oauthAuthorizationContext = nil
+            self.xaiOAuthAuthorizationContext = nil
             self.oauthLoopbackTask?.cancel()
             self.oauthLoopbackTask = nil
             self.oauthLoopbackServer?.stop()
@@ -967,7 +1244,96 @@ struct LLMProviderEditorSheet: View {
             self.applyOAuthSubscriptionDefaults()
             self.oauthStatusText = "OpenAI sign-in succeeded."
             self.oauthStatusIsError = false
-            await self.reloadOpenAIModelCatalog(force: true)
+            await self.reloadOAuthModelCatalog(force: true)
+        } catch {
+            self.oauthStatusText = error.localizedDescription
+            self.oauthStatusIsError = true
+        }
+    }
+
+    @MainActor
+    private func handleXaiOAuthCompletionIfNeeded(
+        callbackURL: URL?,
+        error: Error?,
+        context: XaiOAuthAuthorizationContext) async
+    {
+        guard !self.oauthCompletionHandled else { return }
+        self.oauthCompletionHandled = true
+        await self.handleXaiOAuthCompletion(
+            callbackURL: callbackURL,
+            error: error,
+            context: context)
+    }
+
+    @MainActor
+    private func handleXaiOAuthCompletion(
+        callbackURL: URL?,
+        error: Error?,
+        context: XaiOAuthAuthorizationContext) async
+    {
+        defer {
+            self.oauthSigningIn = false
+            self.oauthSession = nil
+            self.oauthAuthorizationContext = nil
+            self.xaiOAuthAuthorizationContext = nil
+            self.oauthLoopbackTask?.cancel()
+            self.oauthLoopbackTask = nil
+            self.oauthLoopbackServer?.stop()
+            self.oauthLoopbackServer = nil
+        }
+
+        if let authError = error as? ASWebAuthenticationSessionError,
+           authError.code == .canceledLogin
+        {
+            self.oauthStatusText = "xAI sign-in canceled."
+            self.oauthStatusIsError = true
+            return
+        }
+        if let error {
+            self.oauthStatusText = error.localizedDescription
+            self.oauthStatusIsError = true
+            return
+        }
+        guard let callbackURL else {
+            self.oauthStatusText = "xAI sign-in did not return a callback URL."
+            self.oauthStatusIsError = true
+            return
+        }
+
+        let parsed = XaiOAuthClient.parseAuthorizationCallback(callbackURL)
+        guard parsed.state == context.state else {
+            self.oauthStatusText = XaiOAuthClientError.stateMismatch.localizedDescription
+            self.oauthStatusIsError = true
+            return
+        }
+        if let callbackError = parsed.error,
+           !callbackError.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            self.oauthStatusText = XaiOAuthClientError.callbackAuthorizationFailed(
+                code: callbackError,
+                description: parsed.errorDescription).localizedDescription
+            self.oauthStatusIsError = true
+            return
+        }
+        guard let code = parsed.code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            self.oauthStatusText = XaiOAuthClientError.callbackMissingCode.localizedDescription
+            self.oauthStatusIsError = true
+            return
+        }
+
+        do {
+            let tokens = try await XaiOAuthClient.exchangeCode(
+                code: code,
+                verifier: context.verifier)
+            self.authMode = .xAIOAuthSub
+            self.apiKey = tokens.accessToken
+            self.oauthRefreshToken = tokens.refreshToken
+            self.oauthAccessExpiresAtMs = tokens.expiresAtMs
+            self.oauthAccountID = tokens.accountID
+            self.applyOAuthSubscriptionDefaults()
+            self.oauthStatusText = "GrokAuth succeeded."
+            self.oauthStatusIsError = false
+            await self.reloadOAuthModelCatalog(force: true)
         } catch {
             self.oauthStatusText = error.localizedDescription
             self.oauthStatusIsError = true

@@ -500,7 +500,7 @@ private struct LLMSetupPromptSheet: View {
                 Text(
                     "\(self.appName) needs an LLM provider. "
                         + "Tap the gear icon in the top bar to open Settings, then choose provider, "
-                        + "base URL, auth (API key or OpenAI-OAuth-sub), and model, then tap Save, Restart & Test.")
+                        + "base URL, auth (API key or OAuth), and model, then tap Save, Restart & Test.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 

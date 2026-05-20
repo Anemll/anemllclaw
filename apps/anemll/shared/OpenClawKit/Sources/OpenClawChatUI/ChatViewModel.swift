@@ -16,6 +16,8 @@ private let chatUILogger = Logger(subsystem: "ai.openclaw", category: "OpenClawC
 @Observable
 public final class OpenClawChatViewModel {
     private static let completedSendStatuses: Set<String> = ["completed", "done", "final", "ok", "success", "succeeded"]
+    private static let maxDisplayTextCharacters = 12000
+    private static let maxIdentityTextFingerprintCharacters = 2048
 
     public private(set) var messages: [OpenClawChatMessage] = []
     public var input: String = ""
@@ -126,6 +128,50 @@ public final class OpenClawChatViewModel {
         }
     }
 
+    public func renameSession(key: String, displayName: String) async throws {
+        try await self.transport.renameSession(sessionKey: key, displayName: displayName)
+        await self.fetchSessions(limit: nil)
+    }
+
+    public func updateSessionSettings(
+        key: String, preferredProviderID: String?, thinkingLevel: String?) async throws
+    {
+        try await self.transport.updateSessionSettings(
+            sessionKey: key,
+            preferredProviderID: preferredProviderID,
+            thinkingLevel: thinkingLevel)
+        await self.fetchSessions(limit: nil)
+
+        // Apply immediately if the edited session is the current one.
+        if key == self.sessionKey {
+            if let level = thinkingLevel {
+                self.thinkingLevel = level
+            }
+        }
+    }
+
+    /// Update the current session's reasoning level (from the toolbar picker).
+    /// Mutates the published property immediately and persists to the gateway
+    /// so the level survives a relaunch. Server-side, the partial-update is
+    /// merged with existing meta so other per-session settings are preserved.
+    public func setThinkingLevel(_ level: String) {
+        guard self.thinkingLevel != level else { return }
+        self.thinkingLevel = level
+        let key = self.sessionKey
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.transport.updateSessionSettings(
+                    sessionKey: key,
+                    preferredProviderID: nil,
+                    thinkingLevel: level)
+                await self.fetchSessions(limit: nil)
+            } catch {
+                // Best-effort: leave the in-memory level set even if persist fails.
+            }
+        }
+    }
+
     /// Clear all messages in the current session without deleting the session itself.
     public func clearCurrentSession() async throws {
         try await self.transport.deleteSession(sessionKey: self.sessionKey)
@@ -205,9 +251,9 @@ public final class OpenClawChatViewModel {
                 previous: self.messages,
                 incoming: Self.decodeMessages(payload.messages ?? []))
             self.sessionId = payload.sessionId
-            if let level = Self.normalizedThinkingLevel(payload.thinkingLevel) {
-                self.thinkingLevel = level
-            }
+            // Always set thinking level on session switch so a previous session's level
+            // doesn't leak into the new one.
+            self.thinkingLevel = Self.normalizedThinkingLevel(payload.thinkingLevel) ?? "low"
             await self.pollHealthIfNeeded(force: true)
             await self.fetchSessions(limit: 50)
             self.errorText = nil
@@ -221,7 +267,53 @@ public final class OpenClawChatViewModel {
         let decoded = raw.compactMap { item in
             (try? ChatPayloadDecoding.decode(item, as: OpenClawChatMessage.self))
         }
-        return Self.dedupeMessages(decoded)
+        return Self.dedupeMessages(decoded.map(Self.displaySafeMessage))
+    }
+
+    private static func displaySafeMessage(_ message: OpenClawChatMessage) -> OpenClawChatMessage {
+        let content = message.content.map { item in
+            OpenClawChatMessageContent(
+                type: item.type,
+                text: item.text.map(Self.truncateDisplayText),
+                thinking: item.thinking,
+                thinkingSignature: item.thinkingSignature,
+                mimeType: item.mimeType,
+                fileName: item.fileName,
+                content: item.content,
+                id: item.id,
+                name: item.name,
+                arguments: item.arguments)
+        }
+        return OpenClawChatMessage(
+            id: message.id,
+            role: message.role,
+            content: content,
+            timestamp: message.timestamp,
+            toolCallId: message.toolCallId,
+            toolName: message.toolName,
+            usage: message.usage,
+            stopReason: message.stopReason)
+    }
+
+    private static func truncateDisplayText(_ raw: String) -> String {
+        let count = raw.utf16.count
+        guard count > self.maxDisplayTextCharacters else {
+            return raw
+        }
+
+        let marker = "\n\n[...message shortened in chat view for device stability...]\n\n"
+        let safeMax = self.maxDisplayTextCharacters
+        guard safeMax > marker.utf16.count + 2 else {
+            return String(decoding: raw.utf16.prefix(safeMax), as: UTF16.self)
+        }
+
+        let remaining = safeMax - marker.utf16.count
+        let headChars = max(1, remaining / 2)
+        let tailChars = max(1, remaining - headChars)
+        let suffixStart = raw.utf16.index(raw.utf16.endIndex, offsetBy: -tailChars)
+        return String(decoding: raw.utf16.prefix(headChars), as: UTF16.self)
+            + marker
+            + String(decoding: raw.utf16[suffixStart..<raw.utf16.endIndex], as: UTF16.self)
     }
 
     private static func messageIdentityKey(for message: OpenClawChatMessage) -> String? {
@@ -236,7 +328,7 @@ public final class OpenClawChatViewModel {
 
         let contentFingerprint = message.content.map { item in
             let type = (item.type ?? "text").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let text = (item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = Self.textFingerprint((item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
             let id = (item.id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let name = (item.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let fileName = (item.fileName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -309,10 +401,24 @@ public final class OpenClawChatViewModel {
 
     private static func dedupeKey(for message: OpenClawChatMessage) -> String? {
         guard let timestamp = message.timestamp else { return nil }
-        let text = message.content.compactMap(\.text).joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = Self.textFingerprint(
+            message.content.compactMap(\.text).joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines))
         guard !text.isEmpty else { return nil }
         return "\(message.role)|\(timestamp)|\(text)"
+    }
+
+    private static func textFingerprint(_ text: String) -> String {
+        guard !text.isEmpty else { return "" }
+        let utf16Count = text.utf16.count
+        guard utf16Count > self.maxIdentityTextFingerprintCharacters else {
+            return text
+        }
+        let half = max(1, self.maxIdentityTextFingerprintCharacters / 2)
+        let head = String(decoding: text.utf16.prefix(half), as: UTF16.self)
+        let suffixStart = text.utf16.index(text.utf16.endIndex, offsetBy: -half)
+        let tail = String(decoding: text.utf16[suffixStart..<text.utf16.endIndex], as: UTF16.self)
+        return "\(utf16Count):\(head)\u{001D}\(tail)"
     }
 
     private func performSend() async {
@@ -427,8 +533,8 @@ public final class OpenClawChatViewModel {
                 retriesRemaining -= 1
                 retryIndex += 1
                 let retryLabel = "\(retryIndex)/\(maxAutoRetries)"
-                chatUILogger.warning(
-                    "chat.send failed \(error.localizedDescription, privacy: .public); retry \(retryLabel, privacy: .public)")
+                let retryMessage = "chat.send failed \(error.localizedDescription); retry \(retryLabel)"
+                chatUILogger.warning("\(retryMessage, privacy: .public)")
 
                 currentRunId = UUID().uuidString
                 self.pendingRuns.insert(currentRunId)
@@ -509,7 +615,8 @@ public final class OpenClawChatViewModel {
             outputTokens: nil,
             totalTokens: nil,
             model: nil,
-            contextTokens: nil)
+            contextTokens: nil,
+            preferredProviderID: nil)
     }
 
     private func handleTransportEvent(_ evt: OpenClawChatTransportEvent) {

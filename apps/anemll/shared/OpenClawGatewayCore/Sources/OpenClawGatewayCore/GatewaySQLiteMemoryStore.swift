@@ -48,6 +48,28 @@ public struct GatewayMemorySessionSummary: Codable, Sendable, Equatable {
     }
 }
 
+public struct GatewayMemorySessionMeta: Codable, Sendable, Equatable {
+    public let sessionKey: String
+    public let displayName: String?
+    public let preferredProviderID: String?
+    public let thinkingLevel: String?
+    public let updatedMs: Int64
+
+    public init(
+        sessionKey: String,
+        displayName: String?,
+        preferredProviderID: String?,
+        thinkingLevel: String?,
+        updatedMs: Int64)
+    {
+        self.sessionKey = sessionKey
+        self.displayName = displayName
+        self.preferredProviderID = preferredProviderID
+        self.thinkingLevel = thinkingLevel
+        self.updatedMs = updatedMs
+    }
+}
+
 public struct GatewayMemoryDocument: Codable, Sendable, Equatable {
     public let key: String
     public let sourcePath: String?
@@ -202,6 +224,104 @@ public actor GatewaySQLiteMemoryStore {
                     lastActivityMs: lastActivityMs))
         }
         return summaries
+    }
+
+    public func upsertSessionMeta(
+        sessionKey: String,
+        displayName: String?,
+        preferredProviderID: String?,
+        thinkingLevel: String?,
+        updatedMs: Int64 = GatewayCore.currentTimestampMs()) throws
+    {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let key = Self.normalizedSessionKey(sessionKey)
+
+        let sql = """
+            INSERT INTO session_meta (session_key, display_name, preferred_provider_id, thinking_level, updated_ms)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                preferred_provider_id = excluded.preferred_provider_id,
+                thinking_level = excluded.thinking_level,
+                updated_ms = excluded.updated_ms
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText(key, at: 1, statement: statement)
+        self.bindText(displayName, at: 2, statement: statement)
+        self.bindText(preferredProviderID, at: 3, statement: statement)
+        self.bindText(thinkingLevel, at: 4, statement: statement)
+        sqlite3_bind_int64(statement, 5, updatedMs)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+    }
+
+    public func loadSessionMeta(sessionKey: String) throws -> GatewayMemorySessionMeta? {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let key = Self.normalizedSessionKey(sessionKey)
+        let sql = """
+            SELECT session_key, display_name, preferred_provider_id, thinking_level, updated_ms
+            FROM session_meta
+            WHERE session_key = ?
+            LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        self.bindText(key, at: 1, statement: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return Self.readSessionMeta(statement)
+    }
+
+    public func loadAllSessionMeta() throws -> [GatewayMemorySessionMeta] {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let sql = """
+            SELECT session_key, display_name, preferred_provider_id, thinking_level, updated_ms
+            FROM session_meta
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [GatewayMemorySessionMeta] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(Self.readSessionMeta(statement))
+        }
+        return rows
+    }
+
+    public func deleteSessionMeta(sessionKey: String) throws {
+        guard let database = self.database else {
+            throw GatewaySQLiteMemoryStoreError.openFailed("sqlite database not open")
+        }
+        let key = Self.normalizedSessionKey(sessionKey)
+        let sql = "DELETE FROM session_meta WHERE session_key = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
+        defer { sqlite3_finalize(statement) }
+        self.bindText(key, at: 1, statement: statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw GatewaySQLiteMemoryStoreError.statementFailed(Self.lastErrorMessage(database))
+        }
     }
 
     public func deleteTranscripts(sessionKey: String) throws -> Int {
@@ -440,6 +560,16 @@ public actor GatewaySQLiteMemoryStore {
             "CREATE INDEX IF NOT EXISTS idx_workspace_documents_updated ON workspace_documents(updated_ms DESC)",
             database: database)
 
+        try self.execute("""
+            CREATE TABLE IF NOT EXISTS session_meta (
+                session_key TEXT PRIMARY KEY,
+                display_name TEXT,
+                preferred_provider_id TEXT,
+                thinking_level TEXT,
+                updated_ms INTEGER NOT NULL
+            )
+        """, database: database)
+
         do {
             try self.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS transcript_turns_fts
@@ -617,6 +747,15 @@ public actor GatewaySQLiteMemoryStore {
             sourcePath: self.readOptionalText(statement, at: 1),
             content: self.readText(statement, at: 2),
             updatedMs: sqlite3_column_int64(statement, 3))
+    }
+
+    private static func readSessionMeta(_ statement: OpaquePointer?) -> GatewayMemorySessionMeta {
+        GatewayMemorySessionMeta(
+            sessionKey: self.readText(statement, at: 0),
+            displayName: self.readOptionalText(statement, at: 1),
+            preferredProviderID: self.readOptionalText(statement, at: 2),
+            thinkingLevel: self.readOptionalText(statement, at: 3),
+            updatedMs: sqlite3_column_int64(statement, 4))
     }
 
     private static func readText(_ statement: OpaquePointer?, at index: Int32) -> String {

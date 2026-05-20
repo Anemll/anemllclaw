@@ -7,6 +7,7 @@ import Security
 enum SavedLLMProviderAuthMode: String, Codable, Equatable, Sendable {
     case apiKey = "api-key"
     case openAIOAuthSub = "openai-oauth-sub"
+    case xAIOAuthSub = "xai-oauth-sub"
 
     var displayLabel: String {
         switch self {
@@ -14,6 +15,31 @@ enum SavedLLMProviderAuthMode: String, Codable, Equatable, Sendable {
             "API Key"
         case .openAIOAuthSub:
             "OpenAI-OAuth-sub"
+        case .xAIOAuthSub:
+            "GrokAuth"
+        }
+    }
+
+    var isOAuth: Bool {
+        switch self {
+        case .apiKey:
+            false
+        case .openAIOAuthSub, .xAIOAuthSub:
+            true
+        }
+    }
+
+    static func normalized(
+        _ authMode: SavedLLMProviderAuthMode,
+        for provider: GatewayLocalLLMProviderKind) -> SavedLLMProviderAuthMode
+    {
+        switch provider {
+        case .openAICompatible:
+            authMode == .openAIOAuthSub ? .openAIOAuthSub : .apiKey
+        case .grokCompatible:
+            authMode == .xAIOAuthSub ? .xAIOAuthSub : .apiKey
+        case .disabled, .anthropicCompatible, .minimaxCompatible:
+            .apiKey
         }
     }
 }
@@ -181,7 +207,7 @@ enum OpenAIOAuthSubClient {
         session: URLSession = .shared) async throws -> [String]
     {
         if !self.extractAccountID(accessToken: accessToken).isEmpty {
-            return Self.codexModelFallbackIDs
+            return self.codexModelFallbackIDs
         }
 
         var request = URLRequest(url: Self.modelsURL)
@@ -366,6 +392,348 @@ enum OpenAIOAuthSubClient {
     }
 }
 
+struct XaiOAuthAuthorizationContext: Sendable, Equatable {
+    let verifier: String
+    let state: String
+    let url: URL
+}
+
+struct XaiOAuthTokenSet: Sendable, Equatable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAtMs: Int64
+    let accountID: String
+}
+
+enum XaiOAuthClientError: LocalizedError {
+    case cryptoUnavailable(OSStatus)
+    case invalidAuthorizeURL
+    case callbackMissingCode
+    case callbackAuthorizationFailed(code: String, description: String?)
+    case stateMismatch
+    case tokenExchangeFailed(status: Int, message: String)
+    case invalidTokenResponse
+    case modelsFetchFailed(status: Int, message: String)
+    case invalidModelsResponse
+
+    var errorDescription: String? {
+        switch self {
+        case let .cryptoUnavailable(status):
+            return "Failed to generate secure random bytes (status \(status))."
+        case .invalidAuthorizeURL:
+            return "Failed to construct xAI OAuth authorization URL."
+        case .callbackMissingCode:
+            return "xAI OAuth callback did not include an authorization code."
+        case let .callbackAuthorizationFailed(code, description):
+            let normalizedCode = code
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "_", with: " ")
+            if let description,
+               !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                return "xAI OAuth authorization failed (\(normalizedCode)): \(description)"
+            }
+            return "xAI OAuth authorization failed (\(normalizedCode))."
+        case .stateMismatch:
+            return "xAI OAuth callback state did not match the request."
+        case let .tokenExchangeFailed(status, message):
+            let suffix = message.isEmpty ? "" : " \(message)"
+            return "xAI OAuth token request failed (HTTP \(status)).\(suffix)"
+        case .invalidTokenResponse:
+            return "xAI OAuth token response was missing required fields."
+        case let .modelsFetchFailed(status, message):
+            let suffix = message.isEmpty ? "" : " \(message)"
+            return "Fetching xAI models failed (HTTP \(status)).\(suffix)"
+        case .invalidModelsResponse:
+            return "xAI models response format was invalid."
+        }
+    }
+}
+
+enum XaiOAuthClient {
+    static let callbackURLScheme = "http"
+    static let callbackPort: UInt16 = 56121
+    static let callbackPath = "/callback"
+    static let apiBaseURL = "https://api.x.ai/v1"
+    private static let clientID = "b1a00492-073a-47ea-816f-4c329264a828"
+    private static let authorizeURL = URL(string: "https://auth.x.ai/oauth2/authorize")!
+    private static let tokenURL = URL(string: "https://auth.x.ai/oauth2/token")!
+    private static let redirectURI = "http://127.0.0.1:56121/callback"
+    private static let scope = [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "grok-cli:access",
+        "api:access",
+    ].joined(separator: " ")
+    static let modelFallbackIDs = [
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-1-fast",
+        "grok-4-1-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-4-fast",
+        "grok-4.3",
+        "grok-4.3-latest",
+        "grok-4.20-reasoning",
+        "grok-4.20-non-reasoning",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-multi-agent",
+        "grok-4.20-multi-agent-0309",
+        "grok-latest",
+    ]
+
+    static func makeAuthorizationContext(referrer: String = "openclaw") throws -> XaiOAuthAuthorizationContext {
+        let verifier = try self.randomVerifier()
+        let challenge = self.sha256Base64URL(verifier)
+        let state = try self.randomHex(bytes: 16)
+        let nonce = try self.randomHex(bytes: 16)
+
+        var components = URLComponents(url: Self.authorizeURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: Self.clientID),
+            URLQueryItem(name: "redirect_uri", value: Self.redirectURI),
+            URLQueryItem(name: "scope", value: Self.scope),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "nonce", value: nonce),
+            URLQueryItem(name: "plan", value: "generic"),
+            URLQueryItem(name: "referrer", value: referrer),
+        ]
+        guard let url = components?.url else {
+            throw XaiOAuthClientError.invalidAuthorizeURL
+        }
+        return XaiOAuthAuthorizationContext(verifier: verifier, state: state, url: url)
+    }
+
+    static func parseAuthorizationCallback(
+        _ callbackURL: URL) -> (code: String?, state: String?, error: String?, errorDescription: String?)
+    {
+        let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)
+        let code = components?.queryItems?.first(where: { $0.name == "code" })?.value
+        let state = components?.queryItems?.first(where: { $0.name == "state" })?.value
+        let error = components?.queryItems?.first(where: { $0.name == "error" })?.value
+        let errorDescription = components?.queryItems?.first(where: { $0.name == "error_description" })?.value
+        return (code, state, error, errorDescription)
+    }
+
+    static func exchangeCode(
+        code: String,
+        verifier: String,
+        session: URLSession = .shared) async throws -> XaiOAuthTokenSet
+    {
+        let trimmedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCode.isEmpty else {
+            throw XaiOAuthClientError.callbackMissingCode
+        }
+        return try await self.performTokenRequest(
+            parameters: [
+                "grant_type": "authorization_code",
+                "client_id": Self.clientID,
+                "code": trimmedCode,
+                "code_verifier": verifier,
+                "redirect_uri": Self.redirectURI,
+            ],
+            fallbackRefreshToken: nil,
+            session: session)
+    }
+
+    static func refresh(
+        refreshToken: String,
+        session: URLSession = .shared) async throws -> XaiOAuthTokenSet
+    {
+        let trimmed = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await self.performTokenRequest(
+            parameters: [
+                "grant_type": "refresh_token",
+                "refresh_token": trimmed,
+                "client_id": Self.clientID,
+            ],
+            fallbackRefreshToken: trimmed,
+            session: session)
+    }
+
+    static func fetchModelIDs(
+        accessToken: String,
+        session: URLSession = .shared) async throws -> [String]
+    {
+        var request = URLRequest(url: URL(string: "\(Self.apiBaseURL)/models")!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw XaiOAuthClientError.invalidModelsResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw XaiOAuthClientError.modelsFetchFailed(status: http.statusCode, message: text)
+        }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataEntries = root["data"] as? [Any]
+        else {
+            throw XaiOAuthClientError.invalidModelsResponse
+        }
+        let ids = dataEntries.compactMap { entry -> String? in
+            guard let dict = entry as? [String: Any],
+                  let id = dict["id"] as? String
+            else {
+                return nil
+            }
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return Array(Set(ids)).sorted()
+    }
+
+    static func preferredModelID(from modelIDs: [String]) -> String? {
+        for candidate in self.modelFallbackIDs where modelIDs.contains(candidate) {
+            return candidate
+        }
+        return modelIDs.first
+    }
+
+    private static func performTokenRequest(
+        parameters: [String: String],
+        fallbackRefreshToken: String?,
+        session: URLSession) async throws -> XaiOAuthTokenSet
+    {
+        var request = URLRequest(url: Self.tokenURL)
+        request.httpMethod = "POST"
+        request.httpBody = self.formEncoded(parameters).data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw XaiOAuthClientError.invalidTokenResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let text = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw XaiOAuthClientError.tokenExchangeFailed(status: http.statusCode, message: text)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = json["access_token"] as? String
+        else {
+            throw XaiOAuthClientError.invalidTokenResponse
+        }
+
+        let refreshToken = (json["refresh_token"] as? String) ?? fallbackRefreshToken ?? ""
+        guard !refreshToken.isEmpty else {
+            throw XaiOAuthClientError.invalidTokenResponse
+        }
+
+        let expiresInSeconds = self.readDouble(json["expires_in"]) ?? 0
+        guard expiresInSeconds > 0 else {
+            throw XaiOAuthClientError.invalidTokenResponse
+        }
+
+        let idToken = json["id_token"] as? String
+        let accountID = self.accountLabel(fromIDToken: idToken) ?? "xAI"
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let expiresAtMs = nowMs + Int64(expiresInSeconds * 1000)
+        return XaiOAuthTokenSet(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAtMs: expiresAtMs,
+            accountID: accountID)
+    }
+
+    private static func accountLabel(fromIDToken idToken: String?) -> String? {
+        guard let idToken else { return nil }
+        let segments = idToken.split(separator: ".")
+        guard segments.count == 3,
+              let payloadData = self.decodeBase64URL(String(segments[1])),
+              let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+        else {
+            return nil
+        }
+        for key in ["email", "name", "sub"] {
+            if let value = payload[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func readDouble(_ raw: Any?) -> Double? {
+        if let value = raw as? Double { return value }
+        if let value = raw as? Int { return Double(value) }
+        if let value = raw as? NSNumber { return value.doubleValue }
+        if let value = raw as? String { return Double(value) }
+        return nil
+    }
+
+    private static func formEncoded(_ values: [String: String]) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return values
+            .map { key, value in
+                let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+                let encodedValue = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+                return "\(encodedKey)=\(encodedValue)"
+            }
+            .joined(separator: "&")
+    }
+
+    private static func randomVerifier() throws -> String {
+        let data = try self.randomData(count: 32)
+        return self.base64URL(data)
+    }
+
+    private static func randomHex(bytes count: Int) throws -> String {
+        let data = try self.randomData(count: count)
+        return data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func randomData(count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        guard status == errSecSuccess else {
+            throw XaiOAuthClientError.cryptoUnavailable(status)
+        }
+        return Data(bytes)
+    }
+
+    private static func sha256Base64URL(_ raw: String) -> String {
+        let digest = SHA256.hash(data: Data(raw.utf8))
+        return self.base64URL(Data(digest))
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decodeBase64URL(_ raw: String) -> Data? {
+        var normalized = raw
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        switch normalized.count % 4 {
+        case 0:
+            break
+        case 2:
+            normalized += "=="
+        case 3:
+            normalized += "="
+        default:
+            return nil
+        }
+        return Data(base64Encoded: normalized)
+    }
+}
+
 struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
@@ -401,7 +769,7 @@ struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
         let decodedAuthMode = try c.decodeIfPresent(
             SavedLLMProviderAuthMode.self,
             forKey: .authMode) ?? .apiKey
-        self.authMode = self.provider == .openAICompatible ? decodedAuthMode : .apiKey
+        self.authMode = SavedLLMProviderAuthMode.normalized(decodedAuthMode, for: self.provider)
         self.oauthAccessExpiresAtMs = try c.decodeIfPresent(Int64.self, forKey: .oauthAccessExpiresAtMs)
         self.oauthAccountID = try c.decodeIfPresent(String.self, forKey: .oauthAccountID) ?? ""
         self.apiKey = "" // hydrated from Keychain by LLMProviderStore.load()
@@ -410,7 +778,7 @@ struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        let normalizedAuthMode = self.provider == .openAICompatible ? self.authMode : .apiKey
+        let normalizedAuthMode = SavedLLMProviderAuthMode.normalized(self.authMode, for: self.provider)
         try c.encode(self.id, forKey: .id)
         try c.encode(self.name, forKey: .name)
         try c.encode(self.provider, forKey: .provider)
@@ -420,10 +788,10 @@ struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
         try c.encode(self.transport, forKey: .transport)
         try c.encode(normalizedAuthMode, forKey: .authMode)
         try c.encodeIfPresent(
-            normalizedAuthMode == .openAIOAuthSub ? self.oauthAccessExpiresAtMs : nil,
+            normalizedAuthMode.isOAuth ? self.oauthAccessExpiresAtMs : nil,
             forKey: .oauthAccessExpiresAtMs)
         try c.encode(
-            normalizedAuthMode == .openAIOAuthSub ? self.oauthAccountID : "",
+            normalizedAuthMode.isOAuth ? self.oauthAccountID : "",
             forKey: .oauthAccountID)
         // apiKey intentionally omitted — lives in Keychain
         // oauthRefreshToken intentionally omitted — lives in Keychain
@@ -451,7 +819,7 @@ struct SavedLLMProvider: Codable, Identifiable, Equatable, Sendable {
         self.model = model
         self.toolCallingMode = toolCallingMode
         self.transport = transport
-        self.authMode = provider == .openAICompatible ? authMode : .apiKey
+        self.authMode = SavedLLMProviderAuthMode.normalized(authMode, for: provider)
         self.oauthAccessExpiresAtMs = oauthAccessExpiresAtMs
         self.oauthAccountID = oauthAccountID
         self.oauthRefreshToken = oauthRefreshToken
@@ -588,8 +956,7 @@ enum LLMProviderStore {
 
             let refreshToken = provider.oauthRefreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
             let refreshAccount = Self.oauthRefreshAccount(forProviderID: provider.id)
-            if provider.provider == .openAICompatible,
-               provider.authMode == .openAIOAuthSub,
+            if provider.authMode.isOAuth,
                !refreshToken.isEmpty
             {
                 _ = KeychainStore.saveString(refreshToken, service: Self.keychainService, account: refreshAccount)
@@ -604,8 +971,8 @@ enum LLMProviderStore {
 
     /// Remove a provider's Keychain entry when the provider is deleted.
     static func deleteAPIKey(forProviderID id: String) {
-        _ = KeychainStore.delete(service: Self.keychainService, account: id)
-        _ = KeychainStore.delete(service: Self.keychainService, account: Self.oauthRefreshAccount(forProviderID: id))
+        _ = KeychainStore.delete(service: self.keychainService, account: id)
+        _ = KeychainStore.delete(service: self.keychainService, account: self.oauthRefreshAccount(forProviderID: id))
     }
 
     static func activeID(defaults: UserDefaults = .standard) -> String? {
@@ -691,10 +1058,8 @@ enum LLMProviderStore {
     }
 
     @MainActor
-    static func refreshOpenAIOAuthIfNeeded(_ provider: SavedLLMProvider) async throws -> SavedLLMProvider {
-        guard provider.provider == .openAICompatible,
-              provider.authMode == .openAIOAuthSub
-        else {
+    static func refreshOAuthIfNeeded(_ provider: SavedLLMProvider) async throws -> SavedLLMProvider {
+        guard provider.authMode.isOAuth else {
             return provider
         }
 
@@ -704,7 +1069,7 @@ enum LLMProviderStore {
         }
 
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let refreshSkewMs: Int64 = 90_000
+        let refreshSkewMs: Int64 = 90000
         if let expiry = provider.oauthAccessExpiresAtMs,
            expiry > nowMs + refreshSkewMs,
            !provider.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -712,7 +1077,25 @@ enum LLMProviderStore {
             return provider
         }
 
-        let refreshed = try await OpenAIOAuthSubClient.refresh(refreshToken: refreshToken)
+        let refreshed: (accessToken: String, refreshToken: String, expiresAtMs: Int64, accountID: String)
+        switch provider.authMode {
+        case .openAIOAuthSub:
+            let tokenSet = try await OpenAIOAuthSubClient.refresh(refreshToken: refreshToken)
+            refreshed = (
+                accessToken: tokenSet.accessToken,
+                refreshToken: tokenSet.refreshToken,
+                expiresAtMs: tokenSet.expiresAtMs,
+                accountID: tokenSet.accountID)
+        case .xAIOAuthSub:
+            let tokenSet = try await XaiOAuthClient.refresh(refreshToken: refreshToken)
+            refreshed = (
+                accessToken: tokenSet.accessToken,
+                refreshToken: tokenSet.refreshToken,
+                expiresAtMs: tokenSet.expiresAtMs,
+                accountID: tokenSet.accountID)
+        case .apiKey:
+            return provider
+        }
         var updated = provider
         updated.apiKey = refreshed.accessToken
         updated.oauthRefreshToken = refreshed.refreshToken
@@ -721,8 +1104,12 @@ enum LLMProviderStore {
         return updated
     }
 
+    static func refreshOpenAIOAuthIfNeeded(_ provider: SavedLLMProvider) async throws -> SavedLLMProvider {
+        try await self.refreshOAuthIfNeeded(provider)
+    }
+
     private static func oauthRefreshAccount(forProviderID id: String) -> String {
-        "\(id)\(Self.refreshTokenAccountSuffix)"
+        "\(id)\(self.refreshTokenAccountSuffix)"
     }
 }
 

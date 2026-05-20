@@ -459,7 +459,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             }
         }
 
-        if self.kind == .openAICompatible, self.isOpenAICodexBackend {
+        if self.shouldUseResponsesAPI {
             let response = try await self.completeViaOpenAIResponsesHTTP(
                 apiKey: apiKey,
                 payloadMessages: payloadMessages,
@@ -540,7 +540,14 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         guard !request.messages.isEmpty else {
             throw GatewayLocalLLMProviderError.invalidRequest("at least one message is required")
         }
-        if self.kind == .openAICompatible, self.isOpenAICodexBackend {
+        if self.shouldUseResponsesAPI {
+            if self.kind == .grokCompatible,
+               Self.isGrokMultiAgentModel(self.model),
+               !request.tools.isEmpty
+            {
+                throw GatewayLocalLLMProviderError.invalidResponse(
+                    "grok multi-agent does not support client-side tools; use plain Responses API")
+            }
             let toolNameMap = Self.makeOpenAIToolNameMap(toolNames: request.tools.map(\.name))
             let reverseToolNameMap = Dictionary(uniqueKeysWithValues: toolNameMap.map { ($1, $0) })
             var payloadMessages: [[String: Any]] = []
@@ -638,11 +645,42 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             }
             let msgRoles = payloadMessages.compactMap { $0["role"] as? String }
             Self.trace(
-                "openai codex completeWithTools"
+                "\(self.responsesTraceLabel) completeWithTools"
                     + " tools=[\(toolNames.joined(separator: ", "))]"
                     + " messages=\(payloadMessages.count)"
                     + " roles=[\(msgRoles.joined(separator: ", "))]"
                     + " hasImage=\(hasImage)")
+            if self.shouldUseOpenAIResponsesWebSocket {
+                do {
+                    let response = try await self.completeViaOpenAIResponsesWebSocket(
+                        apiKey: apiKey,
+                        payloadMessages: payloadMessages,
+                        thinkingLevel: request.thinkingLevel,
+                        tools: responsesTools,
+                        reverseToolNameMap: reverseToolNameMap)
+                    Self.trace(
+                        "\(self.responsesTraceLabel) websocket completeWithTools result"
+                            + " textLen=\(response.text.count)"
+                            + " toolCalls=\(response.toolCalls.count)"
+                            +
+                            (response.toolCalls
+                                .isEmpty ? "" : " calls=[\(response.toolCalls.map(\.name).joined(separator: ", "))]"))
+                    return GatewayLocalLLMToolResponse(
+                        text: response.text,
+                        toolCalls: response.toolCalls,
+                        model: self.model,
+                        provider: self.kind,
+                        transport: .websocket,
+                        usageInputTokens: response.usageInputTokens,
+                        usageOutputTokens: response.usageOutputTokens,
+                        requestBodyBytes: response.requestBodyBytes)
+                } catch {
+                    Self.trace(
+                        "\(self.responsesTraceLabel) websocket completeWithTools failed"
+                            + " reason=\(Self.errorLogMessage(error))"
+                            + " fallback=http")
+                }
+            }
             let response = try await self.completeViaOpenAIResponsesHTTP(
                 apiKey: apiKey,
                 payloadMessages: payloadMessages,
@@ -650,10 +688,12 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 tools: responsesTools,
                 reverseToolNameMap: reverseToolNameMap)
             Self.trace(
-                "openai codex completeWithTools result"
+                "\(self.responsesTraceLabel) completeWithTools result"
                     + " textLen=\(response.text.count)"
                     + " toolCalls=\(response.toolCalls.count)"
-                    + (response.toolCalls.isEmpty ? "" : " calls=[\(response.toolCalls.map(\.name).joined(separator: ", "))]"))
+                    +
+                    (response.toolCalls
+                        .isEmpty ? "" : " calls=[\(response.toolCalls.map(\.name).joined(separator: ", "))]"))
             return GatewayLocalLLMToolResponse(
                 text: response.text,
                 toolCalls: response.toolCalls,
@@ -663,10 +703,6 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 usageInputTokens: response.usageInputTokens,
                 usageOutputTokens: response.usageOutputTokens,
                 requestBodyBytes: response.requestBodyBytes)
-        }
-        if self.shouldUseOpenAIResponsesWebSocket, !self.didLogWebSocketToolBypass {
-            Self.trace("openai websocket transport configured but tool-calling requests use HTTP chat/completions")
-            self.didLogWebSocketToolBypass = true
         }
         let toolNameMap = Self.makeOpenAIToolNameMap(toolNames: request.tools.map(\.name))
         let reverseToolNameMap = Dictionary(uniqueKeysWithValues: toolNameMap.map { ($1, $0) })
@@ -850,8 +886,28 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         case topLevelResponseCreate = "top-level"
     }
 
+    private var shouldUseResponsesAPI: Bool {
+        self.kind == .grokCompatible
+            || (self.kind == .openAICompatible && self.isOpenAICodexBackend)
+    }
+
     private var shouldUseOpenAIResponsesWebSocket: Bool {
-        self.transport == .websocket && self.kind == .openAICompatible
+        self.transport == .websocket && self.shouldUseResponsesAPI
+    }
+
+    private var shouldEnableResponsesParallelToolCalls: Bool {
+        self.isOpenAICodexBackend || self.kind == .grokCompatible
+    }
+
+    private var responsesTraceLabel: String {
+        switch self.kind {
+        case .grokCompatible:
+            "xai responses"
+        case .openAICompatible:
+            self.isOpenAICodexBackend ? "openai codex" : "openai responses"
+        case .disabled, .anthropicCompatible, .minimaxCompatible:
+            "responses"
+        }
     }
 
     private var isOpenAICodexBackend: Bool {
@@ -874,16 +930,23 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     private func completeViaOpenAIResponsesWebSocket(
         apiKey: String,
         payloadMessages: [[String: Any]],
-        thinkingLevel: String?) async throws -> OpenAIResponsesWebSocketResult
+        thinkingLevel: String?,
+        tools: [[String: Any]] = [],
+        reverseToolNameMap: [String: String] = [:]) async throws -> OpenAIResponsesWebSocketResult
     {
-        let responsePayload = try self.makeOpenAIResponsesPayload(
+        var responsePayload = try self.makeOpenAIResponsesPayload(
             payloadMessages: payloadMessages,
-            thinkingLevel: thinkingLevel)
+            thinkingLevel: thinkingLevel,
+            tools: tools)
+        if self.kind == .grokCompatible {
+            responsePayload.removeValue(forKey: "stream")
+        }
         do {
             return try await self.sendOpenAIResponsesWebSocketRequest(
                 apiKey: apiKey,
                 responsePayload: responsePayload,
-                payloadStyle: .topLevelResponseCreate)
+                payloadStyle: .topLevelResponseCreate,
+                reverseToolNameMap: reverseToolNameMap)
         } catch {
             guard Self.shouldRetryWebSocketWithNestedPayload(after: error) else {
                 throw error
@@ -892,7 +955,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             return try await self.sendOpenAIResponsesWebSocketRequest(
                 apiKey: apiKey,
                 responsePayload: responsePayload,
-                payloadStyle: .nestedResponseCreate)
+                payloadStyle: .nestedResponseCreate,
+                reverseToolNameMap: reverseToolNameMap)
         }
     }
 
@@ -938,7 +1002,9 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         if let statusCode = httpResponse?.statusCode, !(200...299).contains(statusCode) {
             // Collect error body from stream.
             var errorChunks: [UInt8] = []
-            for try await byte in bytes { errorChunks.append(byte) }
+            for try await byte in bytes {
+                errorChunks.append(byte)
+            }
             let errorData = Data(errorChunks)
             throw GatewayLocalLLMProviderError.httpError(
                 status: statusCode,
@@ -950,7 +1016,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         var completedResponse: [String: Any]?
         var finalUsage: [String: Any]?
 
-        for try await line in bytes.lines {
+        sseLoop: for try await line in bytes.lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("data: ") else { continue }
             let jsonStr = String(trimmed.dropFirst(6))
@@ -964,9 +1030,10 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 accumulated: &accumulated,
                 completedResponse: &completedResponse)
             switch outcome {
-            case .completed(let usage):
+            case let .completed(usage):
                 finalUsage = usage
-            case .failed(let message):
+                break sseLoop
+            case let .failed(message):
                 throw GatewayLocalLLMProviderError.invalidResponse(
                     "openai responses stream error: \(message)")
             case .none:
@@ -1006,7 +1073,8 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     private func sendOpenAIResponsesWebSocketRequest(
         apiKey: String,
         responsePayload: [String: Any],
-        payloadStyle: OpenAIResponsesWebSocketPayloadStyle) async throws -> OpenAIResponsesWebSocketResult
+        payloadStyle: OpenAIResponsesWebSocketPayloadStyle,
+        reverseToolNameMap: [String: String] = [:]) async throws -> OpenAIResponsesWebSocketResult
     {
         let payload = Self.makeOpenAIResponsesWebSocketPayload(
             responsePayload: responsePayload,
@@ -1026,7 +1094,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 to: &request,
                 apiKey: apiKey,
                 webSocket: true)
-        } else {
+        } else if self.kind == .openAICompatible {
             request.setValue(Self.openAIResponsesWebSocketBetaHeader, forHTTPHeaderField: "OpenAI-Beta")
         }
 
@@ -1070,7 +1138,10 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 throw GatewayLocalLLMProviderError.invalidResponse(message)
             case let .completed(usage):
                 let text = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else {
+                let toolCalls = Self.extractOpenAIResponsesToolCalls(
+                    from: completedResponse ?? event,
+                    restoreNamesUsing: reverseToolNameMap)
+                guard !text.isEmpty || !toolCalls.isEmpty else {
                     throw GatewayLocalLLMProviderError.invalidResponse(
                         "openai websocket response content is empty")
                 }
@@ -1078,6 +1149,7 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 let output = Self.readInt(usage?["output_tokens"]) ?? Self.readInt(usage?["completion_tokens"])
                 return OpenAIResponsesWebSocketResult(
                     text: text,
+                    toolCalls: toolCalls,
                     usageInputTokens: input,
                     usageOutputTokens: output,
                     requestBodyBytes: bodyBytes)
@@ -1131,29 +1203,41 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
             "input": input,
             "stream": true,
         ]
+        if self.isOpenAICodexBackend || self.kind == .grokCompatible {
+            payload["store"] = false
+        }
         if self.isOpenAICodexBackend {
             payload["instructions"] = Self.resolveOpenAICodexInstructions(from: payloadMessages)
-            payload["store"] = false
             payload["text"] = ["verbosity": "medium"]
-            if !tools.isEmpty {
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+        }
+        if !tools.isEmpty {
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+            if self.shouldEnableResponsesParallelToolCalls {
                 payload["parallel_tool_calls"] = true
             }
         }
-        if !tools.isEmpty, !self.isOpenAICodexBackend {
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        }
-        if let effort = Self.resolveReasoningEffort(
-            thinkingLevel,
-            preferXHighForCodex: self.isOpenAICodexBackend)
-        {
-            payload["reasoning"] = [
-                "effort": effort,
-            ]
+        if let effort = self.resolveResponsesReasoningEffort(thinkingLevel) {
+            if self.kind == .grokCompatible {
+                if Self.grokSupportsReasoningEffort(self.model) {
+                    payload["reasoning"] = ["effort": effort]
+                }
+            } else {
+                payload["reasoning"] = [
+                    "effort": effort,
+                ]
+            }
         }
         return payload
+    }
+
+    private func resolveResponsesReasoningEffort(_ thinkingLevel: String?) -> String? {
+        if self.kind == .grokCompatible {
+            return Self.resolveGrokReasoningEffort(thinkingLevel, model: self.model)
+        }
+        return Self.resolveReasoningEffort(
+            thinkingLevel,
+            preferXHighForCodex: self.isOpenAICodexBackend)
     }
 
     private static func mapOpenAIMessagesToResponsesInput(
@@ -1400,11 +1484,10 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         from object: [String: Any],
         restoreNamesUsing reverseToolNameMap: [String: String] = [:]) -> [GatewayLocalLLMToolCall]
     {
-        let root: [String: Any]
-        if let response = object["response"] as? [String: Any] {
-            root = response
+        let root: [String: Any] = if let response = object["response"] as? [String: Any] {
+            response
         } else {
-            root = object
+            object
         }
         guard let output = root["output"] as? [[String: Any]] else {
             return []
@@ -1507,20 +1590,19 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
     }
 
     private static func errorLogMessage(_ error: Error) -> String {
-        let text: String
-        if let providerError = error as? GatewayLocalLLMProviderError {
+        let text: String = if let providerError = error as? GatewayLocalLLMProviderError {
             switch providerError {
             case .notConfigured:
-                text = "notConfigured"
+                "notConfigured"
             case let .invalidRequest(message):
-                text = "invalidRequest: \(message)"
+                "invalidRequest: \(message)"
             case let .httpError(status, message):
-                text = "httpError(\(status)): \(message)"
+                "httpError(\(status)): \(message)"
             case let .invalidResponse(message):
-                text = "invalidResponse: \(message)"
+                "invalidResponse: \(message)"
             }
         } else {
-            text = error.localizedDescription
+            error.localizedDescription
         }
         return text
             .replacingOccurrences(of: "\n", with: " ")
@@ -1560,6 +1642,67 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
         default:
             return nil
         }
+    }
+
+    private static func grokSupportsReasoningEffort(_ model: String) -> Bool {
+        let normalized = self.normalizedGrokModelID(model)
+        return normalized.hasPrefix("grok-3-mini")
+            || normalized.hasPrefix("grok-4.20-multi-agent")
+            || normalized.hasPrefix("grok-4.3")
+    }
+
+    private static func resolveGrokReasoningEffort(_ thinkingLevel: String?, model: String) -> String? {
+        let raw = thinkingLevel?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let value = raw, !value.isEmpty else {
+            return nil
+        }
+        if self.isGrokMultiAgentModel(model) {
+            switch value {
+            case "high":
+                return "high"
+            case "xhigh", "x-high", "extra-high", "extra_high":
+                return "xhigh"
+            case "medium", "mid":
+                return "medium"
+            case "low", "minimal", "default", "off", "none", "disable", "disabled":
+                return "low"
+            default:
+                return nil
+            }
+        }
+        guard self.grokSupportsReasoningEffort(model) else {
+            return nil
+        }
+        switch value {
+        case "off", "none", "disable", "disabled":
+            return "none"
+        case "minimal", "low", "default":
+            return "low"
+        case "medium", "mid":
+            return "medium"
+        case "high":
+            return "high"
+        case "xhigh", "x-high", "extra-high", "extra_high":
+            return "high"
+        default:
+            return nil
+        }
+    }
+
+    private static func isGrokMultiAgentModel(_ model: String) -> Bool {
+        self.normalizedGrokModelID(model).hasPrefix("grok-4.20-multi-agent")
+    }
+
+    private static func normalizedGrokModelID(_ model: String) -> String {
+        var normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let slashIndex = normalized.lastIndex(of: "/") {
+            normalized = String(normalized[normalized.index(after: slashIndex)...])
+        }
+        return normalized
     }
 
     private var shouldRemapSystemRole: Bool {

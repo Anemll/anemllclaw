@@ -150,7 +150,14 @@ struct OpenClawChatComposer: View {
     }
 
     private var thinkingPicker: some View {
-        Picker("Thinking", selection: self.$viewModel.thinkingLevel) {
+        // Custom binding: writes go through setThinkingLevel(_:) so the
+        // chosen level is persisted to the per-session meta. Reads stay as
+        // a plain getter, so programmatic loads (e.g. switching threads)
+        // do not trigger a redundant persist.
+        let binding = Binding<String>(
+            get: { self.viewModel.thinkingLevel },
+            set: { self.viewModel.setThinkingLevel($0) })
+        return Picker("Thinking", selection: binding) {
             Text("Off").tag("off")
             Text("Low").tag("low")
             Text("Medium").tag("medium")

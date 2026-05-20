@@ -322,8 +322,7 @@ struct SettingsTab: View {
                         .font(.body.weight(isActive ? .semibold : .regular))
                         .foregroundStyle(.primary)
                     let modelSuffix = provider.model.isEmpty ? "" : " · \(provider.model)"
-                    let authSuffix = provider.provider == .openAICompatible
-                        && provider.authMode == .openAIOAuthSub ? " · OpenAI-OAuth-sub" : ""
+                    let authSuffix = provider.authMode.isOAuth ? " · \(provider.authMode.displayLabel)" : ""
                     let transportSuffix = provider.transport == .websocket ? " · WebSocket" : ""
                     Text(provider.provider.displayLabel + authSuffix + modelSuffix + transportSuffix)
                         .font(.caption)
@@ -370,12 +369,12 @@ struct SettingsTab: View {
                 + " auth=\(saved.authMode.rawValue)"
                 + " model=\(saved.model)"
                 + " transport=\(saved.transport.rawValue)"
-            print("[AnemllClaw iOS] \(quickTestLogLine)")
+            print("[AnemllClaw \(TVOSLocalGatewayRuntime.platformLogLabel)] \(quickTestLogLine)")
             self.gatewayLogger.info("\(quickTestLogLine, privacy: .public)")
             await self.localGatewayRuntime.probeLocalLLM(prompt: "Who are you?")
             let passed = self.localGatewayRuntime.lastLocalLLMProbeSucceeded == true
             let outcome = passed ? "passed" : "failed"
-            print("[AnemllClaw iOS] llm editor quick test \(outcome)")
+            print("[AnemllClaw \(TVOSLocalGatewayRuntime.platformLogLabel)] llm editor quick test \(outcome)")
             self.gatewayLogger.info("llm editor quick test \(outcome, privacy: .public)")
         }
     }
@@ -386,9 +385,9 @@ struct SettingsTab: View {
 
         if let provider {
             var resolvedProvider = provider
-            if provider.provider == .openAICompatible, provider.authMode == .openAIOAuthSub {
+            if provider.authMode.isOAuth {
                 do {
-                    let refreshed = try await LLMProviderStore.refreshOpenAIOAuthIfNeeded(provider)
+                    let refreshed = try await LLMProviderStore.refreshOAuthIfNeeded(provider)
                     if refreshed != provider {
                         resolvedProvider = refreshed
                         if let index = self.savedProviders.firstIndex(where: { $0.id == refreshed.id }) {
@@ -405,10 +404,19 @@ struct SettingsTab: View {
                     self.gatewayLogger.warning("\(reasonLog, privacy: .public)")
                 }
 
-                if resolvedProvider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                    != OpenAIOAuthSubClient.subscriptionBaseURL
+                let expectedBaseURL: String? = switch resolvedProvider.authMode {
+                case .openAIOAuthSub:
+                    OpenAIOAuthSubClient.subscriptionBaseURL
+                case .xAIOAuthSub:
+                    XaiOAuthClient.apiBaseURL
+                case .apiKey:
+                    nil
+                }
+                if let expectedBaseURL,
+                   resolvedProvider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                   != expectedBaseURL
                 {
-                    resolvedProvider.baseURL = OpenAIOAuthSubClient.subscriptionBaseURL
+                    resolvedProvider.baseURL = expectedBaseURL
                     if let index = self.savedProviders.firstIndex(where: { $0.id == resolvedProvider.id }) {
                         self.savedProviders[index] = resolvedProvider
                     }

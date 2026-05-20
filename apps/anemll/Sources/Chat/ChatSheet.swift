@@ -50,6 +50,7 @@ struct ChatSheet: View {
     @State private var transcriptMessageAnchor: UUID?
     @State private var savedProviders: [SavedLLMProvider] = []
     @State private var activeProviderID: String?
+    @State private var globalProviderID: String?
     @State private var modelSwitching = false
     @State private var dictationManager = ComposerDictationManager()
     private let userAccent: Color?
@@ -116,11 +117,16 @@ struct ChatSheet: View {
                     service: "ai.openclaw.skill.\(service)",
                     account: "api_key")
             }
+            .environment(\.openClawProviderOptions, self.configuredProviders.map {
+                OpenClawProviderOption(id: $0.id, displayName: $0.shortDisplayName)
+            })
             .onAppear {
                 self.viewModel.autoRetryAttemptsOnError = max(0, self.autoRetryAttemptsOnError)
                 LastThreadStore.save(self.viewModel.sessionKey)
                 self.savedProviders = LLMProviderStore.load()
-                self.activeProviderID = LLMProviderStore.activeID()
+                let storedActive = LLMProviderStore.activeID()
+                self.activeProviderID = storedActive
+                self.globalProviderID = storedActive
                 self.dictationManager.voiceWake = self.voiceWake
             }
             .onChange(of: self.autoRetryAttemptsOnError) { _, newValue in
@@ -128,6 +134,10 @@ struct ChatSheet: View {
             }
             .onChange(of: self.viewModel.sessionKey) { _, newValue in
                 LastThreadStore.save(newValue)
+                self.applySessionProvider(for: newValue)
+            }
+            .onChange(of: self.currentSessionProviderID) { _, _ in
+                self.applySessionProvider(for: self.viewModel.sessionKey)
             }
             .onChange(of: self.localGatewayRuntime.lastCameraCapture) { _, capture in
                 guard let capture else { return }
@@ -151,7 +161,9 @@ struct ChatSheet: View {
             }
             .sheet(isPresented: self.$showsSettings, onDismiss: {
                 self.savedProviders = LLMProviderStore.load()
-                self.activeProviderID = LLMProviderStore.activeID()
+                let storedActive = LLMProviderStore.activeID()
+                self.activeProviderID = storedActive
+                self.globalProviderID = storedActive
                 self.settingsAutoAddProvider = false
             }) {
                 SettingsTab(autoAddProvider: self.settingsAutoAddProvider)
@@ -284,6 +296,7 @@ struct ChatSheet: View {
         Menu {
             ForEach(self.configuredProviders) { provider in
                 Button {
+                    self.globalProviderID = provider.id
                     Task { await self.activateProvider(provider) }
                 } label: {
                     if provider.id == self.activeProviderID {
@@ -310,9 +323,9 @@ struct ChatSheet: View {
         defer { self.modelSwitching = false }
 
         var resolvedProvider = provider
-        if provider.provider == .openAICompatible, provider.authMode == .openAIOAuthSub {
+        if provider.authMode.isOAuth {
             do {
-                let refreshed = try await LLMProviderStore.refreshOpenAIOAuthIfNeeded(provider)
+                let refreshed = try await LLMProviderStore.refreshOAuthIfNeeded(provider)
                 if refreshed != provider {
                     resolvedProvider = refreshed
                     if let index = self.savedProviders.firstIndex(where: { $0.id == refreshed.id }) {
@@ -321,7 +334,29 @@ struct ChatSheet: View {
                     LLMProviderStore.save(self.savedProviders)
                 }
             } catch {
-                print("[AnemllClaw iOS] openai oauth refresh failed: \(error.localizedDescription)")
+                let platform = TVOSLocalGatewayRuntime.platformLogLabel
+                let message = "[AnemllClaw \(platform)] "
+                    + "oauth refresh failed: \(error.localizedDescription)"
+                print(message)
+            }
+
+            let expectedBaseURL: String? = switch resolvedProvider.authMode {
+            case .openAIOAuthSub:
+                OpenAIOAuthSubClient.subscriptionBaseURL
+            case .xAIOAuthSub:
+                XaiOAuthClient.apiBaseURL
+            case .apiKey:
+                nil
+            }
+            if let expectedBaseURL,
+               resolvedProvider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+               != expectedBaseURL
+            {
+                resolvedProvider.baseURL = expectedBaseURL
+                if let index = self.savedProviders.firstIndex(where: { $0.id == resolvedProvider.id }) {
+                    self.savedProviders[index] = resolvedProvider
+                }
+                LLMProviderStore.save(self.savedProviders)
             }
         }
 
@@ -336,6 +371,32 @@ struct ChatSheet: View {
         settings.localLLMTransport = resolvedProvider.transport
         settings.localLLMToolCallingMode = resolvedProvider.toolCallingMode
         await self.localGatewayRuntime.applyControlPlaneSettings(settings)
+    }
+
+    private var currentSessionProviderID: String? {
+        self.viewModel.sessions.first(where: { $0.key == self.viewModel.sessionKey })?.preferredProviderID
+    }
+
+    private func applySessionProvider(for sessionKey: String) {
+        let session = self.viewModel.sessions.first(where: { $0.key == sessionKey })
+        let boundID = session?.preferredProviderID
+
+        if let boundID,
+           boundID != self.activeProviderID,
+           let provider = self.savedProviders.first(where: { $0.id == boundID }),
+           provider.isConfigured
+        {
+            // Thread has a bound provider — activate it (don't touch globalProviderID).
+            Task { await self.activateProvider(provider) }
+        } else if boundID == nil,
+                  let globalID = self.globalProviderID,
+                  globalID != self.activeProviderID,
+                  let provider = self.savedProviders.first(where: { $0.id == globalID }),
+                  provider.isConfigured
+        {
+            // Thread is "Auto" — restore the global provider.
+            Task { await self.activateProvider(provider) }
+        }
     }
 }
 

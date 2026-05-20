@@ -491,7 +491,8 @@ extension TestChatTransportState {
                     outputTokens: nil,
                     totalTokens: nil,
                     model: nil,
-                    contextTokens: nil),
+                    contextTokens: nil,
+                    preferredProviderID: nil),
                 OpenClawChatSessionEntry(
                     key: "main",
                     kind: nil,
@@ -510,7 +511,8 @@ extension TestChatTransportState {
                     outputTokens: nil,
                     totalTokens: nil,
                     model: nil,
-                    contextTokens: nil),
+                    contextTokens: nil,
+                    preferredProviderID: nil),
                 OpenClawChatSessionEntry(
                     key: "recent-2",
                     kind: nil,
@@ -529,7 +531,8 @@ extension TestChatTransportState {
                     outputTokens: nil,
                     totalTokens: nil,
                     model: nil,
-                    contextTokens: nil),
+                    contextTokens: nil,
+                    preferredProviderID: nil),
                 OpenClawChatSessionEntry(
                     key: "old-1",
                     kind: nil,
@@ -548,7 +551,8 @@ extension TestChatTransportState {
                     outputTokens: nil,
                     totalTokens: nil,
                     model: nil,
-                    contextTokens: nil),
+                    contextTokens: nil,
+                    preferredProviderID: nil),
             ])
 
         let transport = TestChatTransport(
@@ -594,7 +598,8 @@ extension TestChatTransportState {
                     outputTokens: nil,
                     totalTokens: nil,
                     model: nil,
-                    contextTokens: nil),
+                    contextTokens: nil,
+                    preferredProviderID: nil),
             ])
 
         let transport = TestChatTransport(

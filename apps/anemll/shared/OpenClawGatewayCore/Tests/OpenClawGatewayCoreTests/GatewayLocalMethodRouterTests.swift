@@ -135,7 +135,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
                 model: self.model,
                 provider: self.kind,
                 usageInputTokens: 8,
-            usageOutputTokens: 5)
+                usageOutputTokens: 5)
         }
     }
 
@@ -284,6 +284,41 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
                 "restoredFileCount": .integer(0),
                 "restoredDefaultsCount": .integer(0),
                 "restoredKeychainCount": .integer(0),
+            ])
+        }
+
+        func dreamStatus() async throws -> GatewayJSONValue {
+            .object([
+                "enabled": .bool(false),
+                "state": .string("awake"),
+            ])
+        }
+
+        func dreamEnter() async throws -> GatewayJSONValue {
+            .object([
+                "ok": .bool(true),
+                "state": .string("dreaming"),
+            ])
+        }
+
+        func dreamWake() async throws -> GatewayJSONValue {
+            .object([
+                "ok": .bool(true),
+                "state": .string("awake"),
+            ])
+        }
+
+        func dreamIdle() async throws -> GatewayJSONValue {
+            .object([
+                "ok": .bool(true),
+                "state": .string("idle"),
+            ])
+        }
+
+        func dreamReseedTemplates() async throws -> GatewayJSONValue {
+            .object([
+                "ok": .bool(true),
+                "seeded": .integer(0),
             ])
         }
     }
@@ -478,6 +513,53 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
 
         let providerCalls = await llmProvider.observedRequestCount()
         XCTAssertEqual(providerCalls, 1)
+    }
+
+    func testChatHistoryShortensHugeTurnsForDeviceDisplay() async throws {
+        let dbPath = self.temporaryMemoryStorePath()
+        let llmProvider = StubLLMProvider()
+        let config = GatewayLocalMethodRouterConfig(
+            hostLabel: "unit-test",
+            upstreamConfigured: false,
+            llmConfig: GatewayLocalLLMConfig(
+                provider: .openAICompatible,
+                baseURL: URL(string: "https://example.invalid"),
+                apiKey: "test-key",
+                model: "stub-model"),
+            memoryStorePath: dbPath,
+            enableLocalSafeTools: true)
+        let router = try GatewayLocalMethodRouter(config: config, llmProvider: llmProvider)
+
+        let hugeMessage = String(repeating: "a", count: 20000)
+        let chatSend = GatewayRequestFrame(
+            id: "chat-huge-1",
+            method: "chat.send",
+            params: .object([
+                "sessionKey": .string("session-huge"),
+                "message": .string(hugeMessage),
+            ]))
+        let chatResponse = await router.handle(chatSend, nowMs: 1_700_000_001_080)
+        XCTAssertEqual(chatResponse?.ok, true)
+
+        let historyRequest = GatewayRequestFrame(
+            id: "history-huge-1",
+            method: "chat.history",
+            params: .object([
+                "sessionKey": .string("session-huge"),
+                "limit": .integer(10),
+            ]))
+        let historyResponse = await router.handle(historyRequest, nowMs: 1_700_000_001_090)
+        XCTAssertEqual(historyResponse?.ok, true)
+
+        let historyPayload = try self.decodePayload(
+            historyResponse?.payload,
+            as: ChatHistoryPayload.self)
+        let texts = historyPayload?.messages.compactMap(\.content.first?.text) ?? []
+        XCTAssertGreaterThanOrEqual(texts.count, 2)
+        XCTAssertTrue(texts.allSatisfy { $0.utf16.count <= 12000 })
+        XCTAssertGreaterThanOrEqual(
+            texts.count(where: { $0.contains("message shortened in chat view") }),
+            2)
     }
 
     func testChatThinkingLevelPersistsInHistoryAndSessionsList() async throws {
@@ -830,7 +912,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["IDENTITY.md", "USER.md"],
             perFileMaxChars: 500,
-            totalMaxChars: 2_000,
+            totalMaxChars: 2000,
             includeMissingMarkers: false)
         let router = try GatewayLocalMethodRouter(
             config: GatewayLocalMethodRouterConfig(
@@ -875,7 +957,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["MEMORY.md", "memory.md"],
             perFileMaxChars: 500,
-            totalMaxChars: 2_000,
+            totalMaxChars: 2000,
             includeMissingMarkers: false)
         let router = try GatewayLocalMethodRouter(
             config: GatewayLocalMethodRouterConfig(
@@ -941,7 +1023,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["AGENTS.md"],
             perFileMaxChars: 500,
-            totalMaxChars: 2_000,
+            totalMaxChars: 2000,
             includeMissingMarkers: false)
         let router = try GatewayLocalMethodRouter(
             config: GatewayLocalMethodRouterConfig(
@@ -1024,7 +1106,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["AGENTS.md", "MEMORY.md"],
             perFileMaxChars: 300,
-            totalMaxChars: 1_000,
+            totalMaxChars: 1000,
             includeMissingMarkers: false)
         let provider = ToolCallingLLMProvider()
         let router = try GatewayLocalMethodRouter(
@@ -1199,7 +1281,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["IDENTITY.md", "USER.md"],
             perFileMaxChars: 500,
-            totalMaxChars: 2_000,
+            totalMaxChars: 2000,
             includeMissingMarkers: false)
         let router = try GatewayLocalMethodRouter(
             config: GatewayLocalMethodRouterConfig(
@@ -1302,7 +1384,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
             workspacePath: workspacePath.path,
             fileNames: ["IDENTITY.md", "USER.md"],
             perFileMaxChars: 500,
-            totalMaxChars: 2_000,
+            totalMaxChars: 2000,
             includeMissingMarkers: false)
         let router = try GatewayLocalMethodRouter(
             config: GatewayLocalMethodRouterConfig(
@@ -1439,7 +1521,7 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
                 "enabled": .bool(true),
                 "schedule": .object([
                     "kind": .string("every"),
-                    "everyMs": .integer(4 * 60 * 60 * 1_000),
+                    "everyMs": .integer(4 * 60 * 60 * 1000),
                 ]),
                 "sessionTarget": .string("isolated"),
                 "payload": .object([
@@ -1854,8 +1936,14 @@ final class GatewayLocalMethodRouterTests: XCTestCase {
         let maxActive = await probe.maxObserved()
         XCTAssertEqual(maxActive, 1)
 
-        let requestA = GatewayRequestFrame(id: "run-status-a", method: "agents.status", params: .object(["runId": .string("run-serial-a")]))
-        let requestB = GatewayRequestFrame(id: "run-status-b", method: "agents.status", params: .object(["runId": .string("run-serial-b")]))
+        let requestA = GatewayRequestFrame(
+            id: "run-status-a",
+            method: "agents.status",
+            params: .object(["runId": .string("run-serial-a")]))
+        let requestB = GatewayRequestFrame(
+            id: "run-status-b",
+            method: "agents.status",
+            params: .object(["runId": .string("run-serial-b")]))
         let statusA = await router.handle(requestA, nowMs: 1_700_000_001_200)
         let statusB = await router.handle(requestB, nowMs: 1_700_000_001_300)
         let snapshotA = try self.decodePayload(statusA?.payload, as: GatewayAgentRunSnapshot.self)

@@ -2,6 +2,7 @@ import SwiftUI
 
 extension EnvironmentValues {
     @Entry var openClawChatTextScale: CGFloat = 1.0
+    @Entry public var openClawProviderOptions: [OpenClawProviderOption] = []
 }
 
 // MARK: - Credential Save Environment

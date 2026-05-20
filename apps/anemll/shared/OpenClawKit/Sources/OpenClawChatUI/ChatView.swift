@@ -13,6 +13,7 @@ public struct OpenClawChatView: View {
     @State private var isPinnedToBottom = true
     @State private var lastUserMessageID: UUID?
     @State private var scrollProxy: ScrollViewProxy?
+    @State private var errorExpanded = false
     private let bottomAnchorID = "chatView.bottomAnchor"
     private let showsSessionSwitcher: Bool
     private let showsToolCalls: Bool
@@ -101,6 +102,7 @@ public struct OpenClawChatView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .openClawClipboardBridge()
         .environment(\.openClawChatTextScale, self.textScale)
         .onAppear {
             guard self.autoloadOnAppear else { return }
@@ -184,6 +186,13 @@ public struct OpenClawChatView: View {
             guard self.hasPerformedInitialScroll else { return }
             guard self.isPinnedToBottom else { return }
             self.scrollToBottom(animated: false)
+        }
+        .onChange(of: self.viewModel.errorText) { _, newValue in
+            // Always start fresh errors in the collapsed, compact form so the
+            // banner doesn't surprise the user at full height.
+            if newValue == nil || newValue?.isEmpty == true {
+                self.errorExpanded = false
+            }
         }
         // Keyboard show/hide is handled by SwiftUI's built-in safe area adjustment.
         // Manual scrollToBottom on keyboard events fights the framework and overshoots.
@@ -269,7 +278,11 @@ public struct OpenClawChatView: View {
                         title: presentation.title,
                         message: error,
                         tint: presentation.tint,
-                        dismiss: { self.viewModel.errorText = nil },
+                        isExpanded: self.$errorExpanded,
+                        dismiss: {
+                            self.errorExpanded = false
+                            self.viewModel.errorText = nil
+                        },
                         refresh: { self.viewModel.refresh() })
                     Spacer(minLength: 0)
                 }
@@ -282,6 +295,8 @@ public struct OpenClawChatView: View {
                     title: presentation.title,
                     message: error,
                     tint: presentation.tint,
+                    isExpandable: true,
+                    isExpanded: self.$errorExpanded,
                     actionTitle: "Refresh",
                     action: { self.viewModel.refresh() })
                     .padding(.horizontal, 24)
@@ -293,6 +308,8 @@ public struct OpenClawChatView: View {
                 title: self.emptyStateTitle,
                 message: self.emptyStateMessage,
                 tint: .accentColor,
+                isExpandable: false,
+                isExpanded: .constant(false),
                 actionTitle: nil,
                 action: nil)
                 .padding(.horizontal, 24)
@@ -532,6 +549,8 @@ private struct ChatNoticeCard: View {
     let title: String
     let message: String
     let tint: Color
+    let isExpandable: Bool
+    @Binding var isExpanded: Bool
     let actionTitle: String?
     let action: (() -> Void)?
 
@@ -549,12 +568,43 @@ private struct ChatNoticeCard: View {
             Text(self.title)
                 .font(.headline)
 
-            Text(self.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(4)
-                .frame(maxWidth: 360)
+            if self.isExpandable, self.isExpanded {
+                ScrollView {
+                    Text(self.message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
+                }
+                .frame(maxWidth: 480, maxHeight: 280)
+            } else {
+                Text(self.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .frame(maxWidth: 360)
+            }
+
+            if self.isExpandable {
+                HStack(spacing: 10) {
+                    Button(self.isExpanded ? "Show less" : "Show more") {
+                        self.isExpanded.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button {
+                        copyToClipboard(self.message)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
 
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
@@ -578,41 +628,84 @@ private struct ChatNoticeBanner: View {
     let title: String
     let message: String
     let tint: Color
+    @Binding var isExpanded: Bool
     let dismiss: () -> Void
     let refresh: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: self.systemImage)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(self.tint)
-                .padding(.top, 1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: self.systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(self.tint)
+                    .padding(.top, 1)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(self.title)
-                    .font(.caption.weight(.semibold))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(self.title)
+                        .font(.caption.weight(.semibold))
 
-                Text(self.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    if self.isExpanded {
+                        ScrollView {
+                            Text(self.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 240)
+                    } else {
+                        Text(self.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { self.isExpanded.toggle() }
+
+                Spacer(minLength: 0)
+
+                Button(action: self.refresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Refresh")
+
+                Button(action: self.dismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Dismiss")
             }
 
-            Spacer(minLength: 0)
+            if self.isExpanded {
+                HStack(spacing: 8) {
+                    Button {
+                        copyToClipboard(self.message)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
 
-            Button(action: self.refresh) {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("Refresh")
+                    Button("Show less") { self.isExpanded = false }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
 
-            Button(action: self.dismiss) {
-                Image(systemName: "xmark")
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 25)
+            } else {
+                Button("Show more") { self.isExpanded = true }
+                    .buttonStyle(.plain)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(self.tint)
+                    .padding(.leading, 25)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Dismiss")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

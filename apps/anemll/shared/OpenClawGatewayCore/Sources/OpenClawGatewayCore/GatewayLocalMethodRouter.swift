@@ -177,6 +177,37 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let deleteTranscript: Bool?
     }
 
+    private struct SessionsRenameParams: Codable {
+        let key: String
+        let displayName: String
+    }
+
+    /// Partial-update params: only fields the caller actually sent are applied.
+    /// A field that's absent from the JSON preserves the existing value;
+    /// a field that's present (even as null) is treated as an explicit clear.
+    private struct SessionsUpdateParams: Decodable {
+        let key: String
+        let preferredProviderIDProvided: Bool
+        let preferredProviderID: String?
+        let thinkingLevelProvided: Bool
+        let thinkingLevel: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case key
+            case preferredProviderID
+            case thinkingLevel
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.key = try c.decode(String.self, forKey: .key)
+            self.preferredProviderIDProvided = c.contains(.preferredProviderID)
+            self.preferredProviderID = try c.decodeIfPresent(String.self, forKey: .preferredProviderID)
+            self.thinkingLevelProvided = c.contains(.thinkingLevel)
+            self.thinkingLevel = try c.decodeIfPresent(String.self, forKey: .thinkingLevel)
+        }
+    }
+
     private struct MemorySearchParams: Codable {
         let query: String
         let sessionKey: String?
@@ -414,6 +445,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     }
 
     private let config: GatewayLocalMethodRouterConfig
+    private static let maxChatHistoryDisplayTextUTF16 = 12000
     /// Files dropped from the bootstrap prompt due to budget exhaustion.
     /// Updated on each `chat.send` call.
     public private(set) var lastBootstrapDroppedFiles: [String] = []
@@ -477,6 +509,10 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             return await self.handleSessionsList(request)
         case "sessions.delete":
             return await self.handleSessionsDelete(request)
+        case "sessions.rename":
+            return await self.handleSessionsRename(request)
+        case "sessions.update":
+            return await self.handleSessionsUpdate(request)
         case "memory.search":
             return await self.handleMemorySearch(request)
         case "memory.get":
@@ -605,7 +641,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         }
         let disableTools = params.disableTools == true
         let runID = Self.normalizedID(params.idempotencyKey, fallback: request.id)
-        let historyLimit = max(12, min(params.historyLimit ?? 64, 200))
+        let historyLimit = Self.resolvedChatHistoryLimit(params.historyLimit, provider: provider)
         let workspaceRoot = self.workspaceRootURL()
         let bootstrapFields = self.config.enableAutoProfileRewrite
             ? Self.extractBootstrapProfileFields(from: message)
@@ -644,7 +680,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                         nowMs: bootstrapNoteTimestamp)
                 }
 
-                let history = try await self.memoryStore.history(sessionKey: sessionKey, limit: historyLimit)
+                let rawHistory = try await self.memoryStore.history(sessionKey: sessionKey, limit: historyLimit)
+                let history = Self.compactHistoryForLLM(rawHistory, provider: provider)
                 let llmMessages = history.map { turn in GatewayLocalLLMMessage(role: turn.role, text: turn.text) }
                 let chatResult: ChatExecutionResult
                 let shouldAttemptToolCalling = !disableTools && toolCallingMode != .off
@@ -697,12 +734,12 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                                 thinkingLevel: parsedPrompt.thinking,
                                 systemPrompt: systemPrompt))
                         chatResult = ChatExecutionResult(
-                                response: llmResponse,
-                                toolAudits: [],
-                                totalRequestBodyBytes: llmResponse.requestBodyBytes,
-                                totalInputTokens: llmResponse.usageInputTokens,
-                                totalOutputTokens: llmResponse.usageOutputTokens,
-                                llmRoundTrips: 1)
+                            response: llmResponse,
+                            toolAudits: [],
+                            totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                            totalInputTokens: llmResponse.usageInputTokens,
+                            totalOutputTokens: llmResponse.usageOutputTokens,
+                            llmRoundTrips: 1)
                         _ = try await self.memoryStore.appendTurn(
                             sessionKey: sessionKey,
                             role: "system",
@@ -720,12 +757,12 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                             thinkingLevel: parsedPrompt.thinking,
                             systemPrompt: systemPrompt))
                     chatResult = ChatExecutionResult(
-                                response: llmResponse,
-                                toolAudits: [],
-                                totalRequestBodyBytes: llmResponse.requestBodyBytes,
-                                totalInputTokens: llmResponse.usageInputTokens,
-                                totalOutputTokens: llmResponse.usageOutputTokens,
-                                llmRoundTrips: 1)
+                        response: llmResponse,
+                        toolAudits: [],
+                        totalRequestBodyBytes: llmResponse.requestBodyBytes,
+                        totalInputTokens: llmResponse.usageInputTokens,
+                        totalOutputTokens: llmResponse.usageOutputTokens,
+                        llmRoundTrips: 1)
                 }
 
                 _ = try await self.memoryStore.appendTurn(
@@ -1014,16 +1051,16 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         command: String,
         payload: GatewayJSONValue) -> ImageExtraction
     {
-        guard imageToolCommands.contains(command) else {
+        guard self.imageToolCommands.contains(command) else {
             return ImageExtraction(strippedPayload: payload)
         }
 
         // camera.snap: top-level { "base64": "...", "format": "jpg", ... }
-        if case .object(var dict) = payload,
+        if case var .object(dict) = payload,
            case let .string(b64) = dict["base64"],
            !b64.isEmpty
         {
-            let resized = resizeBase64JPEG(b64, maxWidth: llmImageMaxWidth)
+            let resized = self.resizeBase64JPEG(b64, maxWidth: self.llmImageMaxWidth)
             dict["base64"] = .string("[image attached]")
             return ImageExtraction(
                 strippedPayload: .object(dict),
@@ -1033,14 +1070,14 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
 
         // photos.latest: { "photos": [ { "base64": "...", ... }, ... ] }
         // Attach only the first photo's image.
-        if case .object(var dict) = payload,
-           case .array(var photos) = dict["photos"],
+        if case var .object(dict) = payload,
+           case var .array(photos) = dict["photos"],
            !photos.isEmpty,
-           case .object(var firstPhoto) = photos[0],
+           case var .object(firstPhoto) = photos[0],
            case let .string(b64) = firstPhoto["base64"],
            !b64.isEmpty
         {
-            let resized = resizeBase64JPEG(b64, maxWidth: llmImageMaxWidth)
+            let resized = self.resizeBase64JPEG(b64, maxWidth: self.llmImageMaxWidth)
             firstPhoto["base64"] = .string("[image attached]")
             photos[0] = .object(firstPhoto)
             dict["photos"] = .array(photos)
@@ -1230,6 +1267,77 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         case .invalidRequest, .notConfigured:
             return false
         }
+    }
+
+    private static func resolvedChatHistoryLimit(
+        _ requested: Int?,
+        provider: any GatewayLocalLLMProvider) -> Int
+    {
+        if self.isGrokMultiAgentProvider(provider) {
+            return max(4, min(requested ?? 8, 8))
+        }
+        return max(12, min(requested ?? 64, 200))
+    }
+
+    private static func compactHistoryForLLM(
+        _ history: [GatewayMemoryTurn],
+        provider: any GatewayLocalLLMProvider) -> [GatewayMemoryTurn]
+    {
+        guard self.isGrokMultiAgentProvider(provider) else {
+            return history
+        }
+
+        let maxUTF16 = 48000
+        var remaining = maxUTF16
+        var compacted: [GatewayMemoryTurn] = []
+        compacted.reserveCapacity(history.count)
+
+        for turn in history.reversed() {
+            let turnCount = turn.text.utf16.count
+            let text: String
+            if turnCount <= remaining {
+                text = turn.text
+                remaining -= turnCount
+            } else {
+                guard remaining > 0 || compacted.isEmpty else {
+                    break
+                }
+                text = self.truncateConversationText(turn.text, maxChars: max(1024, remaining))
+                remaining = 0
+            }
+
+            compacted.append(
+                GatewayMemoryTurn(
+                    id: turn.id,
+                    sessionKey: turn.sessionKey,
+                    role: turn.role,
+                    text: text,
+                    timestampMs: turn.timestampMs,
+                    runID: turn.runID))
+
+            if remaining <= 0 {
+                break
+            }
+        }
+
+        return compacted.reversed()
+    }
+
+    private static func isGrokMultiAgentProvider(_ provider: any GatewayLocalLLMProvider) -> Bool {
+        guard provider.kind == .grokCompatible else {
+            return false
+        }
+        return self.normalizedGrokModelID(provider.model).hasPrefix("grok-4.20-multi-agent")
+    }
+
+    private static func normalizedGrokModelID(_ model: String) -> String {
+        var normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let slashIndex = normalized.lastIndex(of: "/") {
+            normalized = String(normalized[normalized.index(after: slashIndex)...])
+        }
+        return normalized
     }
 
     private func chatToolDefinitions(workspaceRoot: URL?) -> [GatewayLocalLLMToolDefinition] {
@@ -1775,7 +1883,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             let turns = try await self.memoryStore.history(sessionKey: sessionKey, limit: limit)
             let messages = turns.map(Self.asChatHistoryMessage)
             let snapshot = await self.sessionStore.snapshot(sessionKey: sessionKey)
-            let thinkingLevel = snapshot.thinkingLevel ?? "low"
+            // Persisted meta wins over in-memory snapshot so thinking level survives a relaunch.
+            let persistedMeta = try? await self.memoryStore.loadSessionMeta(sessionKey: sessionKey)
+            let thinkingLevel = persistedMeta?.thinkingLevel ?? snapshot.thinkingLevel ?? "low"
             let payload: GatewayJSONValue = .object([
                 "sessionKey": .string(sessionKey),
                 "sessionId": .string(sessionKey),
@@ -1799,6 +1909,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             var lastActivityMs: Int64
             var turnCount: Int
             var thinkingLevel: String?
+            var displayName: String?
+            var preferredProviderID: String?
         }
 
         var bySessionKey: [String: SessionEntryAggregate] = [:]
@@ -1808,7 +1920,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 sessionKey: snapshot.sessionKey,
                 lastActivityMs: snapshot.lastActivityMs,
                 turnCount: snapshot.turnCount,
-                thinkingLevel: snapshot.thinkingLevel)
+                thinkingLevel: snapshot.thinkingLevel,
+                displayName: snapshot.displayName,
+                preferredProviderID: snapshot.preferredProviderID)
         }
 
         do {
@@ -1830,6 +1944,30 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             // Keep sessions.list resilient even if sqlite lookup fails.
         }
 
+        // Layer persisted per-session metadata (displayName, preferredProviderID, thinkingLevel)
+        // on top of any in-memory snapshot so settings survive process relaunch.
+        do {
+            let metas = try await self.memoryStore.loadAllSessionMeta()
+            for meta in metas {
+                if var existing = bySessionKey[meta.sessionKey] {
+                    existing.displayName = meta.displayName ?? existing.displayName
+                    existing.preferredProviderID = meta.preferredProviderID ?? existing.preferredProviderID
+                    existing.thinkingLevel = meta.thinkingLevel ?? existing.thinkingLevel
+                    bySessionKey[meta.sessionKey] = existing
+                } else {
+                    bySessionKey[meta.sessionKey] = SessionEntryAggregate(
+                        sessionKey: meta.sessionKey,
+                        lastActivityMs: meta.updatedMs,
+                        turnCount: 0,
+                        thinkingLevel: meta.thinkingLevel,
+                        displayName: meta.displayName,
+                        preferredProviderID: meta.preferredProviderID)
+                }
+            }
+        } catch {
+            // Best-effort: list still works without persisted meta.
+        }
+
         let sessions = bySessionKey.values
             .sorted { $0.lastActivityMs > $1.lastActivityMs }
             .prefix(limit)
@@ -1837,7 +1975,7 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                 let thinkingLevel = aggregate.thinkingLevel ?? "low"
                 var object: [String: GatewayJSONValue] = [
                     "key": .string(aggregate.sessionKey),
-                    "displayName": .string(aggregate.sessionKey),
+                    "displayName": .string(aggregate.displayName ?? aggregate.sessionKey),
                     "updatedAt": .double(Double(aggregate.lastActivityMs)),
                     "sessionId": .string(aggregate.sessionKey),
                     "thinkingLevel": .string(thinkingLevel),
@@ -1846,6 +1984,9 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
                    !model.isEmpty
                 {
                     object["model"] = .string(model)
+                }
+                if let providerID = aggregate.preferredProviderID {
+                    object["preferredProviderID"] = .string(providerID)
                 }
                 return .object(object)
             }
@@ -1886,6 +2027,8 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             }
             // Reset the in-memory session context (clears history).
             await self.sessionStore.removeSession(sessionKey: key)
+            // Clearing "main" should also wipe any custom name/provider/reasoning binding.
+            try? await self.memoryStore.deleteSessionMeta(sessionKey: key)
             return GatewayResponseFrame.success(
                 id: request.id,
                 payload: .object([
@@ -1907,10 +2050,113 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             }
         }
 
+        // Persisted meta is per-conversation: drop it whenever the conversation is deleted.
+        try? await self.memoryStore.deleteSessionMeta(sessionKey: key)
+
         let payload: GatewayJSONValue = .object([
             "ok": .bool(true),
             "key": .string(key),
             "deleted": .bool(true),
+        ])
+        return GatewayResponseFrame.success(id: request.id, payload: payload)
+    }
+
+    private func handleSessionsRename(_ request: GatewayRequestFrame) async -> GatewayResponseFrame? {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: SessionsRenameParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid sessions.rename params: key and displayName required")
+        }
+
+        let key = params.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "sessions.rename: key must not be empty")
+        }
+
+        let name = params.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedName: String? = name.isEmpty ? nil : name
+        await self.sessionStore.updateDisplayName(sessionKey: key, name: normalizedName)
+
+        // Persist so the rename survives a relaunch. Preserve any existing meta.
+        do {
+            let existing = try await self.memoryStore.loadSessionMeta(sessionKey: key)
+            try await self.memoryStore.upsertSessionMeta(
+                sessionKey: key,
+                displayName: normalizedName,
+                preferredProviderID: existing?.preferredProviderID,
+                thinkingLevel: existing?.thinkingLevel)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "sessions.rename: persist failed: \(error.localizedDescription)")
+        }
+
+        let payload: GatewayJSONValue = .object([
+            "ok": .bool(true),
+            "key": .string(key),
+            "displayName": .string(normalizedName ?? key),
+        ])
+        return GatewayResponseFrame.success(id: request.id, payload: payload)
+    }
+
+    private func handleSessionsUpdate(_ request: GatewayRequestFrame) async -> GatewayResponseFrame? {
+        guard let params = GatewayPayloadCodec.decode(request.params, as: SessionsUpdateParams.self) else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "invalid sessions.update params: key required")
+        }
+
+        let key = params.key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .invalidRequest,
+                message: "sessions.update: key must not be empty")
+        }
+
+        // Merge with existing persisted meta so a partial update (e.g. only
+        // thinkingLevel from the toolbar picker) doesn't wipe out preferredProviderID
+        // or displayName.
+        let existing: GatewayMemorySessionMeta?
+        do {
+            existing = try await self.memoryStore.loadSessionMeta(sessionKey: key)
+        } catch {
+            existing = nil
+        }
+        let mergedProviderID = params.preferredProviderIDProvided
+            ? params.preferredProviderID
+            : existing?.preferredProviderID
+        let mergedThinkingLevel = params.thinkingLevelProvided
+            ? params.thinkingLevel
+            : existing?.thinkingLevel
+
+        await self.sessionStore.updateSessionSettings(
+            sessionKey: key,
+            preferredProviderID: mergedProviderID,
+            thinkingLevel: mergedThinkingLevel)
+
+        do {
+            try await self.memoryStore.upsertSessionMeta(
+                sessionKey: key,
+                displayName: existing?.displayName,
+                preferredProviderID: mergedProviderID,
+                thinkingLevel: mergedThinkingLevel)
+        } catch {
+            return GatewayResponseFrame.failure(
+                id: request.id,
+                code: .internalError,
+                message: "sessions.update: persist failed: \(error.localizedDescription)")
+        }
+
+        let payload: GatewayJSONValue = .object([
+            "ok": .bool(true),
+            "key": .string(key),
         ])
         return GatewayResponseFrame.success(id: request.id, payload: payload)
     }
@@ -3686,13 +3932,14 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
     }
 
     private static func asChatHistoryMessage(_ turn: GatewayMemoryTurn) -> GatewayJSONValue {
+        let displayText = Self.truncateChatHistoryDisplayText(turn.text)
         var object: [String: GatewayJSONValue] = [
             "role": .string(turn.role),
             "timestamp": .double(Double(turn.timestampMs)),
             "content": .array([
                 .object([
                     "type": .string("text"),
-                    "text": .string(turn.text),
+                    "text": .string(displayText),
                 ]),
             ]),
         ]
@@ -3702,6 +3949,27 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
             object["runId"] = .null
         }
         return .object(object)
+    }
+
+    private static func truncateChatHistoryDisplayText(_ raw: String) -> String {
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.utf16.count <= self.maxChatHistoryDisplayTextUTF16 {
+            return content
+        }
+
+        let marker = "\n\n[...message shortened in chat view for device stability...]\n\n"
+        let safeMax = self.maxChatHistoryDisplayTextUTF16
+        guard safeMax > marker.utf16.count + 2 else {
+            return Self.clampUTF16(content, to: safeMax)
+        }
+
+        let remaining = safeMax - marker.utf16.count
+        let headChars = max(1, remaining / 2)
+        let tailChars = max(1, remaining - headChars)
+        let body = Self.prefixByUTF16(content, headChars)
+            + marker
+            + Self.suffixByUTF16(content, tailChars)
+        return Self.clampUTF16(body, to: safeMax)
     }
 
     private static func turnID(from raw: GatewayJSONValue) -> Int64? {
@@ -4549,6 +4817,27 @@ public actor GatewayLocalMethodRouter: GatewayLocalMethodHandling {
         let tail = Self.suffixByUTF16(content, tailChars)
         let marker = "[...truncated, read \(fileName) for full content...]"
         let body = [head, "", marker, "", tail].joined(separator: "\n")
+        return Self.clampUTF16(body, to: safeMax)
+    }
+
+    private static func truncateConversationText(_ raw: String, maxChars: Int) -> String {
+        let content = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.utf16.count <= maxChars {
+            return content
+        }
+
+        let safeMax = max(1, maxChars)
+        let marker = "\n\n[...older conversation content truncated for local device stability...]\n\n"
+        guard safeMax > marker.utf16.count + 2 else {
+            return Self.clampUTF16(content, to: safeMax)
+        }
+
+        let remaining = safeMax - marker.utf16.count
+        let headChars = max(1, remaining / 2)
+        let tailChars = max(1, remaining - headChars)
+        let body = Self.prefixByUTF16(content, headChars)
+            + marker
+            + Self.suffixByUTF16(content, tailChars)
         return Self.clampUTF16(body, to: safeMax)
     }
 

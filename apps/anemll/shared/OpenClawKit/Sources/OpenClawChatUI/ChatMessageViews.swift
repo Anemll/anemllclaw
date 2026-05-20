@@ -1,6 +1,82 @@
 import Foundation
 import OpenClawKit
+import OSLog
 import SwiftUI
+
+// MARK: - Cross-platform clipboard helper
+
+private let clipboardLog = Logger(subsystem: "ai.openclaw", category: "clipboard")
+
+// MARK: - UIPasteboard → NSPasteboard bridge for iOS-on-Mac
+
+// When running as an iOS app on Mac, the system text selection copy (Cmd+C)
+// writes to UIPasteboard which doesn't declare public.utf8-plain-text.
+// Terminal.app and other strict paste targets reject this. This modifier
+// observes UIPasteboard.changedNotification and mirrors the string content
+// to NSPasteboard via the ObjC runtime so paste works everywhere.
+#if os(iOS)
+private struct ClipboardBridgeModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIPasteboard.changedNotification))
+            { _ in
+                guard ProcessInfo.processInfo.isiOSAppOnMac,
+                      let string = UIPasteboard.general.string,
+                      !string.isEmpty
+                else { return }
+                clipboardLog.info("UIPasteboard changed, mirroring to NSPasteboard (\(string.count) chars)")
+                guard let cls = NSClassFromString("NSPasteboard"),
+                      let general = cls.value(forKeyPath: "generalPasteboard") as? NSObject
+                else { return }
+                general.perform(NSSelectorFromString("clearContents"))
+                let setStringSel = NSSelectorFromString("setString:forType:")
+                _ = general.perform(setStringSel, with: string, with: "public.utf8-plain-text" as NSString)
+            }
+    }
+}
+#endif
+
+extension View {
+    func openClawClipboardBridge() -> some View {
+        #if os(iOS)
+        self.modifier(ClipboardBridgeModifier())
+        #else
+        self
+        #endif
+    }
+}
+
+func copyToClipboard(_ string: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(string, forType: .string)
+    #elseif os(iOS)
+    if ProcessInfo.processInfo.isiOSAppOnMac {
+        clipboardLog.info("isiOSAppOnMac=true, using NSPasteboard bridge")
+        // Use NSPasteboard via ObjC runtime to write to the macOS clipboard.
+        // UIPasteboard does not reliably sync to the macOS general pasteboard.
+        guard let cls = NSClassFromString("NSPasteboard"),
+              let general = cls.value(forKeyPath: "generalPasteboard") as? NSObject
+        else {
+            clipboardLog.error("NSPasteboard class not found, falling back to UIPasteboard")
+            UIPasteboard.general.string = string
+            return
+        }
+        general.perform(NSSelectorFromString("clearContents"))
+        // setString:forType: with "public.utf8-plain-text" is the most
+        // reliable way to get data accepted by Terminal and other apps.
+        let setStringSel = NSSelectorFromString("setString:forType:")
+        _ = general.perform(setStringSel, with: string, with: "public.utf8-plain-text" as NSString)
+        clipboardLog.info("Wrote \(string.count) chars to NSPasteboard")
+    } else {
+        UIPasteboard.general.string = string
+    }
+    #else
+    UIPasteboard.general.string = string
+    #endif
+}
 
 private enum ChatUIConstants {
     static var bubbleMaxWidth: CGFloat {
@@ -163,13 +239,7 @@ struct ChatMessageBubble: View {
             .overlay(alignment: .topTrailing) {
                 if !self.copyableText.isEmpty {
                     Button {
-                        #if os(macOS)
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(
-                            self.copyableText, forType: .string)
-                        #else
-                        UIPasteboard.general.string = self.copyableText
-                        #endif
+                        copyToClipboard(self.copyableText)
                         withAnimation(.easeInOut(duration: 0.15)) {
                             self.showCopied = true
                         }

@@ -14,7 +14,6 @@ private let logger = Logger(subsystem: "ai.openclaw", category: "ComposerDictati
 @MainActor
 @Observable
 final class ComposerDictationManager: NSObject, ChatDictationProvider {
-
     // MARK: - ChatDictationProvider
 
     var isListening: Bool = false
@@ -31,13 +30,13 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         return
         #else
 
-        let micOK = await self.requestMicrophonePermission()
+        let micOK = await Self.requestMicrophonePermission()
         guard micOK else {
             logger.warning("Microphone permission denied.")
             return
         }
 
-        let speechOK = await self.requestSpeechPermission()
+        let speechOK = await Self.requestSpeechPermission()
         guard speechOK else {
             logger.warning("Speech recognition permission denied.")
             return
@@ -107,6 +106,12 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         let recognizer = self.speechRecognizer
         let handler = self.makeResultHandler()
 
+        // The AVAudioSession must be configured for recording BEFORE reading
+        // the input node's format. Otherwise outputFormat(forBus:) can return a
+        // 0-channel/0-sample-rate format and installTap raises an NSException
+        // ("required condition is false: format.sampleRate == hwFormat.sampleRate").
+        try Self.configureAudioSession()
+
         // Perform audio engine setup and recognition task creation on a
         // background thread to avoid triggering dispatch_assert_queue_fail
         // in the Speech framework's internal RealtimeMessage service queue.
@@ -117,11 +122,18 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
                     inputNode.removeTap(onBus: 0)
 
                     let recordingFormat = inputNode.outputFormat(forBus: 0)
+                    guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
+                        throw NSError(
+                            domain: "ComposerDictationManager",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey:
+                                "Audio input unavailable (sampleRate=\(recordingFormat.sampleRate), channels=\(recordingFormat.channelCount))"])
+                    }
                     inputNode.installTap(
                         onBus: 0,
                         bufferSize: 1024,
-                        format: recordingFormat
-                    ) { [weak request] buffer, _ in
+                        format: recordingFormat)
+                    { [weak request] buffer, _ in
                         request?.append(buffer)
                     }
 
@@ -139,6 +151,17 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         }
 
         self.recognitionTask = task
+    }
+
+    private static func configureAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [
+            .duckOthers,
+            .mixWithOthers,
+            .allowBluetoothHFP,
+            .defaultToSpeaker,
+        ])
+        try session.setActive(true, options: [])
     }
 
     private nonisolated func makeResultHandler() -> @Sendable (SFSpeechRecognitionResult?, Error?) -> Void {
@@ -182,6 +205,9 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
             self.audioEngine.inputNode.removeTap(onBus: 0)
         }
 
+        // Release the audio session so other audio (VoiceWake, system playback) can resume normally.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
         self.onTranscript = nil
         self.resumeVoiceWakeIfNeeded()
     }
@@ -193,9 +219,14 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         }
     }
 
-    // MARK: - Permissions (MainActor-isolated)
+    // MARK: - Permissions
 
-    private func requestMicrophonePermission() async -> Bool {
+    /// These run off the main actor: AVAudioSession / SFSpeechRecognizer fire their
+    /// completion blocks on TCC's private queue, and the Swift 6 isolation checker
+    /// crashes if a continuation tied to a MainActor-isolated method tries to resume
+    /// from a non-main queue. Keep these `nonisolated static` so resumption can happen
+    /// on whatever queue TCC chose.
+    private nonisolated static func requestMicrophonePermission() async -> Bool {
         let session = AVAudioSession.sharedInstance()
         switch session.recordPermission {
         case .granted:
@@ -208,14 +239,14 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
             return false
         }
 
-        return await withCheckedContinuation { cont in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             AVAudioSession.sharedInstance().requestRecordPermission { ok in
                 cont.resume(returning: ok)
             }
         }
     }
 
-    private func requestSpeechPermission() async -> Bool {
+    private nonisolated static func requestSpeechPermission() async -> Bool {
         let status = SFSpeechRecognizer.authorizationStatus()
         switch status {
         case .authorized:
@@ -228,7 +259,7 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
             return false
         }
 
-        return await withCheckedContinuation { cont in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             SFSpeechRecognizer.requestAuthorization { authStatus in
                 cont.resume(returning: authStatus == .authorized)
             }
