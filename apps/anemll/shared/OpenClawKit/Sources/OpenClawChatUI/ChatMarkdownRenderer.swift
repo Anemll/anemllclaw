@@ -33,6 +33,11 @@ struct ChatMarkdownRenderer: View {
                     .font(self.font)
                     .foregroundStyle(self.textColor)
                     .openClawTextSelectionEnabledCompat()
+            } else if Self.requiresNativeMarkdownRenderer {
+                Text(Self.nativeMarkdown(from: processed.cleaned))
+                    .font(self.font)
+                    .foregroundStyle(self.textColor)
+                    .openClawTextSelectionEnabledCompat()
             } else {
                 StructuredText(markdown: processed.cleaned)
                     .modifier(ChatMarkdownStyle(
@@ -55,11 +60,25 @@ struct ChatMarkdownRenderer: View {
             }
         }
     }
+
+    private static var requiresNativeMarkdownRenderer: Bool {
+        #if os(iOS)
+        if #available(iOS 27, *) {
+            return true
+        }
+        #endif
+        return false
+    }
+
+    private static func nativeMarkdown(from text: String) -> AttributedString {
+        (try? AttributedString(markdown: text)) ?? AttributedString(text)
+    }
 }
 
 enum ChatMarkdownDisplayLimiter {
     static let maxRenderedUTF16 = 12000
     private static let maxStructuredTextUTF16 = 6000
+    private static let maxStructuredTextRuns = 64
 
     static func displayText(for text: String)
     -> (text: String, truncated: Bool, originalUTF16: Int, renderedUTF16: Int) {
@@ -77,7 +96,13 @@ enum ChatMarkdownDisplayLimiter {
     }
 
     static func prefersPlainTextRenderer(for text: String) -> Bool {
-        text.utf16.count > self.maxStructuredTextUTF16
+        guard text.utf16.count <= self.maxStructuredTextUTF16 else { return true }
+
+        // Textual currently combines every attributed run by nesting one SwiftUI.Text
+        // inside the next. Deeply styled Markdown can therefore overflow SwiftUI's text
+        // resolver stack, especially on newer OS releases.
+        guard let attributed = try? AttributedString(markdown: text) else { return false }
+        return attributed.runs.count > self.maxStructuredTextRuns
     }
 }
 

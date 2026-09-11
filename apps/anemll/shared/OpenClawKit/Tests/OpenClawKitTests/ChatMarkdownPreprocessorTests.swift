@@ -96,4 +96,13 @@ struct ChatMarkdownPreprocessorTests {
 
         #expect(ChatMarkdownDisplayLimiter.prefersPlainTextRenderer(for: markdown) == false)
     }
+
+    @Test func prefersPlainTextForExcessiveMarkdownRuns() {
+        let markdown = (0..<80)
+            .map { index in index.isMultiple(of: 2) ? "**bold**" : "_italic_" }
+            .joined(separator: " ")
+
+        #expect(markdown.utf16.count < 6000)
+        #expect(ChatMarkdownDisplayLimiter.prefersPlainTextRenderer(for: markdown))
+    }
 }
