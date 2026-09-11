@@ -925,6 +925,9 @@ enum LLMProviderStore {
     private static let activeIDKey = "llm.activeProviderID"
     private static let keychainService = "ai.openclaw.llm"
     private static let refreshTokenAccountSuffix = ".openai-oauth.refresh"
+    @MainActor private static var oauthRefreshTasks: [
+        String: (generation: UUID, task: Task<SavedLLMProvider, Error>)
+    ] = [:]
 
     static func load(defaults: UserDefaults = .standard) -> [SavedLLMProvider] {
         guard let data = defaults.data(forKey: defaultsKey) else { return [] }
@@ -1076,6 +1079,38 @@ enum LLMProviderStore {
         {
             return provider
         }
+
+        // OAuth providers rotate refresh tokens. Coalesce concurrent callers so
+        // the same token is never submitted twice while a refresh is in flight.
+        if let pending = Self.oauthRefreshTasks[provider.id] {
+            return try await pending.task.value
+        }
+
+        let generation = UUID()
+        let task = Task {
+            try await Self.performOAuthRefresh(provider, refreshToken: refreshToken)
+        }
+        Self.oauthRefreshTasks[provider.id] = (generation, task)
+        do {
+            let updated = try await task.value
+            Self.removeOAuthRefreshTask(providerID: provider.id, generation: generation)
+            return updated
+        } catch {
+            Self.removeOAuthRefreshTask(providerID: provider.id, generation: generation)
+            throw error
+        }
+    }
+
+    @MainActor
+    private static func removeOAuthRefreshTask(providerID: String, generation: UUID) {
+        guard Self.oauthRefreshTasks[providerID]?.generation == generation else { return }
+        Self.oauthRefreshTasks[providerID] = nil
+    }
+
+    private static func performOAuthRefresh(
+        _ provider: SavedLLMProvider,
+        refreshToken: String) async throws -> SavedLLMProvider
+    {
 
         let refreshed: (accessToken: String, refreshToken: String, expiresAtMs: Int64, accountID: String)
         switch provider.authMode {

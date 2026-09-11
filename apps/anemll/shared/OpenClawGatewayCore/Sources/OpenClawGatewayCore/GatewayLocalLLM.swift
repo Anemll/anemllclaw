@@ -1392,9 +1392,27 @@ public actor GatewayOpenAICompatibleLLMProvider: GatewayLocalLLMToolCallableProv
                 accumulated = textChunk
             }
             return .none
+        case "response.output_item.done":
+            guard let item = event["item"] as? [String: Any] else { return .none }
+            var output = completedResponse?["output"] as? [[String: Any]] ?? []
+            output.append(item)
+            var partialResponse = completedResponse ?? [:]
+            partialResponse["output"] = output
+            completedResponse = partialResponse
+            if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                accumulated = Self.extractOpenAIResponsesText(from: partialResponse)
+            }
+            return .none
         case "response.completed", "response.done":
             if let response = event["response"] as? [String: Any] {
-                completedResponse = response
+                var mergedResponse = response
+                let responseOutput = response["output"] as? [Any] ?? []
+                if responseOutput.isEmpty, let streamedOutput = completedResponse?["output"] {
+                    // The Codex backend may deliver output only through
+                    // response.output_item.done and omit it from response.completed.
+                    mergedResponse["output"] = streamedOutput
+                }
+                completedResponse = mergedResponse
             }
             if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if let completedResponse {

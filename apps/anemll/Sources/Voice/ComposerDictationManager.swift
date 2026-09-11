@@ -8,6 +8,11 @@ import Speech
 
 private let logger = Logger(subsystem: "ai.openclaw", category: "ComposerDictation")
 
+/// Transfers framework reference types whose thread safety is managed by their owning API.
+private struct UncheckedSendable<Value>: @unchecked Sendable {
+    let value: Value
+}
+
 /// Lightweight speech-to-text manager used by the chat composer's
 /// microphone button.  Uses `SFSpeechRecognizer` + `AVAudioEngine`
 /// following the same patterns as `VoiceWakeManager`.
@@ -110,12 +115,12 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         // the input node's format. Otherwise outputFormat(forBus:) can return a
         // 0-channel/0-sample-rate format and installTap raises an NSException
         // ("required condition is false: format.sampleRate == hwFormat.sampleRate").
-        try Self.configureAudioSession()
+        try await Self.configureAudioSession()
 
         // Perform audio engine setup and recognition task creation on a
         // background thread to avoid triggering dispatch_assert_queue_fail
         // in the Speech framework's internal RealtimeMessage service queue.
-        let task: SFSpeechRecognitionTask? = try await withCheckedThrowingContinuation { cont in
+        let task = try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let inputNode = engine.inputNode
@@ -143,17 +148,17 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
                     let recTask = recognizer?.recognitionTask(
                         with: request,
                         resultHandler: handler)
-                    cont.resume(returning: recTask)
+                    cont.resume(returning: UncheckedSendable(value: recTask))
                 } catch {
                     cont.resume(throwing: error)
                 }
             }
         }
 
-        self.recognitionTask = task
+        self.recognitionTask = task.value
     }
 
-    private static func configureAudioSession() throws {
+    private static func configureAudioSession() async throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [
             .duckOthers,
@@ -161,7 +166,37 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
             .allowBluetoothHFP,
             .defaultToSpeaker,
         ])
-        try session.setActive(true, options: [])
+        if #available(iOS 27.0, tvOS 27.0, visionOS 27.0, *) {
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                session.activate { success, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else if success {
+                        continuation.resume()
+                    } else {
+                        continuation.resume(throwing: AudioSessionActivationError.activationFailed)
+                    }
+                }
+                }
+                return
+            } catch {
+                // The iOS-on-Mac runtime currently exposes this API but can
+                // return "not yet implemented". Fall back off the main thread.
+                logger.debug("Async audio session activation unavailable: \(error.localizedDescription)")
+            }
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try session.setActive(true)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private nonisolated func makeResultHandler() -> @Sendable (SFSpeechRecognitionResult?, Error?) -> Void {
@@ -205,8 +240,20 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
             self.audioEngine.inputNode.removeTap(onBus: 0)
         }
 
-        // Release the audio session so other audio (VoiceWake, system playback) can resume normally.
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // Release the audio session asynchronously so teardown never blocks UI work.
+        let session = AVAudioSession.sharedInstance()
+        if #available(iOS 27.0, tvOS 27.0, visionOS 27.0, *) {
+            session.deactivate { success, error in
+                if !success {
+                    if let error {
+                        logger.debug("Async audio session deactivation unavailable: \(error.localizedDescription)")
+                    }
+                    Self.deactivateAudioSessionOnBackgroundQueue(session)
+                }
+            }
+        } else {
+            Self.deactivateAudioSessionOnBackgroundQueue(session)
+        }
 
         self.onTranscript = nil
         self.resumeVoiceWakeIfNeeded()
@@ -216,6 +263,16 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
         if self.didSuspendVoiceWake {
             self.voiceWake?.resumeAfterExternalAudioCapture(wasSuspended: true)
             self.didSuspendVoiceWake = false
+        }
+    }
+
+    private nonisolated static func deactivateAudioSessionOnBackgroundQueue(_ session: AVAudioSession) {
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                try session.setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                logger.warning("Failed to deactivate dictation audio session: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -264,5 +321,13 @@ final class ComposerDictationManager: NSObject, ChatDictationProvider {
                 cont.resume(returning: authStatus == .authorized)
             }
         }
+    }
+}
+
+private enum AudioSessionActivationError: LocalizedError {
+    case activationFailed
+
+    var errorDescription: String? {
+        "The audio session could not be activated."
     }
 }

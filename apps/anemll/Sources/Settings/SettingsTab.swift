@@ -78,9 +78,11 @@ struct SettingsTab: View {
     @State private var activeProviderID: String?
     @State private var editingProvider: SavedLLMProvider?
     private let autoAddProvider: Bool
+    private let editingProviderID: String?
 
-    init(autoAddProvider: Bool = false) {
+    init(autoAddProvider: Bool = false, editingProviderID: String? = nil) {
         self.autoAddProvider = autoAddProvider
+        self.editingProviderID = editingProviderID
     }
 
     @State private var showBackupConfirmAlert: Bool = false
@@ -595,7 +597,13 @@ struct SettingsTab: View {
                 self.loadOnAppear()
             }
             .onAppear {
-                if self.autoAddProvider {
+                if let editingProviderID = self.editingProviderID {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if self.editingProvider == nil {
+                            self.editingProvider = self.savedProviders.first(where: { $0.id == editingProviderID })
+                        }
+                    }
+                } else if self.autoAddProvider {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         if self.editingProvider == nil {
                             self.editingProvider = SavedLLMProvider()

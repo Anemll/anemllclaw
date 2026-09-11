@@ -85,4 +85,15 @@ struct ChatMarkdownPreprocessorTests {
         let result = ChatMarkdownPreprocessor.preprocess(markdown: markdown)
         #expect(result.prefersPlainText == true)
     }
+
+    @Test func rendersNormalAssistantMarkdownAsStructuredText() {
+        let markdown = """
+        **Scan complete**
+
+        ### Summary
+        - **Recent search** returned no relevant hits.
+        """
+
+        #expect(ChatMarkdownDisplayLimiter.prefersPlainTextRenderer(for: markdown) == false)
+    }
 }

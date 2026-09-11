@@ -193,7 +193,6 @@
 		80A012480A0E1D69C91FEC14 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		85E4AFB4BEADB28F26D8BF84 /* TalkModeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkModeManager.swift; sourceTree = "<group>"; };
 		86FB1FA75FC2C6434BD7D40D /* AppCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoverageTests.swift; sourceTree = "<group>"; };
-		CD9AE2B3F4C5D6E7A8190B12 /* ComposerDictationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictationManager.swift; sourceTree = "<group>"; };
 		8B1809BB98E84F90B7382B3D /* DeviceToolBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceToolBridgeTests.swift; sourceTree = "<group>"; };
 		9168EDA635C962F25DC82D07 /* OpenClawBackupManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawBackupManager.swift; sourceTree = "<group>"; };
 		93A7A6603D3CEC25DE04D128 /* GatewayDiscoveryDebugLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryDebugLogView.swift; sourceTree = "<group>"; };
@@ -229,6 +228,7 @@
 		CB307D5090DC22100E34962B /* GatewayHealthMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayHealthMonitor.swift; sourceTree = "<group>"; };
 		CB6CF40216BE16DC6AB1E0DC /* NodeAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeAppModel.swift; sourceTree = "<group>"; };
 		CD8E73AE2B7E0350CD584C01 /* TCPProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPProbe.swift; sourceTree = "<group>"; };
+		CD9AE2B3F4C5D6E7A8190B12 /* ComposerDictationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDictationManager.swift; sourceTree = "<group>"; };
 		D1F0215334CEEEB4A1CFD6D8 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		D42A8C3D213AD8216165F00F /* GatewayConnectionIssueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConnectionIssueTests.swift; sourceTree = "<group>"; };
 		D4810065ADFD058C995534C4 /* GatewayDiscoveryModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayDiscoveryModel.swift; sourceTree = "<group>"; };
@@ -1130,6 +1130,7 @@
 				DEVELOPMENT_TEAM = ARRY5366Y3;
 				ENABLE_APPINTENTS_METADATA = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1213,6 +1214,7 @@
 				DEVELOPMENT_TEAM = ARRY5366Y3;
 				ENABLE_APPINTENTS_METADATA = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

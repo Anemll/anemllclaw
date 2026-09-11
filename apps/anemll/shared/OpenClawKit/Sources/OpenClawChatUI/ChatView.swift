@@ -658,7 +658,7 @@ private struct ChatNoticeBanner: View {
                         Text(self.message)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .lineLimit(3)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -701,9 +701,8 @@ private struct ChatNoticeBanner: View {
                 .padding(.leading, 25)
             } else {
                 Button("Show more") { self.isExpanded = true }
-                    .buttonStyle(.plain)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(self.tint)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     .padding(.leading, 25)
             }
         }

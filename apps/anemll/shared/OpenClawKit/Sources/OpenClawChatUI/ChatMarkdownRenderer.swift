@@ -57,7 +57,7 @@ struct ChatMarkdownRenderer: View {
     }
 }
 
-private enum ChatMarkdownDisplayLimiter {
+enum ChatMarkdownDisplayLimiter {
     static let maxRenderedUTF16 = 12000
     private static let maxStructuredTextUTF16 = 6000
 
@@ -77,15 +77,7 @@ private enum ChatMarkdownDisplayLimiter {
     }
 
     static func prefersPlainTextRenderer(for text: String) -> Bool {
-        if text.utf16.count > self.maxStructuredTextUTF16 {
-            return true
-        }
-
-        #if os(iOS) || os(tvOS)
-        return true
-        #else
-        return false
-        #endif
+        text.utf16.count > self.maxStructuredTextUTF16
     }
 }
 

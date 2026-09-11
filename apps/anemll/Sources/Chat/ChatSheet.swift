@@ -47,6 +47,8 @@ struct ChatSheet: View {
     @State private var showsTranscriptViewer = false
     @State private var showsSettings = false
     @State private var settingsAutoAddProvider = false
+    @State private var settingsEditingProviderID: String?
+    @State private var authenticationPromptProvider: SavedLLMProvider?
     @State private var transcriptMessageAnchor: UUID?
     @State private var savedProviders: [SavedLLMProvider] = []
     @State private var activeProviderID: String?
@@ -100,6 +102,7 @@ struct ChatSheet: View {
                 if self.usesMacTopBarLayout {
                     self.chatContent
                         .ignoresSafeArea(.container, edges: .top)
+                        .padding(.top, self.compactTopBarHeight)
                         .overlay(alignment: .top) {
                             self.compactTopBar
                         }
@@ -136,6 +139,9 @@ struct ChatSheet: View {
                 LastThreadStore.save(newValue)
                 self.applySessionProvider(for: newValue)
             }
+            .onChange(of: self.viewModel.errorText) { _, errorText in
+                self.presentAuthenticationPromptIfNeeded(for: errorText)
+            }
             .onChange(of: self.currentSessionProviderID) { _, _ in
                 self.applySessionProvider(for: self.viewModel.sessionKey)
             }
@@ -165,13 +171,35 @@ struct ChatSheet: View {
                 self.activeProviderID = storedActive
                 self.globalProviderID = storedActive
                 self.settingsAutoAddProvider = false
+                self.settingsEditingProviderID = nil
             }) {
-                SettingsTab(autoAddProvider: self.settingsAutoAddProvider)
+                SettingsTab(
+                    autoAddProvider: self.settingsAutoAddProvider,
+                    editingProviderID: self.settingsEditingProviderID)
                     .environment(self.appModel)
                     .environment(self.voiceWake)
                     .environment(self.gatewayController)
                     .environment(self.localGatewayRuntime)
                     .environment(self.dreamModeManager)
+            }
+            .alert(
+                "Sign In Again?",
+                isPresented: Binding(
+                    get: { self.authenticationPromptProvider != nil },
+                    set: { if !$0 { self.authenticationPromptProvider = nil } }))
+            {
+                Button("Sign In") {
+                    self.settingsEditingProviderID = self.authenticationPromptProvider?.id
+                    self.authenticationPromptProvider = nil
+                    self.showsSettings = true
+                }
+                Button("Not Now", role: .cancel) {
+                    self.authenticationPromptProvider = nil
+                }
+            } message: {
+                Text(
+                    "The selected provider could not authenticate. "
+                        + "Sign in again to replace its expired or invalid credentials.")
             }
         }
     }
@@ -187,6 +215,32 @@ struct ChatSheet: View {
             textScale: self.mainChatZoomLevel.textScale,
             dictation: self.dictationManager)
             .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func presentAuthenticationPromptIfNeeded(for errorText: String?) {
+        guard let errorText,
+              Self.isAuthenticationFailure(errorText),
+              let provider = self.activeProvider,
+              provider.authMode.isOAuth
+        else { return }
+        self.authenticationPromptProvider = provider
+    }
+
+    private static func isAuthenticationFailure(_ errorText: String) -> Bool {
+        let normalized = errorText.lowercased()
+        let credentialMarkers = [
+            "unauthenticated",
+            "bad-credentials",
+            "invalid_grant",
+            "invalid token",
+            "access token could not be validated",
+            "refresh_token_reused",
+        ]
+        return normalized.contains("http 401")
+            || normalized.contains("http 403")
+            || normalized.contains("httperror(status: 401")
+            || normalized.contains("httperror(status: 403")
+            || credentialMarkers.contains(where: normalized.contains)
     }
 
     private var usesMacTopBarLayout: Bool {
